@@ -1,0 +1,31 @@
+# Build outputs
+/build/
+/.build/
+**/build/
+**/.build/
+
+# Local astrophotography processing runs
+PhotonStack-DesktopProcessor/
+PhotonStack-AstroRun-*/
+*.psflow.local
+docs/processing-report/
+
+# macOS metadata and local filesystem noise
+/.DS_Store
+**/.DS_Store
+.AppleDouble
+**/.AppleDouble
+.LSOverride
+**/.LSOverride
+Icon?
+._*
+**/._*
+.Spotlight-V100
+**/.Spotlight-V100
+.Trashes
+**/.Trashes
+.fseventsd
+**/.fseventsd
+
+# Local Codex workspace metadata
+.codex/

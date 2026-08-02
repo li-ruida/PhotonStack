@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BUILD_DIR="$ROOT_DIR/build"
 SWIFT_BUILD_DIR="$BUILD_DIR/swift"
-APP_DIR="$BUILD_DIR/PhotonStackMac.app"
+APP_DIR="$BUILD_DIR/PhotonStack.app"
+LEGACY_APP_DIR="$BUILD_DIR/PhotonStackMac.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -40,7 +41,7 @@ swift build \
   --scratch-path "$SWIFT_BUILD_DIR" \
   --product PhotonStackMac
 
-rm -rf "$APP_DIR"
+rm -rf "$APP_DIR" "$LEGACY_APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$EXECUTABLE" "$MACOS_DIR/PhotonStackMac"
 cp "$CLI_EXECUTABLE" "$MACOS_DIR/photonstack"
@@ -76,6 +77,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
+  <string>PhotonStack</string>
+  <key>CFBundleDisplayName</key>
   <string>PhotonStack</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>

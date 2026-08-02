@@ -6,7 +6,7 @@ app_name="PhotonStackMac"
 bundle_id="dev.photonstack.app"
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-app_bundle="$root_dir/build/PhotonStackMac.app"
+app_bundle="$root_dir/build/PhotonStack.app"
 app_binary="$app_bundle/Contents/MacOS/$app_name"
 
 usage() {

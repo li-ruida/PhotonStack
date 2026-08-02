@@ -58,13 +58,13 @@ tools/scripts/package-macos.sh
 The packaged app is written to:
 
 ```text
-build/PhotonStackMac.app
+build/PhotonStack.app
 ```
 
 `tools/scripts/package-macos.sh` currently:
 
 - builds the CLI and macOS app targets
-- creates `build/PhotonStackMac.app`
+- creates `build/PhotonStack.app`
 - embeds the `photonstack` CLI in the app bundle
 - writes bundle metadata and build identity files
 - generates `AppIcon.icns` from the repository PNG source when Python and Pillow are available

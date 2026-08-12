@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "description": "Hash-locked external regression and evaluation images for artifact-trail generalization.",
+  "cases": [
+    {
+      "id": "dev-geminid-bolide",
+      "split": "development",
+      "group": "john-flannery",
+      "filename": "negative_geminid_bolide.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Geminid%20Meteor%20-%20Dec.%202012.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Geminid_Meteor_-_Dec._2012.jpg",
+      "sha256": "41cd4654a1254abfc1c9189ffdf2196c2907225dcc040a2462eb58a7d9b2e33e",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "dev-meteor-2014",
+      "split": "development",
+      "group": "jacek-halicki",
+      "filename": "negative_meteor_2014.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2014%20Meteor.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2014_Meteor.jpg",
+      "sha256": "5942637fe0fc051b58ef6010afc5e8b9d42e65f464305e28f4cea770eebf247a",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "dev-startrails-krushevo",
+      "split": "development",
+      "group": "martin-stojanovski",
+      "filename": "negative_startrails_krushevo.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trail%20above%20Krushevo.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trail_above_Krushevo.jpg",
+      "sha256": "b3ee2ea30f8a7fae5ded7022f42b7c3fe2d743364d119d944b86ddfeffe2c048",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "dev-startrails-starstax",
+      "split": "development",
+      "group": "a-duro-eso",
+      "filename": "negative_startrails_starstax.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trails%20%28starstax%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trails_(starstax).jpg",
+      "sha256": "71a2269ebfccb03cd06c16c7ae7032332c6a1258afe2de1953f4eda8aa313801",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "dev-bluewalker-mcmath",
+      "split": "development",
+      "group": "kitt-peak-noirlab",
+      "filename": "positive_bluewalker_mcmath.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Trail%20left%20by%20BlueWalker%203%20over%20McMath-Pierce%20Solar%20Telescope%20%28ann22033f%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Trail_left_by_BlueWalker_3_over_McMath-Pierce_Solar_Telescope_(ann22033f).jpg",
+      "sha256": "9442b8088d8636c6b863e8b6ff483969f17e17a3fba33a325461f1d7169db2b9",
+      "expectation": { "minimumArtifacts": 5, "maximumArtifacts": 8 }
+    },
+    {
+      "id": "dev-neowise-iss-starlink",
+      "split": "development",
+      "group": "laurie-nevay",
+      "filename": "positive_neowise_iss.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2020%20F3%20NEOWISE%20Comet%20%26%20ISS.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2020_F3_NEOWISE_Comet_%26_ISS.jpg",
+      "sha256": "faa2cd6b40d928db6212c337be47a2d89fd3b3644331c8b56ad8cefec93301bf",
+      "expectation": { "minimumArtifacts": 3, "maximumArtifacts": 6 }
+    },
+    {
+      "id": "eval-geminid-church",
+      "split": "evaluation",
+      "group": "ashok-kolluru",
+      "filename": "negative_geminid_church.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Geminid%20meteor%20over%20old%20church.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Geminid_meteor_over_old_church.jpg",
+      "sha256": "56152d2df681e99e841e57add60d30c43205365c5162fe46cb47f0c990e40ceb",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "eval-perseid-2011",
+      "split": "evaluation",
+      "group": "thomas-bresson",
+      "filename": "negative_perseid_2011.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2011-08-15%2023-26-53-meteor.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2011-08-15_23-26-53-meteor.jpg",
+      "sha256": "c1f85705587b600782aa39abee07a13e6931dafccc41bb6db1c88e30aaa4d449",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "eval-startrail-hebei",
+      "split": "evaluation",
+      "group": "startrail-hebei-uploader",
+      "filename": "negative_startrail_hebei.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trail%20in%20Hebei.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trail_in_Hebei.jpg",
+      "sha256": "915f4085b602b4d5383c2fa2cd5cbd3356f39d8fbd68627453508d760cde1565",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "eval-startrails-southern",
+      "split": "evaluation",
+      "group": "dave-young",
+      "filename": "negative_startrails_southern.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Southern%20hemisphere%20star%20trails%20%287562064954%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Southern_hemisphere_star_trails_(7562064954).jpg",
+      "sha256": "770f2d2ca5afd609613572ee23a6c0cfc13c3e02d945a78fff3177ea89a3a45c",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "eval-starlink-overpass-2",
+      "split": "evaluation",
+      "group": "starlink-overpass-flickr",
+      "filename": "positive_starlink_overpass_2.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Starlink%20Overpass%20No%202%20%2847943840748%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Starlink_Overpass_No_2_(47943840748).jpg",
+      "sha256": "24f0cb28c3ce0b711eb9aa8dbf95ec57b37baef076e43169f3531b1c6c61aa53",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "eval-tianhe-css",
+      "split": "evaluation",
+      "group": "bugwarp",
+      "filename": "positive_tianhe_css.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Tianhe%20CSS%20as%20seen%20from%20M.B%20Gonnet%2002.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Tianhe_CSS_as_seen_from_M.B_Gonnet_02.jpg",
+      "sha256": "cf5be7bdb7b521ad5b33b6d26a21e7dfd9993ceddb47725b6be02caad643a465",
+      "expectation": { "minimumArtifacts": 1 }
+    }
+  ]
+}

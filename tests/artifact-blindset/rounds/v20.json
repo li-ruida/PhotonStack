@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "description": "Untouched v20 network blind set, frozen against ArtifactTrailRemover.cpp sha256 eff0409c29b806acb7ce0b2f2c1a7ed4346b49df93aebd6e093eff9ee556d7e0 before first detector run.",
+  "cases": [
+    {
+      "id": "v20-positive-iridium-flare",
+      "split": "evaluation",
+      "group": "christos-doudoulakis",
+      "filename": "v20-positive-iridium-flare.png",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Iridium%20flare.png?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Iridium_flare.png",
+      "sha256": "128d576ec0a63cb58447ad109dba1cc775c7cfbdd2e98bf900573ea1fa678f3a",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v20-positive-iridium-belfort",
+      "split": "evaluation",
+      "group": "computerhotline",
+      "filename": "v20-positive-iridium-belfort.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2011-08-27%2022-34-12-iridium-flare.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2011-08-27_22-34-12-iridium-flare.jpg",
+      "sha256": "d8150a3d10a4078ec81c82348c0503c083042e2336bb041a1e4adce3c9b7d1c6",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v20-negative-perseid-2021",
+      "split": "evaluation",
+      "group": "psamathem",
+      "filename": "v20-negative-perseid-2021.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/04-Perseid-2021-nX-5.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:04-Perseid-2021-nX-5.jpg",
+      "sha256": "61723b04a6689e3a33fa0e8b14c89cc07e5b0d7944ef13d6736ca60fef80539d",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v20-negative-meteor1",
+      "split": "evaluation",
+      "group": "rich2222",
+      "filename": "v20-negative-meteor1.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Meteor1.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Meteor1.jpg",
+      "sha256": "d3443d35b92d22d20453b1c51ba986b0e44abd7e1e9abf046f66fa4055c8d3b8",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v20-negative-iss-africa-startrails",
+      "split": "evaluation",
+      "group": "nasa-johnson-space-center",
+      "filename": "v20-negative-iss-africa-startrails.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/ISS-65%20African%20city%20lights%2C%20atmospheric%20glow%20and%20star%20trails.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:ISS-65_African_city_lights,_atmospheric_glow_and_star_trails.jpg",
+      "sha256": "cd41171353a3d928e30446550e66dd9e82a471acef2c306c530122777257ed1b",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v20-negative-star-trail-254221623",
+      "split": "evaluation",
+      "group": "haunted-wang",
+      "filename": "v20-negative-star-trail-254221623.jpeg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20Trail%20%28254221623%29.jpeg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_Trail_(254221623).jpeg",
+      "sha256": "279ea6de8f876f0ad227a751e49366f9157bd78d7adb3558600ca52edb159eff",
+      "expectation": { "maximumArtifacts": 0 }
+    }
+  ]
+}

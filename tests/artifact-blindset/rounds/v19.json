@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "description": "Untouched v19 network blind set, frozen against ArtifactTrailRemover.cpp sha256 062b2a9e15d77ecefa8c57b4b73dd11a76caa988207f3f0602c71dae5544f15d before first detector run.",
+  "cases": [
+    {
+      "id": "v19-positive-rudd-pond-iridium",
+      "split": "evaluation",
+      "group": "julian-colton",
+      "filename": "v19-positive-rudd-pond-iridium.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Rudd%20Pond%20at%20night.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Rudd_Pond_at_night.jpg",
+      "sha256": "a86f41f9c9bce293cbc87621b36cca3776dbadb4dbcace85460b61c6b6a8429a",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v19-positive-iridium-tulsa",
+      "split": "evaluation",
+      "group": "thefixer",
+      "filename": "v19-positive-iridium-tulsa.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Iridium%20Flare%20Tulsa.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Iridium_Flare_Tulsa.jpg",
+      "sha256": "533a91609964d8c81de9431705ae05255e6724a03ee277bc123bad4defc71afc",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v19-negative-flagstaff-meteor",
+      "split": "evaluation",
+      "group": "deborah-lee-soltesz-usfs",
+      "filename": "v19-negative-flagstaff-meteor.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Night%20sky%20near%20Flagstaff%20with%20meteor.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Night_sky_near_Flagstaff_with_meteor.jpg",
+      "sha256": "931b93916d940958375bfc0620de020f43f7eee31612d07d06f61468b1a82e43",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v19-negative-geminid-fireball",
+      "split": "evaluation",
+      "group": "jianfeng-dai",
+      "filename": "v19-negative-geminid-fireball.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/The%20Geminid%20Fireball%20%28ann23043v%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:The_Geminid_Fireball_(ann23043v).jpg",
+      "sha256": "fbe197e847ec7e1f6f089940b55fcadd9438cf34aca35aebb7f0b34622ec6d39",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v19-negative-paranal-startrails",
+      "split": "evaluation",
+      "group": "gianluca-lombardi-eso",
+      "filename": "v19-negative-paranal-startrails.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Paranal%20Starry%20Night.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Paranal_Starry_Night.jpg",
+      "sha256": "b35df9244ae593431bb7f50111b98bef0971f0d9dafa96452649a075c2db592f",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v19-negative-rishikesh-startrail",
+      "split": "evaluation",
+      "group": "navneet-sharma",
+      "filename": "v19-negative-rishikesh-startrail.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trail%20in%20Rishikesh.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trail_in_Rishikesh.jpg",
+      "sha256": "9e8a1c23285579de4d1f2838841b47cf25235d5a50c9038b6de1fdbe67239026",
+      "expectation": { "maximumArtifacts": 0 }
+    }
+  ]
+}

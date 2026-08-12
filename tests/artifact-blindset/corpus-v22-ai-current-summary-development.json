@@ -1,0 +1,1439 @@
+{
+  "schemaVersion": 1,
+  "sourceDetectorReport": "build/artifact-corpus/v22-development-complex-final.json",
+  "sourceAiManifest": "tests/artifact-blindset/corpus-v22-ai-high-confidence-development.json",
+  "processed": 141,
+  "passed": 89,
+  "failed": 52,
+  "passRate": 0.6312056737588653,
+  "byDisposition": {
+    "mixed": {
+      "cases": 7,
+      "passed": 2
+    },
+    "none": {
+      "cases": 2,
+      "passed": 0
+    },
+    "protected": {
+      "cases": 114,
+      "passed": 75
+    },
+    "removable": {
+      "cases": 18,
+      "passed": 12
+    }
+  },
+  "results": [
+    {
+      "id": "v22-meteor-88539010",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 3,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-166262974",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 2,
+      "protectedMeteors": 4,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-10597578",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-133667973",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-3808406",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 3,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-8650198",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-8650243",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 2,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-193353507",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 4,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-151520799",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-48936192",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-162608885",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-11212868",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-55303043",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 6,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-172692289",
+      "disposition": "none",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-105376392",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 39,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-15051498",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 2,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-170477188",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-109112993",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-113359224",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 3,
+      "protectedMeteors": 2,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-54699005",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 9,
+      "protectedMeteors": 2,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-62073112",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 8,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-42620787",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 2,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-174857688",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-151449184",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-108902353",
+      "disposition": "none",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-meteor-55286978",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-81935611",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 64,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-35602602",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 6,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-151710480",
+      "disposition": "mixed",
+      "passed": false,
+      "trails": 0,
+      "protectedMeteors": 51,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-startrail-21464290",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 13,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-61801794",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 13,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-73084654",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 20,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-79278371",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 26,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-21998896",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 17,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-5209378",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 50,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-162913565",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 81,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-76915081",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 10,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-60537469",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 37,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-94952980",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 27,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-83762296",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 210,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149041675",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 203,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-71435060",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 2,
+      "protectedMeteors": 13,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-139656276",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 45,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-84216005",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 366,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-160792226",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 2,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-97499529",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 46,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-15270259",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-71304327",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 30,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-182698423",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 2,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-134674640",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-73312797",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 109,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-48581645",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 125,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-139263626",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 129,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-30384713",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 6,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-136179157",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 43,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-151573241",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 176,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-109425526",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 2,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-163577548",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 9,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-89436285",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 29,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-98564827",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 262,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149101017",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 83,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149029519",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 91,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-138230096",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 2,
+      "protectedMeteors": 13,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-59378432",
+      "disposition": "mixed",
+      "passed": false,
+      "trails": 0,
+      "protectedMeteors": 2,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-startrail-67542865",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 8,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-137746101",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 93,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-22216202",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 105,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-89318605",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 98,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-27747658",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 0,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-151235537",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 44,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-92741469",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 138,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149029518",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 91,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-27722140",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-79278373",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 40,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-73438477",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 13,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-52036492",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 45,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-67542859",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 79,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-40213634",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 31,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-84846624",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 2,
+      "protectedMeteors": 16,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-142368418",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 21,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-83910102",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 52,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-15929049",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 28,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-22161992",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 67,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-121573243",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 97,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-52232985",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 22,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-64268881",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 2,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149041749",
+      "disposition": "mixed",
+      "passed": false,
+      "trails": 0,
+      "protectedMeteors": 35,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-startrail-33218750",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 151,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-196610538",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-36511131",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 2,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-152430619",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 4,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149028789",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 30,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-138239774",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 97,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-2542239",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 3,
+      "protectedMeteors": 14,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-63958584",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 19,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-48071639",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 10,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-83834259",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 30,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-94426507",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 134,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149041920",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 54,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-105006043",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 12,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-58801044",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 14,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-109423259",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 3,
+      "protectedMeteors": 23,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-121573246",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 255,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-104875781",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 9,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-170340514",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 158,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-16099328",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 8,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-138232146",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 165,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-139367261",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 307,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-107207046",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 44,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-91216156",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 2,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-84295264",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 1,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-71699823",
+      "disposition": "mixed",
+      "passed": true,
+      "trails": 4,
+      "protectedMeteors": 0,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-startrail-71366866",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 73,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-97381700",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 12,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-113015824",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 58,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-18788754",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 104,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-130674061",
+      "disposition": "mixed",
+      "passed": true,
+      "trails": 2,
+      "protectedMeteors": 3,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-startrail-81941882",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 153,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-startrail-49343683",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 6,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-satellite-89070230",
+      "disposition": "removable",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 7,
+      "expectation": {
+        "minimumArtifacts": 2
+      }
+    },
+    {
+      "id": "v22-satellite-92383584",
+      "disposition": "removable",
+      "passed": false,
+      "trails": 0,
+      "protectedMeteors": 1,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-satellite-73312796",
+      "disposition": "removable",
+      "passed": true,
+      "trails": 1,
+      "protectedMeteors": 0,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-satellite-69386280",
+      "disposition": "removable",
+      "passed": false,
+      "trails": 5,
+      "protectedMeteors": 0,
+      "expectation": {
+        "minimumArtifacts": 10
+      }
+    },
+    {
+      "id": "v22-satellite-13256934",
+      "disposition": "removable",
+      "passed": true,
+      "trails": 2,
+      "protectedMeteors": 2,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-satellite-4289703",
+      "disposition": "protected",
+      "passed": true,
+      "trails": 0,
+      "protectedMeteors": 20,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-satellite-4288802",
+      "disposition": "removable",
+      "passed": true,
+      "trails": 1,
+      "protectedMeteors": 0,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-satellite-26541853",
+      "disposition": "removable",
+      "passed": true,
+      "trails": 1,
+      "protectedMeteors": 2,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-satellite-93681298",
+      "disposition": "removable",
+      "passed": true,
+      "trails": 1,
+      "protectedMeteors": 8,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-satellite-27220705",
+      "disposition": "removable",
+      "passed": true,
+      "trails": 11,
+      "protectedMeteors": 2,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-satellite-156538548",
+      "disposition": "mixed",
+      "passed": false,
+      "trails": 1,
+      "protectedMeteors": 22,
+      "expectation": {
+        "minimumArtifacts": 2
+      }
+    },
+    {
+      "id": "v22-satellite-14653409",
+      "disposition": "removable",
+      "passed": true,
+      "trails": 2,
+      "protectedMeteors": 3,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-satellite-42851848",
+      "disposition": "protected",
+      "passed": false,
+      "trails": 3,
+      "protectedMeteors": 5,
+      "expectation": {
+        "maximumArtifacts": 0
+      }
+    },
+    {
+      "id": "v22-satellite-134292074",
+      "disposition": "removable",
+      "passed": false,
+      "trails": 0,
+      "protectedMeteors": 71,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-satellite-114946798",
+      "disposition": "mixed",
+      "passed": false,
+      "trails": 0,
+      "protectedMeteors": 162,
+      "expectation": {
+        "minimumArtifacts": 10
+      }
+    },
+    {
+      "id": "v22-satellite-134333184",
+      "disposition": "removable",
+      "passed": false,
+      "trails": 9,
+      "protectedMeteors": 26,
+      "expectation": {
+        "minimumArtifacts": 20
+      }
+    },
+    {
+      "id": "v22-satellite-90916892",
+      "disposition": "removable",
+      "passed": true,
+      "trails": 4,
+      "protectedMeteors": 6,
+      "expectation": {
+        "minimumArtifacts": 2
+      }
+    },
+    {
+      "id": "v22-aircraft-31605676",
+      "disposition": "removable",
+      "passed": true,
+      "trails": 2,
+      "protectedMeteors": 2,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-aircraft-8203016",
+      "disposition": "removable",
+      "passed": true,
+      "trails": 3,
+      "protectedMeteors": 8,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-aircraft-39972098",
+      "disposition": "removable",
+      "passed": false,
+      "trails": 0,
+      "protectedMeteors": 0,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-aircraft-9054743",
+      "disposition": "removable",
+      "passed": true,
+      "trails": 5,
+      "protectedMeteors": 13,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    },
+    {
+      "id": "v22-aircraft-49461272",
+      "disposition": "removable",
+      "passed": true,
+      "trails": 10,
+      "protectedMeteors": 0,
+      "expectation": {
+        "minimumArtifacts": 1
+      }
+    }
+  ]
+}

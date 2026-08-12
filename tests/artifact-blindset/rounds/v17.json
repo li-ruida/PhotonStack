@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "description": "PhotonStack v17 untouched acceptance set frozen against detector 4c655534fea1471622e7a3e742b6f04f471e10b1ad174981b5de4a01a7c3d64d.",
+  "cases": [
+    {
+      "id": "v17-positive-orion-satellite-highway",
+      "split": "evaluation",
+      "group": "keesscherer",
+      "filename": "positive_orion_satellite_highway.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Orion%20satellite%20highway.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Orion_satellite_highway.jpg",
+      "sha256": "5b991d0b87a6164f9e6b94cdfde86f46d5ae846f7503ca73b7e6ada5599f9d58",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v17-positive-andromeda-tuntorp-2",
+      "split": "evaluation",
+      "group": "w-carter",
+      "filename": "positive_andromeda_tuntorp_2.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Andromeda%20Galaxy%20over%20a%20rain%20gutter%20in%20Tuntorp%202.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Andromeda_Galaxy_over_a_rain_gutter_in_Tuntorp_2.jpg",
+      "sha256": "edb75776ae15faa013cafb3c8d1a635f95ef7acab0a1c197c56b91a5777aca4e",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v17-negative-leonid-meteor",
+      "split": "evaluation",
+      "group": "navicore",
+      "filename": "negative_leonid_meteor.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Leonid%20Meteor.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Leonid_Meteor.jpg",
+      "sha256": "406c7314541ccc83ba1c5fc86882b2422f78a152ae69a76ecd1887a03cdfb73f",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v17-negative-leonid-composite",
+      "split": "evaluation",
+      "group": "jim-vajda",
+      "filename": "negative_leonid_composite.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Leonid%20Meteor%20Shower%20Composite%20%2850615053747%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Leonid_Meteor_Shower_Composite_(50615053747).jpg",
+      "sha256": "8b96d21dd312a977b15db884c27cbc187c530967c972bdbda021255528e8356c",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v17-negative-white-desert-startrail",
+      "split": "evaluation",
+      "group": "ahmed-khalil",
+      "filename": "negative_white_desert_startrail.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/White%20Desert%20star%20trail.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:White_Desert_star_trail.jpg",
+      "sha256": "8f113739c153a8048468cd7d043eea4090a3619276026c0cb79869b5795512a3",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v17-negative-phone-startrails",
+      "split": "evaluation",
+      "group": "dammitkarissa",
+      "filename": "negative_phone_startrails.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trails%20%2850143160786%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trails_(50143160786).jpg",
+      "sha256": "4ee6deee7b6f1760a977f4bcc1e2c2cbd1a7eb3b0be0e2e2fdc7f5762dd0dbe4",
+      "expectation": { "maximumArtifacts": 0 }
+    }
+  ]
+}

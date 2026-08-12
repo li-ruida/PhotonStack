@@ -62,6 +62,10 @@ struct ArtifactTrail {
     float meanBrightness = 0.0F;
     float weight = 0.0F;
     std::vector<ArtifactTrailPathPoint> path;
+    bool coherentParallelGroup = false;
+    bool verifiedContinuousSatellite = false;
+    bool verifiedSegmentedSatelliteChain = false;
+    bool strongAsymmetricMeteor = false;
 };
 
 struct ArtifactTrailOptions {

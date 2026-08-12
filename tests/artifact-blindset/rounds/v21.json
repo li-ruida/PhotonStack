@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "description": "Untouched v21 network blind set, frozen against ArtifactTrailRemover.cpp sha256 2a3dc14d4656229046ab4f16f9157e572d94f81f798eb24d072b15a9e3836323 before first detector run.",
+  "cases": [
+    {
+      "id": "v21-positive-satellite-germany",
+      "split": "evaluation",
+      "group": "eckhard-slawik-iau",
+      "filename": "v21-positive-satellite-germany.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Satellite%20tracks%20over%20Germany%202018%20%28ann19035b%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Satellite_tracks_over_Germany_2018_(ann19035b).jpg",
+      "sha256": "7cdf3d713bde0cbd5fa23aef356209d71fb7353c9378faaec22bb5036cce3c41",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v21-positive-orion-satellites",
+      "split": "evaluation",
+      "group": "a-h-abolfath-noirlab",
+      "filename": "v21-positive-orion-satellites.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Orion%20Nebula%20with%20Satellite%20Trails%20%28ann21021b%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Orion_Nebula_with_Satellite_Trails_(ann21021b).jpg",
+      "sha256": "c86420fd4a23413629c9d6ee8f1edf7f7dfc7895a53158c53b7327a327e27e9a",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v21-positive-gaia-dotted",
+      "split": "evaluation",
+      "group": "esa-eso-gaia",
+      "filename": "v21-positive-gaia-dotted.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Pinpointing%20Gaia%20from%20Earth%20ESA19372289.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Pinpointing_Gaia_from_Earth_ESA19372289.jpg",
+      "sha256": "9e0247d132b63a392b56527034bb466c38fa00035952ae14d75d7ff483baf294",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v21-positive-teide-iss-startrails",
+      "split": "evaluation",
+      "group": "benedikt-markus",
+      "filename": "v21-positive-teide-iss-startrails.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Circumpolar%20star%20trails%20and%20ISS%20transit%20over%20the%20Teide%20volcano%2C%20Tenerife%2C%20Spain.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Circumpolar_star_trails_and_ISS_transit_over_the_Teide_volcano,_Tenerife,_Spain.jpg",
+      "sha256": "dcb53246fc3411c9a3c964a4d222acc567d15e0c8291a746bcaea1c4628e635b",
+      "expectation": { "minimumArtifacts": 1, "maximumArtifacts": 8 }
+    },
+    {
+      "id": "v21-negative-fireball-kitt-peak",
+      "split": "evaluation",
+      "group": "kitt-peak-noirlab",
+      "filename": "v21-negative-fireball-kitt-peak.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Fireball%20Over%20Kitt%20Peak%20%28iotw2522a%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Fireball_Over_Kitt_Peak_(iotw2522a).jpg",
+      "sha256": "c9114829c95f1c2971c4c834ec513ba922589fdbed7390f2edd578d063e85aca",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v21-negative-meteor080117",
+      "split": "evaluation",
+      "group": "austin-houser",
+      "filename": "v21-negative-meteor080117.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Meteor080117.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Meteor080117.jpg",
+      "sha256": "6f71e53a585f9dfdfd9bb03183a86ba39c0a82fd9ce6298b5de722f788d1c66e",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v21-negative-startrails-first",
+      "split": "evaluation",
+      "group": "fabrizio-melandri-iau",
+      "filename": "v21-negative-startrails-first.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trails%2C%20First%20Place%20%28ann21047m%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trails,_First_Place_(ann21047m).jpg",
+      "sha256": "a82c412c2964692de651384c5406453ae64f07e343f755b1ab21e74979cdaa4e",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v21-negative-mars-startrail",
+      "split": "evaluation",
+      "group": "ashish-mahaur",
+      "filename": "v21-negative-mars-startrail.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Mars%20star%20trail%20-%20Kanha%20National%20Park.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Mars_star_trail_-_Kanha_National_Park.jpg",
+      "sha256": "e262c06f8a60508c7b120c4ddf30db25fd547de02dc9fcc3ba911acd99c82214",
+      "expectation": { "maximumArtifacts": 0 }
+    }
+  ]
+}

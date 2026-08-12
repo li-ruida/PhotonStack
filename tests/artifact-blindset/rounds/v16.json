@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "description": "PhotonStack v16 untouched acceptance set frozen against detector d64fe25dd8e13274687bd64de069c6938171f742cd213683d770ef383d2ff45c.",
+  "cases": [
+    {
+      "id": "v16-positive-iss-trail",
+      "split": "evaluation",
+      "group": "comzeradd",
+      "filename": "positive_iss_trail.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/ISS%20trail.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:ISS_trail.jpg",
+      "sha256": "8e4166a807f718a4e4a919c6046d2ea397d535c90fb3618d16735dd9c3ea33f6",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v16-positive-milky-way-prevalla",
+      "split": "evaluation",
+      "group": "arjola-dema",
+      "filename": "positive_milky_way_prevalla.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Milky%20Way%20Prevalla.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Milky_Way_Prevalla.jpg",
+      "sha256": "43827eac5e648d86289caaf951c73e5a79f3341d2b64e8e482f072a57e6d8c55",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v16-negative-perseid-meteor",
+      "split": "evaluation",
+      "group": "brocken-inaglory",
+      "filename": "negative_perseid_meteor.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Perseid%20Meteor.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Perseid_Meteor.jpg",
+      "sha256": "157bc934feef0cb5207a27a4ebda3114340d6bf8733ecefb43999f014d97f246",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v16-negative-perseid-joshua-tree",
+      "split": "evaluation",
+      "group": "anna-cirimele-nps",
+      "filename": "negative_perseid_joshua_tree.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Perseid%20Meteor%20Shower%20above%20a%20Joshua%20tree%20%2853434073148%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Perseid_Meteor_Shower_above_a_Joshua_tree_(53434073148).jpg",
+      "sha256": "a6221505c3eca9791df363a6b4b4f5c156c0b28119a9b95d5b9664f11eb4bef7",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v16-negative-circumpolar-star-trails",
+      "split": "evaluation",
+      "group": "heyzeuss",
+      "filename": "negative_circumpolar_star_trails.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Circumpolar%20star%20trails.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Circumpolar_star_trails.jpg",
+      "sha256": "f23f5757761dd7e256b95c6f44e17e8384305b5dc2b7cbfd804118833caf24fa",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v16-negative-hoodoo-startrail",
+      "split": "evaluation",
+      "group": "hoodoo-startrail-photographer",
+      "filename": "negative_hoodoo_startrail.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Hoodoo%20Startrail.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Hoodoo_Startrail.jpg",
+      "sha256": "454cc516d217d26d259b228193bc2d4ce78dfade8044a6a83bb5630ec0924331",
+      "expectation": { "maximumArtifacts": 0 }
+    }
+  ]
+}

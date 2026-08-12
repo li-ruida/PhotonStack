@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "updated": "2026-08-05",
+  "rounds": [
+    {
+      "id": "v16",
+      "firstRunPassed": 4,
+      "total": 6,
+      "firstRunFailures": [
+        "v16-positive-iss-trail",
+        "v16-negative-perseid-joshua-tree"
+      ]
+    },
+    {
+      "id": "v17",
+      "firstRunPassed": 4,
+      "total": 6,
+      "firstRunFailures": [
+        "v17-negative-leonid-composite",
+        "v17-negative-phone-startrails"
+      ]
+    },
+    {
+      "id": "v18",
+      "firstRunPassed": 3,
+      "total": 6,
+      "firstRunFailures": [
+        "v18-positive-milky-way-satellite",
+        "v18-negative-leonid-wipf",
+        "v18-negative-star-trail-night-sky"
+      ]
+    },
+    {
+      "id": "v19",
+      "firstRunPassed": 5,
+      "total": 6,
+      "firstRunFailures": [
+        "v19-negative-paranal-startrails"
+      ]
+    },
+    {
+      "id": "v20",
+      "firstRunPassed": 5,
+      "total": 6,
+      "firstRunFailures": [
+        "v20-negative-perseid-2021"
+      ]
+    },
+    {
+      "id": "v21",
+      "firstRunPassed": 7,
+      "total": 8,
+      "firstRunFailures": [
+        "v21-positive-gaia-dotted"
+      ],
+      "notes": "首次漏检 Gaia 中性灰周期点链；结构性修复后又由 Kitt Peak 彩色地平线和 v18 过曝星轨暴露误报，最终增加色差、暖色与饱和度边界。"
+    }
+  ]
+}

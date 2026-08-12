@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "manifest": "tests/artifact-blindset/corpus-v22.json",
+  "detectorSourceSha256BeforeFirstRun": "9aee7b61bf3bce05182cd7477783638d94b0a9ccd3c2f495ac252df22e4e1cc2",
+  "split": "evaluation",
+  "attempted": 300,
+  "processed": 300,
+  "processingFailed": 0,
+  "weakLabelConforming": 144,
+  "weakLabelNonconforming": 156,
+  "byCategoryLabel": {
+    "protected-meteor": {
+      "attempted": 90,
+      "processed": 90,
+      "weakLabelConforming": 24,
+      "weakLabelNonconforming": 66
+    },
+    "protected-star-trail": {
+      "attempted": 150,
+      "processed": 150,
+      "weakLabelConforming": 72,
+      "weakLabelNonconforming": 78
+    },
+    "removable-artifact": {
+      "attempted": 60,
+      "processed": 60,
+      "weakLabelConforming": 48,
+      "weakLabelNonconforming": 12
+    }
+  },
+  "bySourceCategory": {
+    "Aircraft light trails": { "attempted": 20, "processed": 20, "weakLabelConforming": 16, "weakLabelNonconforming": 4 },
+    "Circumpolar stars in star trails": { "attempted": 98, "processed": 98, "weakLabelConforming": 49, "weakLabelNonconforming": 49 },
+    "Meteor showers": { "attempted": 29, "processed": 29, "weakLabelConforming": 4, "weakLabelNonconforming": 25 },
+    "Meteor trails": { "attempted": 28, "processed": 28, "weakLabelConforming": 11, "weakLabelNonconforming": 17 },
+    "Meteors": { "attempted": 33, "processed": 33, "weakLabelConforming": 9, "weakLabelNonconforming": 24 },
+    "Satellite flares": { "attempted": 11, "processed": 11, "weakLabelConforming": 9, "weakLabelNonconforming": 2 },
+    "Satellite trails": { "attempted": 29, "processed": 29, "weakLabelConforming": 23, "weakLabelNonconforming": 6 },
+    "Star trails": { "attempted": 52, "processed": 52, "weakLabelConforming": 23, "weakLabelNonconforming": 29 }
+  }
+}

@@ -191,6 +191,7 @@ struct ArtifactPoint {
 bool isDuplicateTrail(const std::vector<ArtifactTrail>& trails, const ArtifactTrail& candidate);
 float angleDelta(float a, float b);
 bool trailsOverlap(const ArtifactTrail& a, const ArtifactTrail& b);
+float centerY(const ArtifactTrail& trail);
 
 std::vector<Component> connectedComponents(const ImageBuffer& image, const std::vector<float>& luminance, float threshold) {
     std::vector<Component> components;
@@ -2718,6 +2719,13 @@ ArtifactTrail classifyComponent(const ImageBuffer& image,
     trail.colorVariance = static_cast<float>(colorVarianceSum / weightSum);
     const float warmEvidence = static_cast<float>(warmExcessSum / weightSum);
     trail.warmEvidence = warmEvidence;
+    const bool colorfulBrightShortTransient =
+        trail.kind == ArtifactTrailKind::Airplane && length >= 80.0F && length <= 260.0F && width <= 5.0F &&
+        profile[peakBin] >= 0.45F && warmEvidence >= 0.020F &&
+        static_cast<float>(centerY) <= static_cast<float>(image.height) * 0.78F;
+    if (colorfulBrightShortTransient) {
+        trail.kind = ArtifactTrailKind::Meteor;
+    }
     float confidence = std::clamp(0.45F + (aspect - 3.0F) * 0.08F + std::min(length, 80.0F) / 240.0F, 0.0F, 1.0F);
     if (trail.kind != ArtifactTrailKind::Meteor && warmEvidence < 0.012F && trail.colorVariance < 0.025F) {
         const float neutralPenalty = length < 250.0F ? 0.42F : 0.62F;
@@ -2729,6 +2737,91 @@ ArtifactTrail classifyComponent(const ImageBuffer& image,
     trail.x2 = static_cast<float>(centerX) + unitX * length * 0.5F;
     trail.y2 = static_cast<float>(centerY) + unitY * length * 0.5F;
     return trail;
+}
+
+std::vector<ArtifactTrail> detectLocallyContrastedContinuousTrails(
+    const ImageBuffer& image,
+    const std::vector<float>& luminance,
+    const std::vector<ArtifactTrail>& existing,
+    const ArtifactTrailOptions& options) {
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    if (image.pixelCount() > 5000000 || minDimension < 480.0F) {
+        return {};
+    }
+
+    // Avoid paying for a second full-frame component pass when the ordinary
+    // detector already found a long sky trail. This fallback exists for thin,
+    // low-contrast continuous tracks whose absolute brightness is below the
+    // global threshold because a bright foreground dominates the exposure.
+    const bool alreadyHasLongSkyTrail = std::any_of(existing.begin(), existing.end(), [&](const ArtifactTrail& trail) {
+        const bool lineLike = trail.kind == ArtifactTrailKind::Airplane ||
+                              trail.kind == ArtifactTrailKind::Satellite ||
+                              trail.kind == ArtifactTrailKind::Meteor;
+        return lineLike && trail.path.size() < 2 && trail.length >= minDimension * 0.22F &&
+               centerY(trail) <= static_cast<float>(image.height) * 0.82F;
+    });
+    if (alreadyHasLongSkyTrail) {
+        return {};
+    }
+
+    const std::size_t integralWidth = static_cast<std::size_t>(image.width) + 1;
+    std::vector<double> integral(integralWidth * (static_cast<std::size_t>(image.height) + 1), 0.0);
+    for (std::uint32_t y = 0; y < image.height; ++y) {
+        double rowSum = 0.0;
+        for (std::uint32_t x = 0; x < image.width; ++x) {
+            rowSum += luminance[static_cast<std::size_t>(y) * image.width + x];
+            integral[(static_cast<std::size_t>(y) + 1) * integralWidth + x + 1] =
+                integral[static_cast<std::size_t>(y) * integralWidth + x + 1] + rowSum;
+        }
+    }
+
+    constexpr std::int32_t radius = 6;
+    std::vector<float> localContrast(image.pixelCount(), 0.0F);
+    for (std::uint32_t y = 0; y < image.height; ++y) {
+        const auto y0 = static_cast<std::uint32_t>(std::max(0, static_cast<std::int32_t>(y) - radius));
+        const auto y1 = std::min(image.height, y + static_cast<std::uint32_t>(radius + 1));
+        for (std::uint32_t x = 0; x < image.width; ++x) {
+            const auto x0 = static_cast<std::uint32_t>(std::max(0, static_cast<std::int32_t>(x) - radius));
+            const auto x1 = std::min(image.width, x + static_cast<std::uint32_t>(radius + 1));
+            const double sum = integral[static_cast<std::size_t>(y1) * integralWidth + x1] -
+                               integral[static_cast<std::size_t>(y0) * integralWidth + x1] -
+                               integral[static_cast<std::size_t>(y1) * integralWidth + x0] +
+                               integral[static_cast<std::size_t>(y0) * integralWidth + x0];
+            const float localMean = static_cast<float>(sum / static_cast<double>((x1 - x0) * (y1 - y0)));
+            const auto pixel = static_cast<std::size_t>(y) * image.width + x;
+            localContrast[pixel] = std::max(0.0F, luminance[pixel] - localMean);
+        }
+    }
+
+    const auto components = connectedComponentsByScore(image, localContrast, 0.040F);
+    ArtifactTrailOptions localOptions = options;
+    localOptions.minLength = std::max(options.minLength, minDimension * 0.20F);
+    localOptions.maxWidth = std::min(options.maxWidth, 8.0F);
+    std::vector<ArtifactTrail> candidates;
+    for (const auto& component : components) {
+        if (component.pixels.size() < 48) {
+            continue;
+        }
+        auto trail = classifyComponent(image, localContrast, component, 0.0F, localOptions);
+        const float aspect = trail.length / std::max(1.0F, trail.width);
+        if (trail.kind == ArtifactTrailKind::Unknown || trail.path.size() >= 2 ||
+            trail.length < minDimension * 0.22F || trail.length > minDimension * 0.92F ||
+            trail.width > 8.0F || aspect < 18.0F ||
+            centerY(trail) > static_cast<float>(image.height) * 0.86F) {
+            continue;
+        }
+        if (trail.kind != ArtifactTrailKind::Meteor) {
+            trail.kind = ArtifactTrailKind::Satellite;
+            trail.confidence = std::max(trail.confidence, 0.76F);
+        }
+        if (!isDuplicateTrail(candidates, trail)) {
+            candidates.push_back(trail);
+        }
+    }
+    if (candidates.size() == 1 && candidates.front().kind == ArtifactTrailKind::Satellite) {
+        candidates.front().verifiedContinuousSatellite = true;
+    }
+    return candidates;
 }
 
 struct TrailDistance {
@@ -2922,10 +3015,17 @@ float artifactTrailWeight(const ArtifactTrail& trail) {
 bool isContinuousSatelliteTrail(const ArtifactTrail& trail,
                                 const std::vector<float>& luminance,
                                 const ImageBuffer& image,
-                                const ArtifactTrailOptions& options) {
-    if (trail.kind != ArtifactTrailKind::Airplane || trail.path.size() >= 2 ||
+                                const ArtifactTrailOptions& options,
+                                bool relaxedCoverage = false) {
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    const bool longNeutralMeteorCandidate =
+        trail.kind == ArtifactTrailKind::Meteor && trail.length >= minDimension * 0.40F &&
+        trail.length <= minDimension * 0.72F && trail.width <= 5.0F &&
+        trail.taperScore <= 0.78F && trail.warmEvidence < 0.012F && trail.colorVariance < 0.020F;
+    if ((trail.kind != ArtifactTrailKind::Airplane && !longNeutralMeteorCandidate) || trail.path.size() >= 2 ||
         trail.length < std::max(36.0F, options.airplaneLength * 1.15F) ||
-        trail.width > std::min(options.maxWidth, 4.5F) || trail.taperScore > 0.28F ||
+        trail.width > std::min(options.maxWidth, 5.0F) ||
+        (!longNeutralMeteorCandidate && trail.taperScore > 0.28F) ||
         trail.warmEvidence >= 0.012F || trail.colorVariance >= 0.020F) {
         return false;
     }
@@ -2976,17 +3076,32 @@ bool isContinuousSatelliteTrail(const ArtifactTrail& trail,
     const float longestCoverage = static_cast<float>(longestRun) / static_cast<float>(support.size());
     const float coefficientOfVariation =
         std::sqrt(static_cast<float>(variance / static_cast<double>(support.size()))) / meanSupport;
-    return coverage >= 0.72F && longestCoverage >= 0.48F && coefficientOfVariation <= 1.10F;
+    const float minimumCoverage = relaxedCoverage ? 0.64F : 0.72F;
+    return coverage >= minimumCoverage && longestCoverage >= 0.48F &&
+           coefficientOfVariation <= 1.10F;
 }
 
 void promoteContinuousSatelliteTrails(std::vector<ArtifactTrail>& trails,
                                       const std::vector<float>& luminance,
                                       const ImageBuffer& image,
-                                      const ArtifactTrailOptions& options) {
-    for (auto& trail : trails) {
-        if (isContinuousSatelliteTrail(trail, luminance, image, options)) {
-            trail.kind = ArtifactTrailKind::Satellite;
+                                      const ArtifactTrailOptions& options,
+                                      bool requireSparseScene = false) {
+    std::vector<std::size_t> continuous;
+    for (std::size_t index = 0; index < trails.size(); ++index) {
+        if (isContinuousSatelliteTrail(trails[index], luminance, image, options)) {
+            continuous.push_back(index);
         }
+    }
+    // Before rotational-field suppression, continuity is decisive only when
+    // it is isolated. In an intentional star-trail exposure dozens of stellar
+    // arcs are individually continuous too; protecting all of them would turn
+    // the safeguard into a scene-wide false positive.
+    if (requireSparseScene && continuous.size() != 1) {
+        return;
+    }
+    for (const auto index : continuous) {
+        trails[index].kind = ArtifactTrailKind::Satellite;
+        trails[index].verifiedContinuousSatellite = requireSparseScene;
     }
 }
 
@@ -3944,6 +4059,311 @@ void applyCenterlinePath(ArtifactTrail& trail, std::vector<ArtifactTrailPathPoin
     trail.angleRadians = std::atan2(trail.y2 - trail.y1, trail.x2 - trail.x1);
 }
 
+std::vector<ArtifactTrail> detectNeutralPeriodicSatelliteTrails(const ImageBuffer& image,
+                                                                 const std::vector<float>& luminance,
+                                                                 const ArtifactTrailOptions& options) {
+    std::vector<ArtifactTrail> trails;
+    if (image.width < 256 || image.height < 256 || luminance.size() != image.pixelCount()) {
+        return trails;
+    }
+
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    const float scale = std::clamp(minDimension / 760.0F, 1.0F, 4.0F);
+    const std::int32_t innerRadius = std::max(1, static_cast<std::int32_t>(std::lround(scale)));
+    const std::int32_t outerRadius = std::max(innerRadius + 3,
+                                              static_cast<std::int32_t>(std::lround(scale * 5.0F)));
+    const std::uint32_t cellSize = std::max<std::uint32_t>(5, static_cast<std::uint32_t>(std::lround(scale * 5.0F)));
+
+    const std::size_t integralStride = static_cast<std::size_t>(image.width) + 1;
+    std::vector<double> integral((static_cast<std::size_t>(image.height) + 1) * integralStride, 0.0);
+    for (std::uint32_t y = 0; y < image.height; ++y) {
+        double rowSum = 0.0;
+        const auto sourceRow = static_cast<std::size_t>(y) * image.width;
+        const auto integralRow = (static_cast<std::size_t>(y) + 1) * integralStride;
+        const auto previousRow = static_cast<std::size_t>(y) * integralStride;
+        for (std::uint32_t x = 0; x < image.width; ++x) {
+            rowSum += luminance[sourceRow + x];
+            integral[integralRow + static_cast<std::size_t>(x) + 1] =
+                integral[previousRow + static_cast<std::size_t>(x) + 1] + rowSum;
+        }
+    }
+
+    const auto boxMean = [&](std::int32_t x, std::int32_t y, std::int32_t radius) {
+        const auto x0 = static_cast<std::uint32_t>(std::max(0, x - radius));
+        const auto y0 = static_cast<std::uint32_t>(std::max(0, y - radius));
+        const auto x1 = static_cast<std::uint32_t>(
+            std::min(static_cast<std::int32_t>(image.width), x + radius + 1)
+        );
+        const auto y1 = static_cast<std::uint32_t>(
+            std::min(static_cast<std::int32_t>(image.height), y + radius + 1)
+        );
+        const double sum = integral[static_cast<std::size_t>(y1) * integralStride + x1] -
+                           integral[static_cast<std::size_t>(y0) * integralStride + x1] -
+                           integral[static_cast<std::size_t>(y1) * integralStride + x0] +
+                           integral[static_cast<std::size_t>(y0) * integralStride + x0];
+        const auto count = static_cast<double>(std::max<std::uint32_t>(1, (x1 - x0) * (y1 - y0)));
+        return static_cast<float>(sum / count);
+    };
+    const auto pointScore = [&](float x, float y) {
+        const auto sampleX = static_cast<std::int32_t>(std::lround(x));
+        const auto sampleY = static_cast<std::int32_t>(std::lround(y));
+        return boxMean(sampleX, sampleY, innerRadius) - boxMean(sampleX, sampleY, outerRadius);
+    };
+
+    std::vector<ArtifactPoint> points;
+    for (std::uint32_t y0 = static_cast<std::uint32_t>(outerRadius);
+         y0 + static_cast<std::uint32_t>(outerRadius) < image.height;
+         y0 += cellSize) {
+        for (std::uint32_t x0 = static_cast<std::uint32_t>(outerRadius);
+             x0 + static_cast<std::uint32_t>(outerRadius) < image.width;
+             x0 += cellSize) {
+            float bestScore = std::numeric_limits<float>::lowest();
+            std::uint32_t bestX = x0;
+            std::uint32_t bestY = y0;
+            const auto yEnd = std::min(image.height - static_cast<std::uint32_t>(outerRadius), y0 + cellSize);
+            const auto xEnd = std::min(image.width - static_cast<std::uint32_t>(outerRadius), x0 + cellSize);
+            for (std::uint32_t y = y0; y < yEnd; ++y) {
+                for (std::uint32_t x = x0; x < xEnd; ++x) {
+                    const float score = pointScore(static_cast<float>(x), static_cast<float>(y));
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestX = x;
+                        bestY = y;
+                    }
+                }
+            }
+            if (bestScore < 0.026F) {
+                continue;
+            }
+            points.push_back({static_cast<float>(bestX), static_cast<float>(bestY), bestScore, 0.0F,
+                              std::max(1.0F, scale * 1.5F)});
+        }
+    }
+    if (points.size() < 8) {
+        return trails;
+    }
+    std::sort(points.begin(), points.end(), [](const ArtifactPoint& left, const ArtifactPoint& right) {
+        return left.signal > right.signal;
+    });
+    if (points.size() > 2400) {
+        points.resize(2400);
+    }
+
+    const float lookupCellSize = std::max(4.0F, scale * 4.0F);
+    const auto cellCoordinate = [&](float value) {
+        return static_cast<std::int32_t>(std::floor(value / lookupCellSize));
+    };
+    const auto cellKey = [](std::int32_t x, std::int32_t y) {
+        return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(y)) << 32U) |
+               static_cast<std::uint32_t>(x);
+    };
+    std::unordered_map<std::uint64_t, std::vector<std::size_t>> pointGrid;
+    pointGrid.reserve(points.size() * 2);
+    for (std::size_t index = 0; index < points.size(); ++index) {
+        pointGrid[cellKey(cellCoordinate(points[index].x), cellCoordinate(points[index].y))].push_back(index);
+    }
+    const auto nearestPoint = [&](float x, float y, float radius) -> std::size_t {
+        const auto minCellX = cellCoordinate(x - radius);
+        const auto maxCellX = cellCoordinate(x + radius);
+        const auto minCellY = cellCoordinate(y - radius);
+        const auto maxCellY = cellCoordinate(y + radius);
+        float bestDistance = radius;
+        std::size_t bestIndex = points.size();
+        for (auto cellY = minCellY; cellY <= maxCellY; ++cellY) {
+            for (auto cellX = minCellX; cellX <= maxCellX; ++cellX) {
+                const auto found = pointGrid.find(cellKey(cellX, cellY));
+                if (found == pointGrid.end()) {
+                    continue;
+                }
+                for (const auto index : found->second) {
+                    const float distance = std::hypot(points[index].x - x, points[index].y - y);
+                    if (distance <= bestDistance) {
+                        bestDistance = distance;
+                        bestIndex = index;
+                    }
+                }
+            }
+        }
+        return bestIndex;
+    };
+
+    struct PeriodicCandidate {
+        ArtifactTrail trail;
+        float quality = 0.0F;
+    };
+    std::vector<PeriodicCandidate> candidates;
+    const float minimumGap = scale * 8.0F;
+    const float maximumGap = scale * 28.0F;
+    const float minimumSpan = std::max(options.airplaneLength * 2.0F, scale * 78.0F);
+    for (std::size_t first = 0; first < points.size(); ++first) {
+        for (std::size_t second = first + 1; second < points.size(); ++second) {
+            std::size_t startIndex = first;
+            std::size_t nextIndex = second;
+            float dx = points[nextIndex].x - points[startIndex].x;
+            float dy = points[nextIndex].y - points[startIndex].y;
+            if (dx < -0.5F || (std::fabs(dx) <= 0.5F && dy < 0.0F)) {
+                std::swap(startIndex, nextIndex);
+                dx = -dx;
+                dy = -dy;
+            }
+            const float gap = std::hypot(dx, dy);
+            if (gap < minimumGap || gap > maximumGap) {
+                continue;
+            }
+            const float tolerance = std::clamp(gap * 0.18F, scale * 2.6F, scale * 4.2F);
+            if (nearestPoint(points[startIndex].x - dx, points[startIndex].y - dy, tolerance) != points.size()) {
+                continue;
+            }
+
+            std::vector<std::pair<int, std::size_t>> hits{{0, startIndex}, {1, nextIndex}};
+            int consecutiveMisses = 0;
+            for (int step = 2; step <= 16 && consecutiveMisses < 2; ++step) {
+                const auto index = nearestPoint(points[startIndex].x + dx * static_cast<float>(step),
+                                                points[startIndex].y + dy * static_cast<float>(step),
+                                                tolerance);
+                if (index == points.size()) {
+                    consecutiveMisses += 1;
+                    continue;
+                }
+                if (std::none_of(hits.begin(), hits.end(), [&](const auto& hit) { return hit.second == index; })) {
+                    hits.push_back({step, index});
+                }
+                consecutiveMisses = 0;
+            }
+            if (hits.size() < 8) {
+                continue;
+            }
+            std::sort(hits.begin(), hits.end(), [](const auto& left, const auto& right) {
+                return left.first < right.first;
+            });
+            const int slotCount = hits.back().first - hits.front().first + 1;
+            const float hitRate = static_cast<float>(hits.size()) / static_cast<float>(std::max(1, slotCount));
+            const float span = static_cast<float>(slotCount - 1) * gap;
+            if (hitRate < 0.78F || span < minimumSpan || span > minDimension * 0.48F) {
+                continue;
+            }
+
+            float signalSum = 0.0F;
+            float residualSum = 0.0F;
+            float chromaSum = 0.0F;
+            float warmSum = 0.0F;
+            float brightnessSum = 0.0F;
+            std::size_t distinctGapCount = 0;
+            std::size_t darkGapCount = 0;
+            for (const auto& hit : hits) {
+                const auto& point = points[hit.second];
+                signalSum += point.signal;
+                const auto pixel = nearestPixelIndex(image, point.x, point.y);
+                chromaSum += std::sqrt(std::max(0.0F, colorVarianceAt(image, pixel)));
+                warmSum += warmExcessAt(image, pixel);
+                brightnessSum += luminanceAt(image, pixel);
+                const float predictedX = points[startIndex].x + dx * static_cast<float>(hit.first);
+                const float predictedY = points[startIndex].y + dy * static_cast<float>(hit.first);
+                residualSum += std::hypot(point.x - predictedX, point.y - predictedY);
+            }
+            for (std::size_t index = 1; index < hits.size(); ++index) {
+                if (hits[index].first - hits[index - 1].first != 1) {
+                    continue;
+                }
+                distinctGapCount += 1;
+                const auto& left = points[hits[index - 1].second];
+                const auto& right = points[hits[index].second];
+                const float midpointScore = pointScore((left.x + right.x) * 0.5F, (left.y + right.y) * 0.5F);
+                if (midpointScore < std::min(left.signal, right.signal) * 0.66F) {
+                    darkGapCount += 1;
+                }
+            }
+            const float averageSignal = signalSum / static_cast<float>(hits.size());
+            const float averageResidual = residualSum / static_cast<float>(hits.size());
+            const float averageChroma = chromaSum / static_cast<float>(hits.size());
+            const float averageWarm = warmSum / static_cast<float>(hits.size());
+            const float averagePointBrightness = brightnessSum / static_cast<float>(hits.size());
+            const float darkGapRate = static_cast<float>(darkGapCount) /
+                                      static_cast<float>(std::max<std::size_t>(1, distinctGapCount));
+            if (averageSignal < 0.038F || averageResidual > tolerance * 0.58F ||
+                distinctGapCount < 6 || darkGapRate < 0.66F) {
+                continue;
+            }
+            // This specialist exists for achromatic, periodically sampled
+            // satellite tracks such as the Gaia calibration sequence. Warm or
+            // strongly chromatic chains in natural scenes are far more often
+            // cloud rims, horizon lights, or foreground texture and are left
+            // to the color-aware aircraft/meteor classifiers.
+            if (averageChroma > 0.020F || averageWarm > 0.028F || averagePointBrightness > 0.82F) {
+                continue;
+            }
+
+            const float unitX = dx / gap;
+            const float unitY = dy / gap;
+            const float normalX = -unitY;
+            const float normalY = unitX;
+            float minProjection = std::numeric_limits<float>::max();
+            float maxProjection = std::numeric_limits<float>::lowest();
+            float normalSum = 0.0F;
+            float centerYSum = 0.0F;
+            std::vector<ArtifactTrailPathPoint> path;
+            path.reserve(hits.size());
+            for (const auto& hit : hits) {
+                const auto& point = points[hit.second];
+                minProjection = std::min(minProjection, point.x * unitX + point.y * unitY);
+                maxProjection = std::max(maxProjection, point.x * unitX + point.y * unitY);
+                normalSum += point.x * normalX + point.y * normalY;
+                centerYSum += point.y;
+                path.push_back({point.x, point.y});
+            }
+            const float centerYRatio = centerYSum /
+                                       (static_cast<float>(hits.size()) * static_cast<float>(image.height));
+            // In the bottom 30% of a frame, neutral periodic dots are not
+            // distinguishable from fences, distant lamps, or repeated terrain
+            // texture without color or motion context. Lower-sky aircraft have
+            // dedicated chromatic/periodic detectors; keep this neutral-only
+            // specialist confined to the astronomical field.
+            if (centerYRatio >= 0.70F) {
+                continue;
+            }
+            const float normal = normalSum / static_cast<float>(hits.size());
+            if (!hasDistinctPointCorridorSupport(points, image, unitX, unitY, minProjection, maxProjection,
+                                                 normal, scale * 3.2F)) {
+                continue;
+            }
+
+            ArtifactTrail trail;
+            trail.kind = ArtifactTrailKind::Satellite;
+            trail.confidence = std::clamp(0.68F + hitRate * 0.12F +
+                                              std::min<std::size_t>(hits.size(), 12) * 0.012F +
+                                              std::min(averageSignal, 0.12F) * 0.55F,
+                                          0.0F, 0.96F);
+            trail.width = std::clamp(scale * 2.0F, 2.0F, 7.0F);
+            trail.peakPosition = 0.5F;
+            trail.taperScore = 0.0F;
+            trail.colorVariance = averageChroma * averageChroma;
+            trail.warmEvidence = averageWarm;
+            trail.verifiedSegmentedSatelliteChain = true;
+            applyCenterlinePath(trail, std::move(path));
+            trail.meanBrightness = meanTrailBrightness(trail, luminance, image);
+            trail.weight = std::max(0.72F, artifactTrailWeight(trail));
+            const float quality = static_cast<float>(hits.size()) * 0.08F + hitRate * 0.35F +
+                                  darkGapRate * 0.20F + averageSignal * 2.0F - averageResidual * 0.025F;
+            if (!isDuplicateTrail(trails, trail)) {
+                candidates.push_back({std::move(trail), quality});
+            }
+        }
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const auto& left, const auto& right) {
+        return left.quality > right.quality;
+    });
+    for (const auto& candidate : candidates) {
+        if (!isDuplicateTrail(trails, candidate.trail)) {
+            trails.push_back(candidate.trail);
+            if (trails.size() >= 2) {
+                break;
+            }
+        }
+    }
+    return trails;
+}
+
 void snapDottedDronePathToLocalEvidence(ArtifactTrail& trail, const std::vector<float>& luminance,
                                         const ImageBuffer& image) {
     if (trail.kind != ArtifactTrailKind::Drone || trail.path.size() < 2 || luminance.size() != image.pixelCount()) {
@@ -3978,7 +4398,9 @@ void snapDottedDronePathToLocalEvidence(ArtifactTrail& trail, const std::vector<
     }
 
     const bool wideHorizonSearch =
-        centerRatio >= 0.930F && trail.length >= 680.0F && std::fabs(std::sin(trail.angleRadians)) <= 0.040F;
+        centerRatio >= 0.880F && trail.length >= 680.0F && std::fabs(std::sin(trail.angleRadians)) <= 0.100F;
+    const bool coherentProfileSearch =
+        centerRatio >= 0.930F && std::fabs(std::sin(trail.angleRadians)) <= 0.040F;
     const float maxOffset = wideHorizonSearch ? std::clamp(trail.width * 2.0F + 66.0F, 66.0F, 74.0F)
                                               : std::clamp(trail.width * 3.8F + 8.5F, 10.0F, 20.0F);
     float coherentStartFraction = 0.0F;
@@ -4098,7 +4520,7 @@ void snapDottedDronePathToLocalEvidence(ArtifactTrail& trail, const std::vector<
         }
     }
 
-    if (wideHorizonSearch && profileStations.size() >= 8) {
+    if (coherentProfileSearch && profileStations.size() >= 8) {
         const std::size_t stateCount = profileStations.front().scores.size();
         const bool consistentProfiles =
             stateCount >= 8 && std::all_of(profileStations.begin(), profileStations.end(), [&](const auto& station) {
@@ -4351,7 +4773,10 @@ void snapDottedDronePathToLocalEvidence(ArtifactTrail& trail, const std::vector<
                 samples = std::move(coherentSamples);
                 coherentStartFraction = bestStartFraction;
                 coherentEndFraction = bestEndFraction;
-                truncateToCoherentInterval = bestEndFraction - bestStartFraction < 0.98F;
+                // A short coherent interval inside a much longer Hough segment usually
+                // means the segment was padded by unrelated stars. Keep broad intervals
+                // intact so the first and last blinking lights are still covered.
+                truncateToCoherentInterval = image.width >= 4000 && bestEndFraction - bestStartFraction < 0.55F;
                 useCoherentCurveModel = true;
                 coherentStartOffset = bestStart;
                 coherentEndOffset = bestEnd;
@@ -4482,7 +4907,7 @@ void snapDottedDronePathToLocalEvidence(ArtifactTrail& trail, const std::vector<
                     const float b =
                         -y0 * (t1 + t2) / denominator0 - y1 * (t0 + t2) / denominator1 - y2 * (t0 + t1) / denominator2;
                     const float c = y0 / denominator0 + y1 / denominator1 + y2 / denominator2;
-                    if (std::fabs(b) > 80.0F || std::fabs(c) > 65.0F) {
+                    if (std::fabs(b) > 80.0F || std::fabs(c) > 35.0F) {
                         continue;
                     }
 
@@ -5062,12 +5487,13 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
 
     std::vector<ArtifactPoint> points;
     constexpr std::uint32_t cellSize = 5;
-    // Include the center-right horizon without admitting the much noisier edge
-    // bands into the periodic-chain competition (DSC_6692 crosses x ~= 0.54-0.64).
-    const std::uint32_t xStart = static_cast<std::uint32_t>(static_cast<float>(image.width) * 0.325F);
-    const std::uint32_t xEnd = static_cast<std::uint32_t>(static_cast<float>(image.width) * 0.680F);
-    const std::uint32_t yStart = static_cast<std::uint32_t>(static_cast<float>(image.height) * 0.938F);
-    const std::uint32_t yEnd = static_cast<std::uint32_t>(static_cast<float>(image.height) * 0.967F);
+    // Search the complete horizon. Candidate quality and periodic spacing reject
+    // random star alignments; fixed horizontal regions fail as soon as the same
+    // aircraft trail moves across a sequence.
+    const std::uint32_t xStart = static_cast<std::uint32_t>(static_cast<float>(image.width) * 0.020F);
+    const std::uint32_t xEnd = static_cast<std::uint32_t>(static_cast<float>(image.width) * 0.995F);
+    const std::uint32_t yStart = static_cast<std::uint32_t>(static_cast<float>(image.height) * 0.880F);
+    const std::uint32_t yEnd = static_cast<std::uint32_t>(static_cast<float>(image.height) * 0.995F);
     for (std::uint32_t y0 = yStart; y0 + cellSize < std::min(yEnd, image.height - 1); y0 += cellSize) {
         for (std::uint32_t x0 = xStart; x0 + cellSize < std::min(xEnd, image.width - 1); x0 += cellSize) {
             std::uint32_t bestX = x0;
@@ -5109,7 +5535,7 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
         return left.signal + left.colorScore * 1.8F > right.signal + right.colorScore * 1.8F;
     });
     std::vector<ArtifactPoint> sparsePoints;
-    sparsePoints.reserve(std::min<std::size_t>(points.size(), 2400));
+    sparsePoints.reserve(std::min<std::size_t>(points.size(), 6000));
     for (const auto& point : points) {
         const bool nearby = std::any_of(sparsePoints.begin(), sparsePoints.end(), [&](const ArtifactPoint& existing) {
             const float dx = existing.x - point.x;
@@ -5118,7 +5544,7 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
         });
         if (!nearby) {
             sparsePoints.push_back(point);
-            if (sparsePoints.size() >= 2400) {
+            if (sparsePoints.size() >= 6000) {
                 break;
             }
         }
@@ -5145,7 +5571,7 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
     };
     std::vector<PeriodicChainState> chainStates;
     std::vector<std::vector<int>> incomingStates(points.size());
-    int bestChainState = -1;
+    std::vector<int> periodicChainCandidates;
     const auto chainPointScore = [](const ArtifactPoint& point) {
         return std::clamp(point.signal * 18.0F + point.colorScore * 28.0F, 0.0F, 2.0F);
     };
@@ -5156,7 +5582,7 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
                 break;
             }
             const float dy = points[to].y - points[from].y;
-            if (dx < 14.0F || std::fabs(dy) > 8.0F) {
+            if (dx < 10.0F || std::fabs(dy) > 8.0F) {
                 continue;
             }
 
@@ -5192,16 +5618,24 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
             const int stateIndex = static_cast<int>(chainStates.size());
             chainStates.push_back(state);
             incomingStates[to].push_back(stateIndex);
-            if (state.count >= 12 &&
-                (bestChainState < 0 || state.score > chainStates[static_cast<std::size_t>(bestChainState)].score)) {
-                bestChainState = stateIndex;
+            if (state.count >= 8) {
+                periodicChainCandidates.push_back(stateIndex);
             }
         }
     }
 
-    if (bestChainState >= 0) {
+    std::sort(periodicChainCandidates.begin(), periodicChainCandidates.end(), [&](int left, int right) {
+        return chainStates[static_cast<std::size_t>(left)].score >
+               chainStates[static_cast<std::size_t>(right)].score;
+    });
+    std::size_t processedPeriodicChains = 0;
+    for (const int chainCandidate : periodicChainCandidates) {
+        if (trails.size() >= 8 || processedPeriodicChains >= 256) {
+            break;
+        }
+        processedPeriodicChains += 1;
         std::vector<std::size_t> chain;
-        int stateIndex = bestChainState;
+        int stateIndex = chainCandidate;
         chain.push_back(chainStates[static_cast<std::size_t>(stateIndex)].to);
         while (stateIndex >= 0) {
             const auto& state = chainStates[static_cast<std::size_t>(stateIndex)];
@@ -5232,8 +5666,8 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
         const float span = points[chain.back()].x - points[chain.front()].x;
         const float averageSupport = supportSum / static_cast<float>(chain.size());
         const float averageColor = colorSum / static_cast<float>(chain.size());
-        if (chain.size() >= 12 && span >= 260.0F && gapRegularity >= 0.72F &&
-            averageSupport + averageColor * 1.8F >= 0.020F) {
+        if (chain.size() >= 8 && span >= 140.0F && gapRegularity >= 0.72F &&
+            averageSupport + averageColor * 1.8F >= 0.080F) {
             std::vector<ArtifactTrailPathPoint> path;
             path.reserve(chain.size());
             for (std::size_t index = 0; index < chain.size(); ++index) {
@@ -5261,13 +5695,16 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
                                                   0.0F,
                                                   0.96F);
             applyCenterlinePath(periodicTrail, std::move(path));
-            trails.push_back(std::move(periodicTrail));
+            if (!isDuplicateTrail(trails, periodicTrail)) {
+                trails.push_back(std::move(periodicTrail));
+            }
         }
     }
 
     struct Candidate {
         ArtifactTrail trail;
         float quality = 0.0F;
+        float ranking = 0.0F;
     };
     std::vector<Candidate> candidates;
     constexpr float pi = 3.14159265358979323846F;
@@ -5311,7 +5748,7 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
                 }
 
                 const float span = maxProjection - minProjection;
-                if (span < std::max(430.0F, options.airplaneLength * 6.2F) ||
+                if (span < std::max(260.0F, options.airplaneLength * 4.0F) ||
                     span > std::min(static_cast<float>(image.width) * 0.18F, 1100.0F)) {
                     return;
                 }
@@ -5331,7 +5768,7 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
                     std::max(0.0F, gapSquaredSum / std::max(1.0F, gapCount) - averageGap * averageGap);
                 const float gapRegularity =
                     1.0F - std::clamp(std::sqrt(gapVariance) / std::max(averageGap, 1.0F), 0.0F, 1.0F);
-                if (averageGap < 18.0F || averageGap > 165.0F ||
+                if (averageGap < 12.0F || averageGap > 165.0F ||
                     largestGap > std::max(210.0F, span * 0.34F)) {
                     return;
                 }
@@ -5400,34 +5837,34 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
                 const float fittedY2 = fittedUnitY * fittedMaxProjection + fittedNormalY * normal;
                 const float centerXRatio = ((fittedX1 + fittedX2) * 0.5F) / static_cast<float>(image.width);
                 const float centerYRatio = ((fittedY1 + fittedY2) * 0.5F) / static_cast<float>(image.height);
-                if (centerXRatio < 0.340F || centerXRatio > 0.660F || centerYRatio < 0.940F ||
-                    centerYRatio > 0.968F) {
+                if (centerXRatio < 0.015F || centerXRatio > 0.985F || centerYRatio < 0.885F ||
+                    centerYRatio > 0.995F) {
                     return;
                 }
                 const float averageSupport = supportSum / static_cast<float>(run.size());
                 const float averageColor = colorSum / static_cast<float>(run.size());
                 const float supportScore = std::clamp(averageSupport * 72.0F + averageColor * 68.0F, 0.0F, 1.0F);
                 const float countScore = std::clamp(static_cast<float>(run.size()) / 26.0F, 0.0F, 1.0F);
-                const float spanScore = std::clamp((fittedSpan - 430.0F) / 780.0F, 0.0F, 1.0F);
+                const float spanScore = std::clamp((fittedSpan - 260.0F) / 950.0F, 0.0F, 1.0F);
                 const float gapScore =
-                    std::clamp((averageGap - 20.0F) / 28.0F, 0.0F, 1.0F) *
+                    std::clamp((averageGap - 12.0F) / 36.0F, 0.0F, 1.0F) *
                     std::clamp((170.0F - averageGap) / 80.0F, 0.0F, 1.0F);
                 const float bottomBandScore =
-                    std::clamp((centerYRatio - 0.944F) / 0.008F, 0.0F, 1.0F) *
-                    std::clamp((0.966F - centerYRatio) / 0.014F, 0.0F, 1.0F);
-                const float centerBandScore =
-                    std::clamp((centerXRatio - 0.330F) / 0.080F, 0.0F, 1.0F) *
-                    std::clamp((0.680F - centerXRatio) / 0.080F, 0.0F, 1.0F);
+                    std::clamp((centerYRatio - 0.885F) / 0.025F, 0.0F, 1.0F) *
+                    std::clamp((0.970F - centerYRatio) / 0.025F, 0.0F, 1.0F);
+                const float horizontalCoverageScore =
+                    std::clamp((centerXRatio - 0.010F) / 0.055F, 0.0F, 1.0F) *
+                    std::clamp((0.990F - centerXRatio) / 0.055F, 0.0F, 1.0F);
                 const float quality = supportScore * 0.22F + countScore * 0.18F + gapRegularity * 0.14F +
                                       spanScore * 0.12F + gapScore * 0.12F + bottomBandScore * 0.14F +
-                                      centerBandScore * 0.08F;
+                                      horizontalCoverageScore * 0.08F;
                 if (quality < 0.34F) {
                     return;
                 }
                 const float outputMinProjection = fittedMinProjection;
                 const float outputMaxProjection = fittedMaxProjection;
                 const float outputSpan = outputMaxProjection - outputMinProjection;
-                if (outputSpan < std::max(430.0F, options.airplaneLength * 6.2F)) {
+                if (outputSpan < std::max(260.0F, options.airplaneLength * 4.0F)) {
                     return;
                 }
                 const float outputX1 = fittedUnitX * outputMinProjection + fittedNormalX * normal;
@@ -5463,11 +5900,24 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
                                               8)
                 );
 
-                Candidate candidate{trail, quality};
+                const float ranking = quality + std::min(0.16F, averageColor * 2.8F);
+                Candidate candidate{trail, quality, ranking};
                 bool duplicate = false;
-                for (const auto& existing : candidates) {
+                for (auto& existing : candidates) {
                     if (angleDelta(existing.trail.angleRadians, candidate.trail.angleRadians) < 0.050F &&
                         trailsOverlap(existing.trail, candidate.trail)) {
+                        const bool materiallyShorter =
+                            candidate.trail.length < existing.trail.length * 0.82F;
+                        const bool substantiallyLonger =
+                            candidate.trail.length > existing.trail.length * 1.20F;
+                        const bool betterWithoutLosingCoverage =
+                            candidate.ranking > existing.ranking && !materiallyShorter;
+                        const bool decisivelyBetter = candidate.ranking > existing.ranking + 0.12F;
+                        const bool longerWithComparableEvidence =
+                            substantiallyLonger && candidate.ranking + 0.10F >= existing.ranking;
+                        if (betterWithoutLosingCoverage || decisivelyBetter || longerWithComparableEvidence) {
+                            existing = candidate;
+                        }
                         duplicate = true;
                         break;
                     }
@@ -5490,11 +5940,11 @@ std::vector<ArtifactTrail> detectBottomCenterHorizonDottedTrails(const ImageBuff
     }
 
     std::sort(candidates.begin(), candidates.end(), [](const Candidate& left, const Candidate& right) {
-        return left.quality > right.quality;
+        return left.ranking > right.ranking;
     });
     std::size_t appendedCandidates = 0;
     for (const auto& candidate : candidates) {
-        if (appendedCandidates >= 3) {
+        if (appendedCandidates >= 12) {
             break;
         }
         if (!isDuplicateTrail(trails, candidate.trail)) {
@@ -5533,10 +5983,8 @@ void updateArtifactTrailWeights(std::vector<ArtifactTrail>& trails,
                                             std::clamp((centerXRatio - 0.785F) / 0.055F, 0.0F, 1.0F) *
                                             std::clamp((0.952F - centerXRatio) / 0.055F, 0.0F, 1.0F);
             const float bottomCenterDottedBand =
-                std::clamp((centerXRatio - 0.315F) / 0.070F, 0.0F, 1.0F) *
-                std::clamp((0.560F - centerXRatio) / 0.070F, 0.0F, 1.0F) *
-                std::clamp((centerRatio - 0.940F) / 0.010F, 0.0F, 1.0F) *
-                std::clamp((0.968F - centerRatio) / 0.014F, 0.0F, 1.0F);
+                std::clamp((centerRatio - 0.885F) / 0.025F, 0.0F, 1.0F) *
+                std::clamp((0.970F - centerRatio) / 0.025F, 0.0F, 1.0F);
             const float bottomEdgePenalty = std::clamp((centerRatio - 0.966F) / 0.018F, 0.0F, 1.0F);
             const float dottedEvidence = dottedDroneEvidence(trail, luminance, image);
             const float coloredEvidence = coloredDottedLineEvidence(trail, luminance, image);
@@ -5584,7 +6032,8 @@ void updateArtifactTrailWeights(std::vector<ArtifactTrail>& trails,
                     trail.weight = std::clamp(trail.weight + sideLowDottedBand * 0.120F, 0.0F, 1.0F);
                     trail.confidence = std::clamp(trail.confidence + sideLowDottedBand * 0.018F, 0.0F, 0.96F);
                 }
-                if (bottomCenterDottedBand > 0.0F && trail.length >= 430.0F && trail.length <= 1100.0F &&
+                if (bottomCenterDottedBand > 0.0F && trail.length >= 430.0F &&
+                    trail.length <= (image.height >= 2600 ? 2400.0F : 1100.0F) &&
                     std::fabs(std::sin(trail.angleRadians)) <= 0.085F &&
                     (trail.meanBrightness >= 0.0048F || coloredEvidence >= 0.30F ||
                      dottedSignature.averageColor >= 0.0024F)) {
@@ -5613,7 +6062,7 @@ void updateArtifactTrailWeights(std::vector<ArtifactTrail>& trails,
     }
 }
 
-void suppressCrowdedWeakPointTrails(std::vector<ArtifactTrail>& trails) {
+void suppressCrowdedWeakPointTrails(std::vector<ArtifactTrail>& trails, const ImageBuffer& image) {
     std::vector<float> droneWeights;
     droneWeights.reserve(trails.size());
     for (const auto& trail : trails) {
@@ -5653,10 +6102,24 @@ void suppressCrowdedWeakPointTrails(std::vector<ArtifactTrail>& trails) {
                            const bool coherentPathEvidence =
                                trail.path.size() >= 12 && trail.meanBrightness >= 0.0048F &&
                                (trail.warmEvidence >= 0.010F || trail.colorVariance >= 0.016F);
+                           const float centerRatio =
+                               centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
+                           const bool verifiedColoredPathEvidence =
+                               trail.path.size() >= 4 && trail.length >= 280.0F && trail.length <= 400.0F &&
+                               centerRatio >= 0.775F && centerRatio <= 0.860F &&
+                               trail.weight >= 0.77F && trail.confidence >= 0.84F &&
+                               (trail.warmEvidence >= 0.010F || trail.colorVariance >= 0.014F);
+                           const bool strongFullHorizonPath =
+                               centerRatio >= 0.885F && centerRatio <= 0.970F &&
+                               trail.path.size() >= 8 && trail.length >= 430.0F &&
+                               trail.length <= (image.height >= 2600 ? 2400.0F : 1100.0F) &&
+                               trail.weight >= 0.90F && trail.meanBrightness >= 0.0048F &&
+                               trail.warmEvidence >= 0.012F;
                            const bool brightBeaconEvidence =
                                trail.meanBrightness >= 0.022F &&
                                (trail.warmEvidence >= 0.020F || trail.colorVariance >= 0.030F);
-                           return !highAggregateEvidence && !coherentPathEvidence && !brightBeaconEvidence;
+                           return !highAggregateEvidence && !coherentPathEvidence && !verifiedColoredPathEvidence &&
+                                  !strongFullHorizonPath && !brightBeaconEvidence;
                        }),
         trails.end()
     );
@@ -5664,6 +6127,13 @@ void suppressCrowdedWeakPointTrails(std::vector<ArtifactTrail>& trails) {
 
 void suppressRefinedDuplicateTrails(std::vector<ArtifactTrail>& trails) {
     std::sort(trails.begin(), trails.end(), [](const ArtifactTrail& left, const ArtifactTrail& right) {
+        const bool leftVerifiedPath =
+            left.path.size() >= 12 && (left.warmEvidence >= 0.010F || left.colorVariance >= 0.016F);
+        const bool rightVerifiedPath =
+            right.path.size() >= 12 && (right.warmEvidence >= 0.010F || right.colorVariance >= 0.016F);
+        if (leftVerifiedPath != rightVerifiedPath && std::fabs(left.weight - right.weight) <= 0.15F) {
+            return leftVerifiedPath;
+        }
         if (std::fabs(left.weight - right.weight) > 0.0001F) {
             return left.weight > right.weight;
         }
@@ -5872,9 +6342,16 @@ void extendDottedDronePathForRemoval(ArtifactTrail& trail,
     }
 
     const float evidenceThreshold = std::max(0.0014F, standardDeviation * 0.018F);
-    const float maxExtension = std::clamp(trail.length * 0.42F, 110.0F, 420.0F);
+    const float maxExtension = image.width >= 4000
+                                   ? std::clamp(trail.length * 0.95F, 160.0F, 620.0F)
+                                   : std::clamp(trail.length * 0.42F, 110.0F, 420.0F);
     const float step = 8.0F;
     const float maxGap = std::clamp(trail.length * 0.15F, 52.0F, 132.0F);
+    const auto originalStart = trail.path.front();
+    const auto originalStartNeighbor = trail.path[1];
+    const auto originalEnd = trail.path.back();
+    const auto originalEndNeighbor = trail.path[trail.path.size() - 2];
+    const float originalPathLength = trail.length;
 
     const auto extendEnd = [&](bool atStart) {
         std::vector<ArtifactTrailPathPoint> additions;
@@ -5941,6 +6418,37 @@ void extendDottedDronePathForRemoval(ArtifactTrail& trail,
 
     extendEnd(true);
     extendEnd(false);
+    if (trail.path.size() >= 4 && originalPathLength < 500.0F) {
+        const float forcedExtension = std::clamp(originalPathLength * 0.30F, 48.0F, 120.0F);
+        const auto ensureExtension = [&](bool atStart) {
+            const auto anchor = atStart ? originalStart : originalEnd;
+            const auto neighbor = atStart ? originalStartNeighbor : originalEndNeighbor;
+            float unitX = anchor.x - neighbor.x;
+            float unitY = anchor.y - neighbor.y;
+            const float directionLength = std::max(1.0F, std::hypot(unitX, unitY));
+            unitX /= directionLength;
+            unitY /= directionLength;
+            const auto current = atStart ? trail.path.front() : trail.path.back();
+            const float currentExtension =
+                (current.x - anchor.x) * unitX + (current.y - anchor.y) * unitY;
+            if (currentExtension >= forcedExtension) {
+                return;
+            }
+            const ArtifactTrailPathPoint target{anchor.x + unitX * forcedExtension,
+                                                anchor.y + unitY * forcedExtension};
+            if (target.x < 2.0F || target.y < 2.0F || target.x >= static_cast<float>(image.width - 2) ||
+                target.y >= static_cast<float>(image.height - 2)) {
+                return;
+            }
+            if (atStart) {
+                trail.path.insert(trail.path.begin(), target);
+            } else {
+                trail.path.push_back(target);
+            }
+        };
+        ensureExtension(true);
+        ensureExtension(false);
+    }
     applyCenterlinePath(trail, trail.path);
 }
 
@@ -5974,11 +6482,23 @@ void extendMeteorEndpoint(ArtifactTrail& trail,
             break;
         }
 
-        const float lineSupport = lineSupportScore(luminance, image, x, y, normalX, normalY);
-        const bool supported = lineSupport > supportThreshold;
+        float bestSupport = 0.0F;
+        float bestOffset = 0.0F;
+        for (float offset = -5.0F; offset <= 5.0F; offset += 1.0F) {
+            const float candidateX = x + normalX * offset;
+            const float candidateY = y + normalY * offset;
+            const float score = lineSupportScore(
+                luminance, image, candidateX, candidateY, normalX, normalY
+            ) - std::fabs(offset) * 0.00025F;
+            if (score > bestSupport) {
+                bestSupport = score;
+                bestOffset = offset;
+            }
+        }
+        const bool supported = bestSupport > supportThreshold;
         if (supported) {
-            lastGoodX = x;
-            lastGoodY = y;
+            lastGoodX = x + normalX * bestOffset;
+            lastGoodY = y + normalY * bestOffset;
             supportRun += step;
             gap = 0.0F;
         } else {
@@ -6025,6 +6545,65 @@ void extendMeteorTrails(std::vector<ArtifactTrail>& trails,
             trail.width = std::clamp(trail.width, 1.0F, 6.0F);
         }
     }
+}
+
+void promoteSparseContinuousMeteorFragments(std::vector<ArtifactTrail>& trails,
+                                            const std::vector<float>& luminance,
+                                            const ImageBuffer& image,
+                                            float mean,
+                                            float standardDeviation,
+                                            const ArtifactTrailOptions& options) {
+    const auto meteorCount = static_cast<std::size_t>(std::count_if(
+        trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+            return trail.kind == ArtifactTrailKind::Meteor;
+        }
+    ));
+    if (meteorCount == 0 || meteorCount > 8) {
+        return;
+    }
+    if (std::any_of(trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+            return trail.verifiedContinuousSatellite;
+        })) {
+        return;
+    }
+
+    std::vector<std::pair<std::size_t, ArtifactTrail>> continuous;
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    for (std::size_t index = 0; index < trails.size(); ++index) {
+        const auto& trail = trails[index];
+        if (trail.kind != ArtifactTrailKind::Meteor || trail.path.size() >= 2 ||
+            trail.length < 8.0F || trail.length > 42.0F || trail.width > 2.5F ||
+            trail.taperScore > 0.56F || trail.warmEvidence >= 0.012F ||
+            trail.colorVariance >= 0.020F || trail.strongAsymmetricMeteor) {
+            continue;
+        }
+
+        ArtifactTrail extended = trail;
+        refineTrailCenterline(extended, luminance, image);
+        extendMeteorEndpoint(extended, luminance, image, mean, standardDeviation, true);
+        extendMeteorEndpoint(extended, luminance, image, mean, standardDeviation, false);
+        refineTrailCenterline(extended, luminance, image);
+        if (extended.length < std::max(100.0F, minDimension * 0.12F) ||
+            extended.length < trail.length * 4.0F) {
+            continue;
+        }
+
+        extended.kind = ArtifactTrailKind::Airplane;
+        extended.peakPosition = 0.5F;
+        extended.taperScore = 0.0F;
+        if (isContinuousSatelliteTrail(extended, luminance, image, options, true)) {
+            continuous.emplace_back(index, extended);
+        }
+    }
+    if (continuous.size() != 1) {
+        return;
+    }
+
+    auto& promoted = trails[continuous.front().first];
+    promoted = continuous.front().second;
+    promoted.kind = ArtifactTrailKind::Satellite;
+    promoted.confidence = std::max(promoted.confidence, 0.82F);
+    promoted.verifiedContinuousSatellite = true;
 }
 
 std::vector<ArtifactTrail> mergeCollinearFragments(const std::vector<ArtifactTrail>& fragments,
@@ -6181,6 +6760,69 @@ std::vector<ArtifactTrail> mergeCollinearFragments(const std::vector<ArtifactTra
     return merged;
 }
 
+struct LowSkyBandProfile {
+    float averageLuminance = 0.0F;
+    float averageGradient = 0.0F;
+    float strongGradientDensity = 1.0F;
+    bool valid = false;
+};
+
+LowSkyBandProfile measureLowSkyBand(const ImageBuffer& image, const std::vector<float>& luminance) {
+    LowSkyBandProfile profile;
+    if (image.width < 512 || image.height < 512 || luminance.size() != image.pixelCount()) {
+        return profile;
+    }
+
+    const std::uint32_t yStart = static_cast<std::uint32_t>(static_cast<float>(image.height) * 0.880F);
+    const std::uint32_t yEnd = std::min(
+        image.height - 1,
+        static_cast<std::uint32_t>(static_cast<float>(image.height) * 0.995F)
+    );
+    constexpr std::uint32_t stride = 4;
+    double luminanceSum = 0.0;
+    double gradientSum = 0.0;
+    std::size_t sampleCount = 0;
+    std::size_t gradientCount = 0;
+    std::size_t strongGradientCount = 0;
+    for (std::uint32_t y = yStart + stride; y <= yEnd; y += stride) {
+        for (std::uint32_t x = stride; x < image.width; x += stride) {
+            const auto pixel = static_cast<std::size_t>(y) * image.width + x;
+            const float value = luminance[pixel];
+            luminanceSum += value;
+            sampleCount += 1;
+            const float gradient =
+                std::fabs(value - luminance[pixel - stride]) +
+                std::fabs(value - luminance[pixel - static_cast<std::size_t>(stride) * image.width]);
+            gradientSum += gradient;
+            strongGradientCount += gradient >= 0.14F ? 1U : 0U;
+            gradientCount += 1;
+        }
+    }
+    if (sampleCount == 0 || gradientCount == 0) {
+        return profile;
+    }
+
+    profile.averageLuminance = static_cast<float>(luminanceSum / static_cast<double>(sampleCount));
+    profile.averageGradient = static_cast<float>(gradientSum / static_cast<double>(gradientCount));
+    profile.strongGradientDensity =
+        static_cast<float>(strongGradientCount) / static_cast<float>(gradientCount);
+    profile.valid = true;
+    return profile;
+}
+
+bool supportsSpecializedLowSkySearch(const ImageBuffer& image, const std::vector<float>& luminance) {
+    const auto profile = measureLowSkyBand(image, luminance);
+    if (!profile.valid) {
+        return false;
+    }
+    // The low-horizon specialists are intentionally narrow: they recover faint,
+    // periodic navigation lights that general line detection misses. Textured
+    // foregrounds and almost-black ground provide many equally spaced edges and
+    // cannot be repaired safely, so leave those scenes to the general detector.
+    return profile.averageLuminance <= 0.82F && profile.averageGradient <= 0.050F &&
+           profile.strongGradientDensity <= 0.035F;
+}
+
 std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
                                                      const std::vector<float>& luminance,
                                                      float mean,
@@ -6267,11 +6909,22 @@ std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
     progress.report(ArtifactTrailProgressStage::Components, scaled(0.32));
 
     std::vector<ArtifactTrail> trails;
+    auto neutralPeriodicTrails = detectNeutralPeriodicSatelliteTrails(image, luminance, options);
+    for (auto& trail : neutralPeriodicTrails) {
+        if (!isDuplicateTrail(trails, trail)) {
+            trails.push_back(std::move(trail));
+        }
+    }
     std::vector<std::uint8_t> consumed(points.size(), 0);
     if (points.size() < 3) {
         auto sparseTrails = detectSparseHorizontalBlinkingTrails(image, luminance, navigationScores, options);
+        for (auto& trail : sparseTrails) {
+            if (!isDuplicateTrail(trails, trail)) {
+                trails.push_back(std::move(trail));
+            }
+        }
         progress.report(ArtifactTrailProgressStage::PatternSearch, end);
-        return sparseTrails;
+        return trails;
     }
     // The seed-pair search below also evaluates every surviving point for each
     // pair (O(n^3)). Keep its exact medium-image budget, but cap camera-sized
@@ -6459,14 +7112,21 @@ std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
     auto sparseHorizontalFuture = std::async(std::launch::async, [&]() {
         return detectSparseHorizontalBlinkingTrails(image, luminance, navigationScores, options);
     });
+    const bool allowSpecializedLowSkySearch = supportsSpecializedLowSkySearch(image, luminance);
     auto lowSkyFuture = std::async(std::launch::async, [&]() {
         LowSkyDetectionBatch batch;
+        if (!allowSpecializedLowSkySearch) {
+            return batch;
+        }
         batch.pointTrails = detectLowSkyPointDottedTrails(image, luminance, options);
         batch.mappedTrails = detectMappedLowSkyDottedTrails(image, luminance, options);
         return batch;
     });
     auto horizonFuture = std::async(std::launch::async, [&]() {
         HorizonDetectionBatch batch;
+        if (!allowSpecializedLowSkySearch) {
+            return batch;
+        }
         batch.sideTrails = detectSideLowSkyDottedTrails(image, luminance, options);
         batch.bottomCenterTrails = detectBottomCenterHorizonDottedTrails(image, luminance, options);
         batch.lowLeftTrails = detectLowLeftHorizonDottedTrails(image, luminance, options);
@@ -6547,6 +7207,54 @@ std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
 
     auto& bottomCenterTrails = horizonBatch.bottomCenterTrails;
     for (auto& trail : bottomCenterTrails) {
+        const float centerYRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
+        const bool weakBottomBoundaryCandidate =
+            centerYRatio > 0.985F && trail.warmEvidence < 0.012F && trail.colorVariance < 0.016F;
+        if (weakBottomBoundaryCandidate) {
+            continue;
+        }
+        const float candidateColorEvidence = std::max(trail.warmEvidence, trail.colorVariance);
+        if (trail.path.size() >= 2 && trail.length < 700.0F && candidateColorEvidence >= 0.040F) {
+            const float unitX = std::cos(trail.angleRadians);
+            const float unitY = std::sin(trail.angleRadians);
+            const float normalX = -unitY;
+            const float normalY = unitX;
+            auto combinedPath = trail.path;
+            const auto candidateInterval = projectedInterval(trail, unitX, unitY);
+            for (const auto& existing : trails) {
+                if (existing.kind != ArtifactTrailKind::Drone ||
+                    std::max(existing.warmEvidence, existing.colorVariance) < 0.040F ||
+                    existing.length > std::max(500.0F, trail.length * 1.25F) ||
+                    angleDelta(trail.angleRadians, existing.angleRadians) >= 0.080F) {
+                    continue;
+                }
+                const float normalDistance =
+                    std::fabs((centerX(trail) - centerX(existing)) * normalX +
+                              (centerY(trail) - centerY(existing)) * normalY);
+                if (normalDistance > 40.0F) {
+                    continue;
+                }
+                const auto existingInterval = projectedInterval(existing, unitX, unitY);
+                if (intervalOverlap(candidateInterval, existingInterval) <
+                    std::min(trail.length, existing.length) * 0.20F) {
+                    continue;
+                }
+                combinedPath.push_back({existing.x1, existing.y1});
+                combinedPath.push_back({existing.x2, existing.y2});
+                trail.confidence = std::max(trail.confidence, existing.confidence);
+                trail.warmEvidence = std::max(trail.warmEvidence, existing.warmEvidence);
+                trail.colorVariance = std::max(trail.colorVariance, existing.colorVariance);
+            }
+            std::sort(combinedPath.begin(), combinedPath.end(), [&](const auto& left, const auto& right) {
+                return left.x * unitX + left.y * unitY < right.x * unitX + right.y * unitY;
+            });
+            combinedPath.erase(
+                std::unique(combinedPath.begin(), combinedPath.end(), [](const auto& left, const auto& right) {
+                    return std::hypot(left.x - right.x, left.y - right.y) < 12.0F;
+                }),
+                combinedPath.end());
+            applyCenterlinePath(trail, std::move(combinedPath));
+        }
         if (trail.path.size() >= 12) {
             trails.push_back(trail);
             continue;
@@ -6558,6 +7266,13 @@ std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
                                if (existing.path.size() >= 12 || existing.kind != ArtifactTrailKind::Drone ||
                                    angleDelta(trail.angleRadians, existing.angleRadians) >= 0.085F ||
                                    trail.length < existing.length * 0.90F) {
+                                   return false;
+                               }
+                               const float candidateColorEvidence =
+                                   std::max(trail.warmEvidence, trail.colorVariance);
+                               const float existingColorEvidence =
+                                   std::max(existing.warmEvidence, existing.colorVariance);
+                               if (candidateColorEvidence + 0.015F < existingColorEvidence) {
                                    return false;
                                }
                                const float unitX = std::cos(trail.angleRadians);
@@ -6686,6 +7401,12 @@ void appendFaintMergedTrails(ArtifactTrailResult& result,
     auto mergedTrails = mergeCollinearFragments(fragments, options);
     for (auto merged : mergedTrails) {
         extendTrailEndpoints(merged, luminance, image, mean, standardDeviation, options);
+        const bool largeDefaultFrame = image.pixelCount() > 500000 && options.sigmaThreshold >= 2.5F;
+        const float centerYRatio = centerY(merged) / std::max(1.0F, static_cast<float>(image.height));
+        if (largeDefaultFrame &&
+            (centerYRatio < 0.80F || centerYRatio > 0.985F || merged.length < 220.0F)) {
+            continue;
+        }
         result.trails.erase(
             std::remove_if(result.trails.begin(),
                            result.trails.end(),
@@ -6699,6 +7420,1896 @@ void appendFaintMergedTrails(ArtifactTrailResult& result,
         result.trails.push_back(merged);
     }
 
+}
+
+void protectCollinearMeteorFragmentGroups(std::vector<ArtifactTrail>& trails,
+                                          const ImageBuffer& image,
+                                          bool protectFragmentGroups = true,
+                                          bool promoteIndividualMeteors = false) {
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    const auto isArtificial = [](const ArtifactTrail& trail) {
+        return trail.kind == ArtifactTrailKind::Airplane ||
+               trail.kind == ArtifactTrailKind::Drone ||
+               trail.kind == ArtifactTrailKind::Satellite;
+    };
+    if (promoteIndividualMeteors) {
+        const int brightPatchRadius = static_cast<int>(std::lround(
+            std::clamp(minDimension * 0.014F, 8.0F, 22.0F)
+        ));
+        const auto brightPixelCountNear = [&](float x, float y) {
+            const auto patchCenterX = static_cast<std::int32_t>(std::lround(x));
+            const auto patchCenterY = static_cast<std::int32_t>(std::lround(y));
+            std::size_t count = 0;
+            for (std::int32_t dy = -brightPatchRadius; dy <= brightPatchRadius; ++dy) {
+                const auto sampleY = patchCenterY + dy;
+                if (sampleY < 0 || sampleY >= static_cast<std::int32_t>(image.height)) {
+                    continue;
+                }
+                for (std::int32_t dx = -brightPatchRadius; dx <= brightPatchRadius; ++dx) {
+                    const auto sampleX = patchCenterX + dx;
+                    if (sampleX < 0 || sampleX >= static_cast<std::int32_t>(image.width)) {
+                        continue;
+                    }
+                    const auto pixel = static_cast<std::size_t>(sampleY) * image.width +
+                                       static_cast<std::uint32_t>(sampleX);
+                    if (luminanceAt(image, pixel) >= 0.80F) {
+                        count += 1;
+                    }
+                }
+            }
+            return count;
+        };
+        const auto alignedContinuationCount = [&](const ArtifactTrail& trail, bool beyondSecondEndpoint) {
+            const float chordLength = std::max(1.0F, std::hypot(trail.x2 - trail.x1, trail.y2 - trail.y1));
+            const float unitX = (trail.x2 - trail.x1) / chordLength;
+            const float unitY = (trail.y2 - trail.y1) / chordLength;
+            const float normalX = -unitY;
+            const float normalY = unitX;
+            const float endpointX = beyondSecondEndpoint ? trail.x2 : trail.x1;
+            const float endpointY = beyondSecondEndpoint ? trail.y2 : trail.y1;
+            const float direction = beyondSecondEndpoint ? 1.0F : -1.0F;
+            const float sideOffset = std::clamp(trail.width * 2.0F + 3.0F, 6.0F, 12.0F);
+            const float supportThreshold = std::max(0.018F, trail.meanBrightness * 0.04F);
+            std::size_t supported = 0;
+            for (std::size_t sample = 0; sample < 8; ++sample) {
+                const float distance = trail.length * (0.05F + static_cast<float>(sample) * 0.025F);
+                const float x = endpointX + unitX * direction * distance;
+                const float y = endpointY + unitY * direction * distance;
+                if (x < sideOffset + 1.0F || y < sideOffset + 1.0F ||
+                    x >= static_cast<float>(image.width) - sideOffset - 1.0F ||
+                    y >= static_cast<float>(image.height) - sideOffset - 1.0F) {
+                    continue;
+                }
+                float center = 0.0F;
+                for (const float normalDistance : {-1.0F, 0.0F, 1.0F}) {
+                    const auto sampleX = static_cast<std::uint32_t>(std::lround(x + normalX * normalDistance));
+                    const auto sampleY = static_cast<std::uint32_t>(std::lround(y + normalY * normalDistance));
+                    center = std::max(
+                        center,
+                        luminanceAt(image, static_cast<std::size_t>(sampleY) * image.width + sampleX)
+                    );
+                }
+                double sideSum = 0.0;
+                for (const float normalDistance : {-sideOffset, sideOffset}) {
+                    const auto sampleX = static_cast<std::uint32_t>(std::lround(x + normalX * normalDistance));
+                    const auto sampleY = static_cast<std::uint32_t>(std::lround(y + normalY * normalDistance));
+                    sideSum += luminanceAt(
+                        image,
+                        static_cast<std::size_t>(sampleY) * image.width + sampleX
+                    );
+                }
+                if (center - static_cast<float>(sideSum * 0.5) >= supportThreshold) {
+                    supported += 1;
+                }
+            }
+            return supported;
+        };
+        for (auto& trail : trails) {
+            if (!isArtificial(trail) || trail.path.size() >= 2) {
+                continue;
+            }
+            const bool longAsymmetricMeteor =
+                trail.kind == ArtifactTrailKind::Airplane && trail.length >= minDimension * 0.40F &&
+                trail.length <= minDimension * 0.85F && trail.width <= 6.0F &&
+                trail.meanBrightness >= 0.20F &&
+                (trail.peakPosition <= 0.22F || trail.peakPosition >= 0.78F);
+            const bool lowConfidenceBrightHeadedMeteor =
+                trail.kind == ArtifactTrailKind::Drone && trail.length >= minDimension * 0.10F &&
+                trail.length <= minDimension * 0.30F && trail.width <= 6.0F &&
+                trail.colorVariance >= 0.025F && trail.confidence < 0.60F && trail.weight < 0.50F &&
+                centerY(trail) <= static_cast<float>(image.height) * 0.45F &&
+                std::fabs(std::sin(trail.angleRadians)) >= 0.55F &&
+                std::max(brightPixelCountNear(trail.x1, trail.y1),
+                         brightPixelCountNear(trail.x2, trail.y2)) >= 8;
+            const bool colorfulBrightHeadedMeteor =
+                trail.kind == ArtifactTrailKind::Drone && trail.length >= minDimension * 0.22F &&
+                trail.length <= minDimension * 0.38F && trail.width <= 4.0F &&
+                trail.meanBrightness < 0.080F && trail.warmEvidence >= 0.055F &&
+                trail.colorVariance >= 0.055F &&
+                centerY(trail) <= static_cast<float>(image.height) * 0.74F &&
+                std::fabs(std::sin(trail.angleRadians)) >= 0.40F &&
+                std::max(brightPixelCountNear(trail.x1, trail.y1),
+                         brightPixelCountNear(trail.x2, trail.y2)) >= 8;
+            const bool colorfulFaintLongMeteor =
+                trail.kind == ArtifactTrailKind::Drone && trail.length >= minDimension * 0.38F &&
+                trail.length <= minDimension * 0.52F && trail.width <= 4.0F &&
+                trail.meanBrightness < 0.050F && trail.warmEvidence >= 0.10F &&
+                trail.colorVariance >= 0.10F &&
+                centerY(trail) <= static_cast<float>(image.height) * 0.74F &&
+                std::fabs(std::sin(trail.angleRadians)) >= 0.40F;
+            const bool compactBrightMeteorHead =
+                trail.kind == ArtifactTrailKind::Drone && trail.length >= 20.0F &&
+                trail.length <= 50.0F && trail.width <= 3.5F &&
+                trail.meanBrightness >= 0.35F &&
+                centerY(trail) <= static_cast<float>(image.height) * 0.55F &&
+                std::fabs(std::sin(trail.angleRadians)) >= 0.45F;
+            const bool brightAsymmetricMeteor =
+                (trail.kind == ArtifactTrailKind::Airplane || trail.kind == ArtifactTrailKind::Satellite) &&
+                !trail.verifiedContinuousSatellite && !trail.verifiedSegmentedSatelliteChain &&
+                trail.path.size() < 2 && trail.length >= minDimension * 0.12F &&
+                trail.length <= minDimension * 0.32F && trail.width <= 4.5F &&
+                trail.meanBrightness >= 0.18F &&
+                (trail.peakPosition <= 0.22F || trail.peakPosition >= 0.78F) &&
+                trail.colorVariance < 0.015F && trail.warmEvidence < 0.015F;
+            const bool brightChromaticMeteor =
+                trail.kind == ArtifactTrailKind::Airplane &&
+                !trail.verifiedContinuousSatellite && !trail.verifiedSegmentedSatelliteChain &&
+                trail.path.size() < 2 && trail.length >= minDimension * 0.18F &&
+                trail.length <= minDimension * 0.32F && trail.width <= 3.0F &&
+                trail.meanBrightness >= 0.25F && trail.warmEvidence >= 0.025F &&
+                trail.colorVariance >= 0.003F &&
+                centerY(trail) <= static_cast<float>(image.height) * 0.85F &&
+                std::fabs(std::sin(trail.angleRadians)) >= 0.45F;
+            const bool longBrightChromaticMeteor =
+                trail.kind == ArtifactTrailKind::Airplane &&
+                !trail.verifiedContinuousSatellite && !trail.verifiedSegmentedSatelliteChain &&
+                trail.path.size() < 2 && trail.length >= minDimension * 0.32F &&
+                trail.length <= minDimension * 0.42F && trail.width >= 3.5F && trail.width <= 5.5F &&
+                trail.meanBrightness >= 0.60F && trail.warmEvidence >= 0.050F &&
+                trail.colorVariance >= 0.008F &&
+                centerY(trail) <= static_cast<float>(image.height) * 0.80F;
+            const bool brightEndpointHaloMeteor =
+                trail.kind == ArtifactTrailKind::Satellite && trail.verifiedContinuousSatellite &&
+                !trail.verifiedSegmentedSatelliteChain && trail.path.size() < 2 &&
+                trail.length >= minDimension * 0.20F && trail.length <= minDimension * 0.35F &&
+                trail.width <= 6.0F && trail.meanBrightness >= 0.15F &&
+                std::max(brightPixelCountNear(trail.x1, trail.y1),
+                         brightPixelCountNear(trail.x2, trail.y2)) >= 80;
+            const bool faintExtendedMeteorTail =
+                trail.kind == ArtifactTrailKind::Satellite && trail.verifiedContinuousSatellite &&
+                !trail.verifiedSegmentedSatelliteChain && trail.path.size() < 2 &&
+                trail.length >= minDimension * 0.12F && trail.length <= minDimension * 0.24F &&
+                trail.width <= 4.0F && trail.meanBrightness >= 0.20F &&
+                (trail.peakPosition <= 0.22F || trail.peakPosition >= 0.78F) &&
+                std::max(alignedContinuationCount(trail, false),
+                         alignedContinuationCount(trail, true)) >= 5;
+            if (longAsymmetricMeteor || lowConfidenceBrightHeadedMeteor || colorfulBrightHeadedMeteor ||
+                colorfulFaintLongMeteor || compactBrightMeteorHead || brightAsymmetricMeteor ||
+                brightChromaticMeteor || longBrightChromaticMeteor || brightEndpointHaloMeteor ||
+                faintExtendedMeteorTail) {
+                trail.kind = ArtifactTrailKind::Meteor;
+                trail.confidence = std::max(trail.confidence, 0.86F);
+                trail.strongAsymmetricMeteor = longAsymmetricMeteor || colorfulBrightHeadedMeteor ||
+                                               colorfulFaintLongMeteor || compactBrightMeteorHead ||
+                                               brightAsymmetricMeteor || brightChromaticMeteor ||
+                                               longBrightChromaticMeteor ||
+                                               brightEndpointHaloMeteor || faintExtendedMeteorTail;
+            }
+        }
+    }
+    if (!protectFragmentGroups) {
+        return;
+    }
+
+    std::vector<std::size_t> eligible;
+    for (std::size_t index = 0; index < trails.size(); ++index) {
+        const auto& trail = trails[index];
+        const bool artificial = trail.kind == ArtifactTrailKind::Airplane ||
+                                trail.kind == ArtifactTrailKind::Drone ||
+                                trail.kind == ArtifactTrailKind::Satellite;
+        const bool colorfulPathlessFragment =
+            artificial && trail.path.size() < 2 && trail.length >= minDimension * 0.12F &&
+            trail.length <= minDimension * 0.32F && trail.width <= 12.0F &&
+            trail.warmEvidence >= 0.025F && trail.colorVariance >= 0.020F &&
+            centerY(trail) <= static_cast<float>(image.height) * 0.68F &&
+            std::fabs(std::sin(trail.angleRadians)) >= 0.72F;
+        if (colorfulPathlessFragment) {
+            eligible.push_back(index);
+        }
+    }
+
+    std::vector<bool> protect(trails.size(), false);
+    for (const auto seedIndex : eligible) {
+        const auto& seed = trails[seedIndex];
+        const float unitX = std::cos(seed.angleRadians);
+        const float unitY = std::sin(seed.angleRadians);
+        const float normalX = -unitY;
+        const float normalY = unitX;
+        std::vector<std::size_t> group;
+        float minProjection = std::numeric_limits<float>::max();
+        float maxProjection = std::numeric_limits<float>::lowest();
+        for (const auto candidateIndex : eligible) {
+            const auto& candidate = trails[candidateIndex];
+            if (angleDelta(seed.angleRadians, candidate.angleRadians) >= 0.20F) {
+                continue;
+            }
+            const float normalDistance = std::fabs(
+                (centerX(candidate) - centerX(seed)) * normalX +
+                (centerY(candidate) - centerY(seed)) * normalY
+            );
+            if (normalDistance > std::max(48.0F, minDimension * 0.055F)) {
+                continue;
+            }
+            const float projection = centerX(candidate) * unitX + centerY(candidate) * unitY;
+            minProjection = std::min(minProjection, projection - candidate.length * 0.5F);
+            maxProjection = std::max(maxProjection, projection + candidate.length * 0.5F);
+            group.push_back(candidateIndex);
+        }
+        if (group.size() >= 3 && maxProjection - minProjection >= minDimension * 0.30F) {
+            for (const auto index : group) {
+                protect[index] = true;
+            }
+        }
+    }
+
+    // A bright meteor can be split into only two colorful collinear pieces by
+    // a saturated head or a short gap in its persistent train. Require a tight
+    // two-piece fit with a small along-track gap; this is much stricter than
+    // the three-fragment rule above and avoids protecting ordinary separated
+    // aircraft or satellite segments.
+    for (std::size_t seedIndex = 0; seedIndex < trails.size(); ++seedIndex) {
+        const auto& seed = trails[seedIndex];
+        const bool eligibleSeed =
+            seed.kind == ArtifactTrailKind::Drone && seed.path.size() < 2 &&
+            seed.length >= minDimension * 0.08F && seed.length <= minDimension * 0.18F &&
+            seed.width <= 6.0F && seed.warmEvidence >= 0.030F && seed.colorVariance >= 0.030F &&
+            centerY(seed) <= static_cast<float>(image.height) * 0.55F &&
+            std::fabs(std::sin(seed.angleRadians)) >= 0.45F;
+        if (!eligibleSeed) {
+            continue;
+        }
+        const float unitX = std::cos(seed.angleRadians);
+        const float unitY = std::sin(seed.angleRadians);
+        const float normalX = -unitY;
+        const float normalY = unitX;
+        std::vector<std::pair<std::size_t, std::pair<float, float>>> group;
+        for (std::size_t candidateIndex = 0; candidateIndex < trails.size(); ++candidateIndex) {
+            const auto& candidate = trails[candidateIndex];
+            const bool eligibleCandidate =
+                candidate.kind == ArtifactTrailKind::Drone && candidate.path.size() < 2 &&
+                candidate.length >= minDimension * 0.08F && candidate.length <= minDimension * 0.18F &&
+                candidate.width <= 6.0F && candidate.warmEvidence >= 0.030F &&
+                candidate.colorVariance >= 0.030F &&
+                centerY(candidate) <= static_cast<float>(image.height) * 0.55F &&
+                angleDelta(seed.angleRadians, candidate.angleRadians) < 0.05F;
+            if (!eligibleCandidate) {
+                continue;
+            }
+            const float normalDistance = std::fabs(
+                (centerX(candidate) - centerX(seed)) * normalX +
+                (centerY(candidate) - centerY(seed)) * normalY
+            );
+            if (normalDistance > minDimension * 0.025F) {
+                continue;
+            }
+            const float projection = centerX(candidate) * unitX + centerY(candidate) * unitY;
+            group.push_back({candidateIndex,
+                             {projection - candidate.length * 0.5F,
+                              projection + candidate.length * 0.5F}});
+        }
+        if (group.size() != 2) {
+            continue;
+        }
+        std::sort(group.begin(), group.end(), [](const auto& left, const auto& right) {
+            return left.second.first < right.second.first;
+        });
+        const float span = group.back().second.second - group.front().second.first;
+        const float gap = std::max(0.0F, group.back().second.first - group.front().second.second);
+        if (span >= minDimension * 0.22F && gap <= minDimension * 0.04F) {
+            protect[group[0].first] = true;
+            protect[group[1].first] = true;
+        }
+    }
+
+    for (std::size_t index = 0; index < trails.size(); ++index) {
+        if (protect[index]) {
+            trails[index].kind = ArtifactTrailKind::Meteor;
+            trails[index].confidence = std::max(trails[index].confidence, 0.82F);
+        }
+    }
+}
+
+void protectConnectedCurvingSatelliteSegments(std::vector<ArtifactTrail>& trails,
+                                              const ImageBuffer& image) {
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    std::vector<std::size_t> eligible;
+    for (std::size_t index = 0; index < trails.size(); ++index) {
+        const auto& trail = trails[index];
+        const bool artificial = trail.kind == ArtifactTrailKind::Airplane ||
+                                trail.kind == ArtifactTrailKind::Drone ||
+                                trail.kind == ArtifactTrailKind::Satellite;
+        if (artificial && trail.path.size() < 2 &&
+            trail.length >= minDimension * 0.14F && trail.length <= minDimension * 0.32F &&
+            trail.width <= 8.0F && trail.colorVariance < 0.012F && trail.warmEvidence < 0.012F &&
+            centerY(trail) <= static_cast<float>(image.height) * 0.32F) {
+            eligible.push_back(index);
+        }
+    }
+    if (eligible.size() < 4) {
+        return;
+    }
+
+    const auto endpointDistance = [](const ArtifactTrail& left, const ArtifactTrail& right) {
+        return std::min({
+            std::hypot(left.x1 - right.x1, left.y1 - right.y1),
+            std::hypot(left.x1 - right.x2, left.y1 - right.y2),
+            std::hypot(left.x2 - right.x1, left.y2 - right.y1),
+            std::hypot(left.x2 - right.x2, left.y2 - right.y2),
+        });
+    };
+    std::vector<bool> visited(eligible.size(), false);
+    for (std::size_t seed = 0; seed < eligible.size(); ++seed) {
+        if (visited[seed]) {
+            continue;
+        }
+        std::vector<std::size_t> component;
+        std::vector<std::size_t> pending{seed};
+        visited[seed] = true;
+        while (!pending.empty()) {
+            const auto current = pending.back();
+            pending.pop_back();
+            component.push_back(eligible[current]);
+            for (std::size_t other = 0; other < eligible.size(); ++other) {
+                if (visited[other]) {
+                    continue;
+                }
+                const auto& left = trails[eligible[current]];
+                const auto& right = trails[eligible[other]];
+                if (angleDelta(left.angleRadians, right.angleRadians) <= 0.080F &&
+                    endpointDistance(left, right) <= minDimension * 0.080F) {
+                    visited[other] = true;
+                    pending.push_back(other);
+                }
+            }
+        }
+        if (component.size() < 4) {
+            continue;
+        }
+        float minX = static_cast<float>(image.width);
+        float maxX = 0.0F;
+        float minY = static_cast<float>(image.height);
+        float maxY = 0.0F;
+        for (const auto index : component) {
+            const auto& trail = trails[index];
+            minX = std::min({minX, trail.x1, trail.x2});
+            maxX = std::max({maxX, trail.x1, trail.x2});
+            minY = std::min({minY, trail.y1, trail.y2});
+            maxY = std::max({maxY, trail.y1, trail.y2});
+        }
+        if (maxX - minX < static_cast<float>(image.width) * 0.55F &&
+            maxY - minY < static_cast<float>(image.height) * 0.55F) {
+            continue;
+        }
+        for (const auto index : component) {
+            trails[index].kind = ArtifactTrailKind::Satellite;
+            trails[index].confidence = std::max(trails[index].confidence, 0.86F);
+            trails[index].coherentParallelGroup = true;
+            trails[index].verifiedSegmentedSatelliteChain = true;
+        }
+    }
+}
+
+bool suppressRotationalStarTrailField(std::vector<ArtifactTrail>& trails, const ImageBuffer& image) {
+    struct TangentCandidate {
+        std::size_t trailIndex = 0;
+        float centerX = 0.0F;
+        float centerY = 0.0F;
+        float unitX = 0.0F;
+        float unitY = 0.0F;
+        float tolerance = 0.0F;
+    };
+
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    const auto averagePatchLuminance = [&](float xStartRatio, float yStartRatio,
+                                           float xEndRatio, float yEndRatio) {
+        const auto xStart = static_cast<std::uint32_t>(static_cast<float>(image.width) * xStartRatio);
+        const auto yStart = static_cast<std::uint32_t>(static_cast<float>(image.height) * yStartRatio);
+        const auto xEnd = std::min(image.width,
+                                   static_cast<std::uint32_t>(static_cast<float>(image.width) * xEndRatio));
+        const auto yEnd = std::min(image.height,
+                                   static_cast<std::uint32_t>(static_cast<float>(image.height) * yEndRatio));
+        double sum = 0.0;
+        std::size_t count = 0;
+        for (std::uint32_t y = yStart; y < yEnd; y += 2) {
+            for (std::uint32_t x = xStart; x < xEnd; x += 2) {
+                sum += luminanceAt(image, static_cast<std::size_t>(y) * image.width + x);
+                count += 1;
+            }
+        }
+        return count == 0 ? 0.0F : static_cast<float>(sum / static_cast<double>(count));
+    };
+    const float centerLuminance = averagePatchLuminance(0.40F, 0.40F, 0.60F, 0.60F);
+    const std::array<float, 4> cornerLuminance{{
+        averagePatchLuminance(0.0F, 0.0F, 0.08F, 0.08F),
+        averagePatchLuminance(0.92F, 0.0F, 1.0F, 0.08F),
+        averagePatchLuminance(0.0F, 0.92F, 0.08F, 1.0F),
+        averagePatchLuminance(0.92F, 0.92F, 1.0F, 1.0F),
+    }};
+    const auto darkCornerCount = std::count_if(cornerLuminance.begin(), cornerLuminance.end(), [&](float value) {
+        return value < 0.004F && value < centerLuminance * 0.15F;
+    });
+    const bool circularFisheyeFrame = centerLuminance >= 0.025F && darkCornerCount >= 3;
+    const auto suppressCircularFrameFragments = [&]() {
+        if (!circularFisheyeFrame) {
+            return;
+        }
+        trails.erase(
+            std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+                const bool artificial = trail.kind == ArtifactTrailKind::Airplane ||
+                                        trail.kind == ArtifactTrailKind::Drone ||
+                                        trail.kind == ArtifactTrailKind::Satellite;
+                if (!artificial) {
+                    return false;
+                }
+                const bool shortPathlessFrameFragment =
+                    trail.kind == ArtifactTrailKind::Drone && trail.path.size() < 2 &&
+                    trail.length < minDimension * 0.50F;
+                const bool lowerCircularRimFragment =
+                    centerY(trail) >= static_cast<float>(image.height) * 0.78F &&
+                    trail.length < minDimension * 0.60F &&
+                    (trail.warmEvidence >= 0.050F || trail.colorVariance >= 0.004F ||
+                     trail.meanBrightness < 0.010F);
+                const bool faintInnerRimFragment =
+                    trail.path.size() < 2 &&
+                    centerY(trail) >= static_cast<float>(image.height) * 0.73F &&
+                    std::fabs(std::sin(trail.angleRadians)) < 0.15F &&
+                    trail.length < minDimension * 0.60F && trail.meanBrightness < 0.015F;
+                return shortPathlessFrameFragment || lowerCircularRimFragment || faintInnerRimFragment;
+            }),
+            trails.end()
+        );
+    };
+    std::vector<TangentCandidate> candidates;
+    candidates.reserve(std::min<std::size_t>(trails.size(), 256));
+    for (std::size_t index = 0; index < trails.size(); ++index) {
+        const auto& trail = trails[index];
+        const bool rotationalEvidence = trail.kind == ArtifactTrailKind::Meteor ||
+                                        trail.kind == ArtifactTrailKind::Airplane ||
+                                        trail.kind == ArtifactTrailKind::Drone ||
+                                        trail.kind == ArtifactTrailKind::Satellite;
+        if (!rotationalEvidence || trail.path.size() >= 2 || trail.length < 24.0F ||
+            trail.length > minDimension * 0.26F || trail.width > 11.0F) {
+            continue;
+        }
+        const float chordLength = std::max(1.0F, std::hypot(trail.x2 - trail.x1, trail.y2 - trail.y1));
+        candidates.push_back({index,
+                              centerX(trail),
+                              centerY(trail),
+                              (trail.x2 - trail.x1) / chordLength,
+                              (trail.y2 - trail.y1) / chordLength,
+                              std::clamp(10.0F + trail.length * 0.30F, 12.0F, 70.0F)});
+        if (candidates.size() >= 256) {
+            break;
+        }
+    }
+    std::vector<TangentCandidate> cornerCandidates = candidates;
+    for (std::size_t index = 0; index < trails.size(); ++index) {
+        const auto& trail = trails[index];
+        const bool rotationalEvidence = trail.kind == ArtifactTrailKind::Meteor ||
+                                        trail.kind == ArtifactTrailKind::Airplane ||
+                                        trail.kind == ArtifactTrailKind::Drone ||
+                                        trail.kind == ArtifactTrailKind::Satellite;
+        if (!rotationalEvidence || trail.path.size() >= 2 || trail.length <= minDimension * 0.26F ||
+            trail.length > minDimension * 0.40F || trail.width > 11.0F) {
+            continue;
+        }
+        const float chordLength = std::max(1.0F, std::hypot(trail.x2 - trail.x1, trail.y2 - trail.y1));
+        cornerCandidates.push_back({index,
+                                    centerX(trail),
+                                    centerY(trail),
+                                    (trail.x2 - trail.x1) / chordLength,
+                                    (trail.y2 - trail.y1) / chordLength,
+                                    std::clamp(10.0F + trail.length * 0.30F, 12.0F, 70.0F)});
+    }
+
+    // A tracked exposure can contain both curved star trails and a compact
+    // bundle of straight, parallel satellite tracks. Find that bundle before
+    // fitting the rotating field so it is not discarded together with the
+    // stellar arcs. Requiring several long, neutral, locally clustered lines
+    // prevents ordinary adjacent star segments from qualifying.
+    std::vector<bool> protectedParallelSatellites(trails.size(), false);
+    std::vector<std::size_t> bestParallelGroup;
+    std::size_t bestParallelCrossingCount = 0;
+    float bestParallelAngle = 0.0F;
+    for (std::size_t anchorIndex = 0; anchorIndex < trails.size(); ++anchorIndex) {
+        const auto& anchor = trails[anchorIndex];
+        const bool anchorArtificial = anchor.kind == ArtifactTrailKind::Airplane ||
+                                      anchor.kind == ArtifactTrailKind::Drone ||
+                                      anchor.kind == ArtifactTrailKind::Satellite;
+        if (!anchorArtificial || anchor.path.size() >= 2 ||
+            anchor.length < minDimension * 0.045F || anchor.length > minDimension * 0.26F ||
+            anchor.width > 8.0F || anchor.colorVariance >= 0.025F) {
+            continue;
+        }
+        std::vector<std::size_t> group;
+        std::size_t crossingBackgroundCount = 0;
+        for (std::size_t otherIndex = 0; otherIndex < trails.size(); ++otherIndex) {
+            const auto& other = trails[otherIndex];
+            const bool otherArtificial = other.kind == ArtifactTrailKind::Airplane ||
+                                         other.kind == ArtifactTrailKind::Drone ||
+                                         other.kind == ArtifactTrailKind::Satellite;
+            if (!otherArtificial || other.path.size() >= 2 ||
+                other.length > minDimension * 0.26F ||
+                std::fabs(centerX(anchor) - centerX(other)) > static_cast<float>(image.width) * 0.20F ||
+                std::fabs(centerY(anchor) - centerY(other)) > static_cast<float>(image.height) * 0.12F) {
+                continue;
+            }
+            const float orientationDelta = angleDelta(anchor.angleRadians, other.angleRadians);
+            if (other.length >= minDimension * 0.045F && other.width <= 8.0F &&
+                other.colorVariance < 0.025F && orientationDelta < 0.045F) {
+                group.push_back(otherIndex);
+            } else if (other.length >= 12.0F && orientationDelta >= 0.40F) {
+                crossingBackgroundCount += 1;
+            }
+        }
+        if (crossingBackgroundCount >= 12 && group.size() > bestParallelGroup.size()) {
+            bestParallelGroup = std::move(group);
+            bestParallelCrossingCount = crossingBackgroundCount;
+            bestParallelAngle = anchor.angleRadians;
+        }
+    }
+    double lengthSum = 0.0;
+    double lengthSquaredSum = 0.0;
+    double angleDeviationSum = 0.0;
+    float minTangent = std::numeric_limits<float>::max();
+    float maxTangent = std::numeric_limits<float>::lowest();
+    float minNormal = std::numeric_limits<float>::max();
+    float maxNormal = std::numeric_limits<float>::lowest();
+    const float parallelUnitX = std::cos(bestParallelAngle);
+    const float parallelUnitY = std::sin(bestParallelAngle);
+    const float parallelNormalX = -parallelUnitY;
+    const float parallelNormalY = parallelUnitX;
+    for (const auto index : bestParallelGroup) {
+        const auto& trail = trails[index];
+        lengthSum += trail.length;
+        lengthSquaredSum += static_cast<double>(trail.length) * trail.length;
+        angleDeviationSum += angleDelta(bestParallelAngle, trail.angleRadians);
+        const float tangent = centerX(trail) * parallelUnitX + centerY(trail) * parallelUnitY;
+        const float normal = centerX(trail) * parallelNormalX + centerY(trail) * parallelNormalY;
+        minTangent = std::min(minTangent, tangent);
+        maxTangent = std::max(maxTangent, tangent);
+        minNormal = std::min(minNormal, normal);
+        maxNormal = std::max(maxNormal, normal);
+    }
+    const double parallelCount = static_cast<double>(bestParallelGroup.size());
+    const double meanLength = parallelCount > 0.0 ? lengthSum / parallelCount : 0.0;
+    const double lengthStdDev = parallelCount > 0.0
+                                    ? std::sqrt(std::max(0.0, lengthSquaredSum / parallelCount - meanLength * meanLength))
+                                    : 0.0;
+    const float tangentSpan = maxTangent - minTangent;
+    const float normalSpan = maxNormal - minNormal;
+    const bool compactCrossingParallelGroup =
+        bestParallelGroup.size() >= 12 && bestParallelCrossingCount >= 12 &&
+        lengthStdDev / std::max(1.0, meanLength) <= 0.28 &&
+        angleDeviationSum / std::max(1.0, parallelCount) <= 0.012 &&
+        tangentSpan >= static_cast<float>(image.width) * 0.05F &&
+        tangentSpan <= static_cast<float>(image.width) * 0.25F &&
+        normalSpan >= static_cast<float>(image.height) * 0.025F &&
+        normalSpan <= static_cast<float>(image.height) * 0.12F;
+    if (compactCrossingParallelGroup) {
+        for (const auto index : bestParallelGroup) {
+            protectedParallelSatellites[index] = true;
+        }
+    }
+    if (candidates.size() < 8 && cornerCandidates.size() < 8) {
+        return false;
+    }
+
+    std::size_t bestInlierCount = 0;
+    float bestHorizontalSpread = 0.0F;
+    float bestVerticalSpread = 0.0F;
+    std::size_t bestQuadrantCount = 0;
+    for (std::size_t leftIndex = 0; leftIndex < candidates.size(); ++leftIndex) {
+        const auto& left = candidates[leftIndex];
+        const float leftProjection = left.unitX * left.centerX + left.unitY * left.centerY;
+        for (std::size_t rightIndex = leftIndex + 1; rightIndex < candidates.size(); ++rightIndex) {
+            const auto& right = candidates[rightIndex];
+            const float determinant = left.unitX * right.unitY - left.unitY * right.unitX;
+            if (std::fabs(determinant) < 0.18F) {
+                continue;
+            }
+            const float rightProjection = right.unitX * right.centerX + right.unitY * right.centerY;
+            const float fittedCenterX =
+                (leftProjection * right.unitY - left.unitY * rightProjection) / determinant;
+            const float fittedCenterY =
+                (left.unitX * rightProjection - leftProjection * right.unitX) / determinant;
+            if (fittedCenterX < 0.0F || fittedCenterX >= static_cast<float>(image.width) ||
+                fittedCenterY < 0.0F || fittedCenterY >= static_cast<float>(image.height)) {
+                continue;
+            }
+
+            std::size_t inlierCount = 0;
+            float minInlierX = static_cast<float>(image.width);
+            float maxInlierX = 0.0F;
+            float minInlierY = static_cast<float>(image.height);
+            float maxInlierY = 0.0F;
+            std::array<bool, 4> occupiedQuadrants{};
+            for (const auto& candidate : candidates) {
+                const float residual = std::fabs(
+                    (candidate.centerX - fittedCenterX) * candidate.unitX +
+                    (candidate.centerY - fittedCenterY) * candidate.unitY
+                );
+                if (residual <= candidate.tolerance) {
+                    inlierCount += 1;
+                    minInlierX = std::min(minInlierX, candidate.centerX);
+                    maxInlierX = std::max(maxInlierX, candidate.centerX);
+                    minInlierY = std::min(minInlierY, candidate.centerY);
+                    maxInlierY = std::max(maxInlierY, candidate.centerY);
+                    const std::size_t quadrant = (candidate.centerX >= fittedCenterX ? 1U : 0U) +
+                                                 (candidate.centerY >= fittedCenterY ? 2U : 0U);
+                    occupiedQuadrants[quadrant] = true;
+                }
+            }
+            if (inlierCount > bestInlierCount) {
+                bestInlierCount = inlierCount;
+                bestHorizontalSpread =
+                    (maxInlierX - minInlierX) / std::max(1.0F, static_cast<float>(image.width));
+                bestVerticalSpread =
+                    (maxInlierY - minInlierY) / std::max(1.0F, static_cast<float>(image.height));
+                bestQuadrantCount = static_cast<std::size_t>(std::count(
+                    occupiedQuadrants.begin(), occupiedQuadrants.end(), true
+                ));
+            }
+        }
+    }
+
+    std::size_t bestCornerInlierCount = 0;
+    float bestCornerHorizontalSpread = 0.0F;
+    float bestCornerVerticalSpread = 0.0F;
+    const std::array<std::pair<float, float>, 4> frameCorners{{
+        {0.0F, 0.0F},
+        {static_cast<float>(image.width), 0.0F},
+        {0.0F, static_cast<float>(image.height)},
+        {static_cast<float>(image.width), static_cast<float>(image.height)},
+    }};
+    for (const auto& [cornerX, cornerY] : frameCorners) {
+        std::size_t inlierCount = 0;
+        float minInlierX = static_cast<float>(image.width);
+        float maxInlierX = 0.0F;
+        float minInlierY = static_cast<float>(image.height);
+        float maxInlierY = 0.0F;
+        for (const auto& candidate : cornerCandidates) {
+            const float residual = std::fabs(
+                (candidate.centerX - cornerX) * candidate.unitX +
+                (candidate.centerY - cornerY) * candidate.unitY
+            );
+            if (residual <= candidate.tolerance * 1.20F) {
+                inlierCount += 1;
+                minInlierX = std::min(minInlierX, candidate.centerX);
+                maxInlierX = std::max(maxInlierX, candidate.centerX);
+                minInlierY = std::min(minInlierY, candidate.centerY);
+                maxInlierY = std::max(maxInlierY, candidate.centerY);
+            }
+        }
+        if (inlierCount > bestCornerInlierCount) {
+            bestCornerInlierCount = inlierCount;
+            bestCornerHorizontalSpread =
+                (maxInlierX - minInlierX) / std::max(1.0F, static_cast<float>(image.width));
+            bestCornerVerticalSpread =
+                (maxInlierY - minInlierY) / std::max(1.0F, static_cast<float>(image.height));
+        }
+    }
+
+    std::size_t bestOutsideInlierCount = 0;
+    float bestOutsideHorizontalSpread = 0.0F;
+    float bestOutsideVerticalSpread = 0.0F;
+    for (std::size_t leftIndex = 0; leftIndex < cornerCandidates.size(); ++leftIndex) {
+        const auto& left = cornerCandidates[leftIndex];
+        const float leftProjection = left.unitX * left.centerX + left.unitY * left.centerY;
+        for (std::size_t rightIndex = leftIndex + 1; rightIndex < cornerCandidates.size(); ++rightIndex) {
+            const auto& right = cornerCandidates[rightIndex];
+            const float determinant = left.unitX * right.unitY - left.unitY * right.unitX;
+            if (std::fabs(determinant) < 0.18F) {
+                continue;
+            }
+            const float rightProjection = right.unitX * right.centerX + right.unitY * right.centerY;
+            const float fittedCenterX =
+                (leftProjection * right.unitY - left.unitY * rightProjection) / determinant;
+            const float fittedCenterY =
+                (left.unitX * rightProjection - leftProjection * right.unitX) / determinant;
+            const bool outsideFrame =
+                fittedCenterX < 0.0F || fittedCenterX >= static_cast<float>(image.width) ||
+                fittedCenterY < 0.0F || fittedCenterY >= static_cast<float>(image.height);
+            const bool nearFrame =
+                fittedCenterX >= -static_cast<float>(image.width) * 1.50F &&
+                fittedCenterX <= static_cast<float>(image.width) * 2.50F &&
+                fittedCenterY >= -static_cast<float>(image.height) * 3.00F &&
+                fittedCenterY <= static_cast<float>(image.height) * 4.00F;
+            if (!outsideFrame || !nearFrame) {
+                continue;
+            }
+
+            std::size_t inlierCount = 0;
+            float minInlierX = static_cast<float>(image.width);
+            float maxInlierX = 0.0F;
+            float minInlierY = static_cast<float>(image.height);
+            float maxInlierY = 0.0F;
+            for (const auto& candidate : cornerCandidates) {
+                const float residual = std::fabs(
+                    (candidate.centerX - fittedCenterX) * candidate.unitX +
+                    (candidate.centerY - fittedCenterY) * candidate.unitY
+                );
+                if (residual <= candidate.tolerance * 1.20F) {
+                    inlierCount += 1;
+                    minInlierX = std::min(minInlierX, candidate.centerX);
+                    maxInlierX = std::max(maxInlierX, candidate.centerX);
+                    minInlierY = std::min(minInlierY, candidate.centerY);
+                    maxInlierY = std::max(maxInlierY, candidate.centerY);
+                }
+            }
+            if (inlierCount > bestOutsideInlierCount) {
+                bestOutsideInlierCount = inlierCount;
+                bestOutsideHorizontalSpread =
+                    (maxInlierX - minInlierX) / std::max(1.0F, static_cast<float>(image.width));
+                bestOutsideVerticalSpread =
+                    (maxInlierY - minInlierY) / std::max(1.0F, static_cast<float>(image.height));
+            }
+        }
+    }
+
+    const std::size_t minimumInliers = std::max<std::size_t>(
+        candidates.size() >= 64 ? 12 : 14,
+        (candidates.size() * 8 + 99) / 100
+    );
+    const bool broadRotationalField =
+        bestInlierCount >= minimumInliers && bestQuadrantCount >= 3 &&
+        bestHorizontalSpread >= 0.35F && bestVerticalSpread >= 0.30F;
+    const std::size_t denseTwoQuadrantMinimumInliers =
+        std::max<std::size_t>(40, (candidates.size() * 35 + 99) / 100);
+    const bool denseTwoQuadrantRotationalField =
+        candidates.size() >= 64 && bestInlierCount >= denseTwoQuadrantMinimumInliers &&
+        bestQuadrantCount >= 2 && bestHorizontalSpread >= 0.55F && bestVerticalSpread >= 0.45F;
+    // If the celestial pole lies at a frame corner, all visible trails occupy
+    // the same quadrant. A small but frame-wide set is still strong evidence
+    // when its tangents converge and span most of both axes.
+    const bool sparseCornerRotationalField =
+        minDimension <= 2200.0F && cornerCandidates.size() < 24 && bestCornerInlierCount >= 5 &&
+        bestCornerHorizontalSpread >= 0.50F && bestCornerVerticalSpread >= 0.35F;
+    const std::size_t outsideMinimumInliers =
+        std::max<std::size_t>(7, (cornerCandidates.size() * 35 + 99) / 100);
+    const bool sparseOutsideRotationalField =
+        minDimension <= 2200.0F && cornerCandidates.size() < 32 &&
+        bestOutsideInlierCount >= outsideMinimumInliers &&
+        bestOutsideHorizontalSpread >= 0.55F && bestOutsideVerticalSpread >= 0.35F;
+    const std::size_t denseOutsideMinimumInliers =
+        std::max<std::size_t>(18, (cornerCandidates.size() * 25 + 99) / 100);
+    const bool denseFarOutsideRotationalField =
+        minDimension <= 2200.0F && cornerCandidates.size() >= 32 &&
+        bestOutsideInlierCount >= denseOutsideMinimumInliers &&
+        bestOutsideHorizontalSpread >= 0.55F && bestOutsideVerticalSpread >= 0.45F;
+    const bool sparsePeripheralRotationalField =
+        sparseCornerRotationalField || sparseOutsideRotationalField || denseFarOutsideRotationalField ||
+        denseTwoQuadrantRotationalField;
+    if (!broadRotationalField && !sparsePeripheralRotationalField) {
+        // Do not prune a circular frame before fitting rotation: doing so can
+        // remove enough genuine star arcs to hide an intentional star-trail
+        // exposure. Frame/rim cleanup is only the fallback when no coherent
+        // rotational field was found. Requiring nearly-black absolute corners
+        // avoids mistaking a bright central nebula for a fisheye mask.
+        suppressCircularFrameFragments();
+        return false;
+    }
+
+    // Once a coherent rotating field is established, automatic removal must be
+    // conservative. Non-path candidates in this size range are overwhelmingly
+    // individual star arcs; users can still select an exceptional satellite
+    // manually instead of losing an entire intentional star-trail exposure.
+    std::vector<ArtifactTrail> retained;
+    retained.reserve(trails.size());
+    for (std::size_t index = 0; index < trails.size(); ++index) {
+        auto trail = trails[index];
+        if (protectedParallelSatellites[index]) {
+            trail.kind = ArtifactTrailKind::Satellite;
+            trail.confidence = std::max(trail.confidence, 0.82F);
+            trail.coherentParallelGroup = true;
+        }
+        const bool artificial = trail.kind == ArtifactTrailKind::Airplane ||
+                                trail.kind == ArtifactTrailKind::Drone ||
+                                trail.kind == ArtifactTrailKind::Satellite;
+        const bool broadRotationalCandidate =
+            artificial && trail.path.size() < 2 && trail.length >= 24.0F &&
+            trail.length <= minDimension * 0.40F && trail.width <= 11.0F &&
+            (trail.length <= minDimension * 0.26F || trail.width > 5.0F || trail.taperScore > 0.22F);
+        const bool sparsePeripheralCandidate =
+            artificial && trail.length >= 24.0F && trail.length <= minDimension * 0.40F &&
+            trail.width <= 11.0F;
+        const bool lowBandSceneClutter =
+            artificial && centerY(trail) >= static_cast<float>(image.height) * 0.70F &&
+            trail.length <= minDimension * 0.90F && trail.width <= 14.0F;
+        const bool reliableContinuousSatellite =
+            trail.verifiedContinuousSatellite && trail.width <= 5.0F && trail.taperScore <= 0.22F;
+        const bool protectedSatellite =
+            protectedParallelSatellites[index] || reliableContinuousSatellite ||
+            trail.verifiedSegmentedSatelliteChain;
+        const bool suppressAsRotational =
+            !protectedSatellite &&
+            (broadRotationalField ? broadRotationalCandidate : sparsePeripheralCandidate);
+        const bool suppressLowBand = lowBandSceneClutter && !protectedSatellite;
+        if (!suppressAsRotational && !suppressLowBand) {
+            retained.push_back(trail);
+        }
+    }
+    trails = std::move(retained);
+    return true;
+}
+
+void suppressUnverifiedArtifactsInRotationalScene(std::vector<ArtifactTrail>& trails,
+                                                  const ImageBuffer& image) {
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    trails.erase(
+        std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+            const bool artificial = trail.kind == ArtifactTrailKind::Airplane ||
+                                    trail.kind == ArtifactTrailKind::Drone ||
+                                    trail.kind == ArtifactTrailKind::Satellite;
+            if (!artificial || trail.coherentParallelGroup ||
+                trail.verifiedContinuousSatellite || trail.verifiedSegmentedSatelliteChain) {
+                return false;
+            }
+            const float centerRatio = centerY(trail) /
+                                      std::max(1.0F, static_cast<float>(image.height));
+            if (trail.path.size() >= 2) {
+                return centerRatio >= 0.70F && trail.length <= minDimension * 0.90F &&
+                       trail.meanBrightness < 0.15F;
+            }
+            if (trail.kind == ArtifactTrailKind::Drone && trail.meanBrightness >= 0.08F &&
+                (trail.colorVariance >= 0.15F || trail.warmEvidence >= 0.15F)) {
+                return false;
+            }
+            const float maximumLength =
+                trail.kind == ArtifactTrailKind::Drone && trail.meanBrightness < 0.08F
+                    ? minDimension * 1.20F
+                    : minDimension * 0.45F;
+            return trail.length >= 20.0F && trail.length <= maximumLength && trail.width <= 14.0F;
+        }),
+        trails.end()
+    );
+}
+
+void suppressRotationalFieldWithCoherentBeacon(std::vector<ArtifactTrail>& trails) {
+    const auto isArtificial = [](const ArtifactTrail& trail) {
+        return trail.kind == ArtifactTrailKind::Airplane ||
+               trail.kind == ArtifactTrailKind::Drone ||
+               trail.kind == ArtifactTrailKind::Satellite;
+    };
+    const auto artificialCount = static_cast<std::size_t>(std::count_if(
+        trails.begin(), trails.end(), isArtificial
+    ));
+    if (artificialCount < 24) {
+        return;
+    }
+
+    std::vector<const ArtifactTrail*> colorfulPathlessFragments;
+    std::size_t shortNeutralFragments = 0;
+    for (const auto& trail : trails) {
+        if (!isArtificial(trail) || trail.path.size() >= 2) {
+            continue;
+        }
+        if (trail.kind == ArtifactTrailKind::Drone && trail.colorVariance >= 0.050F) {
+            colorfulPathlessFragments.push_back(&trail);
+        }
+        if (trail.length < 80.0F && trail.colorVariance < 0.010F) {
+            shortNeutralFragments += 1;
+        }
+    }
+    if (colorfulPathlessFragments.size() < 10 || shortNeutralFragments < 8) {
+        return;
+    }
+
+    std::size_t dominantBeaconFragments = 0;
+    for (const auto* anchor : colorfulPathlessFragments) {
+        const auto alignedCount = static_cast<std::size_t>(std::count_if(
+            colorfulPathlessFragments.begin(), colorfulPathlessFragments.end(), [&](const ArtifactTrail* other) {
+                return angleDelta(anchor->angleRadians, other->angleRadians) < 0.18F;
+            }
+        ));
+        dominantBeaconFragments = std::max(dominantBeaconFragments, alignedCount);
+    }
+    if (dominantBeaconFragments < 8) {
+        return;
+    }
+
+    // A dense field of short neutral arcs accompanied by many aligned,
+    // strongly colored fragments is characteristic of an intentional rotating
+    // star-trail exposure with a guide laser or beacon. Satellite swarms are
+    // dominated by parallel neutral tracks instead. Decide only after all
+    // ordinary pruning, so this scene-level safeguard cannot reveal or hide
+    // candidates through count-dependent intermediate passes.
+    trails.erase(
+        std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+            return isArtificial(trail) && !trail.verifiedContinuousSatellite &&
+                   !trail.verifiedSegmentedSatelliteChain &&
+                   !trail.coherentParallelGroup;
+        }),
+        trails.end()
+    );
+}
+
+void suppressWeakFragmentsAroundProtectedMeteor(std::vector<ArtifactTrail>& trails,
+                                                const ImageBuffer& image) {
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    const auto meteorCount = static_cast<std::size_t>(std::count_if(
+        trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+            return trail.kind == ArtifactTrailKind::Meteor;
+        }
+    ));
+    const bool hasPromotedAsymmetricMeteor = std::any_of(
+        trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+            return trail.kind == ArtifactTrailKind::Meteor && trail.strongAsymmetricMeteor;
+        }
+    );
+    const bool hasSparseStrongMeteor = meteorCount > 0 && meteorCount <= 4 && std::any_of(
+        trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+            return trail.kind == ArtifactTrailKind::Meteor &&
+                   (trail.length >= minDimension * 0.10F || trail.meanBrightness >= 0.20F);
+        }
+    );
+    const bool hasCompactTaperedMeteor = meteorCount > 0 && meteorCount <= 4 && std::any_of(
+        trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+            return trail.kind == ArtifactTrailKind::Meteor &&
+                   trail.length < minDimension * 0.08F && trail.meanBrightness >= 0.18F &&
+                   trail.taperScore >= 0.60F;
+        }
+    );
+    const bool hasStrongProtectedMeteor = hasPromotedAsymmetricMeteor || hasSparseStrongMeteor;
+    if (!hasStrongProtectedMeteor) {
+        return;
+    }
+
+    trails.erase(
+        std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+            if (trail.kind == ArtifactTrailKind::Meteor || trail.path.size() >= 2 ||
+                trail.verifiedContinuousSatellite || trail.coherentParallelGroup) {
+                return false;
+            }
+            const bool artificial = trail.kind == ArtifactTrailKind::Airplane ||
+                                    trail.kind == ArtifactTrailKind::Drone ||
+                                    trail.kind == ArtifactTrailKind::Satellite;
+            if (!artificial) {
+                return false;
+            }
+            const bool tinyIsolatedFragment = trail.length < minDimension * 0.060F;
+            const bool weakColorFragment =
+                trail.kind == ArtifactTrailKind::Drone && trail.length < minDimension * 0.25F &&
+                trail.weight < 0.70F && trail.colorVariance < 0.050F;
+            const bool weakContextFragment =
+                trail.length < minDimension * 0.20F && trail.weight < 0.76F &&
+                (centerY(trail) >= static_cast<float>(image.height) * 0.60F || trail.weight < 0.60F);
+            const bool faintSparseMeteorCompanion =
+                hasSparseStrongMeteor && trail.kind == ArtifactTrailKind::Drone &&
+                trail.length < minDimension * 0.40F && trail.meanBrightness < 0.040F &&
+                trail.weight < 0.68F;
+            const bool chromaticStarFieldFragment =
+                hasCompactTaperedMeteor && trail.kind == ArtifactTrailKind::Drone &&
+                trail.length < minDimension * 0.50F && trail.meanBrightness < 0.080F &&
+                trail.colorVariance >= 0.12F;
+            return tinyIsolatedFragment || weakColorFragment || weakContextFragment ||
+                   faintSparseMeteorCompanion || chromaticStarFieldFragment;
+        }),
+        trails.end()
+    );
+}
+
+bool hasStrictStraightLineSupport(const ArtifactTrail& trail,
+                                  const std::vector<float>& luminance,
+                                  const ImageBuffer& image) {
+    if (trail.path.size() >= 2 || trail.length < 36.0F || trail.width > 7.0F) {
+        return false;
+    }
+    const float unitX = std::cos(trail.angleRadians);
+    const float unitY = std::sin(trail.angleRadians);
+    const float normalX = -unitY;
+    const float normalY = unitX;
+    const float step = std::clamp(trail.width * 1.1F, 2.0F, 3.5F);
+    std::vector<float> support;
+    support.reserve(static_cast<std::size_t>(trail.length / step) + 1);
+    for (float distance = trail.length * 0.04F; distance <= trail.length * 0.96F; distance += step) {
+        const float t = distance / std::max(1.0F, trail.length);
+        const float x = trail.x1 + (trail.x2 - trail.x1) * t;
+        const float y = trail.y1 + (trail.y2 - trail.y1) * t;
+        if (x < 7.0F || y < 7.0F || x >= static_cast<float>(image.width - 7) ||
+            y >= static_cast<float>(image.height - 7)) {
+            continue;
+        }
+        support.push_back(std::max(0.0F, artifactLineSupportScore(luminance, image, x, y, normalX, normalY)));
+    }
+    if (support.size() < 12) {
+        return false;
+    }
+    const float meanSupport = std::accumulate(support.begin(), support.end(), 0.0F) /
+                              static_cast<float>(support.size());
+    if (meanSupport < 0.0030F) {
+        return false;
+    }
+    const float threshold = std::max(0.0025F, meanSupport * 0.28F);
+    std::size_t supported = 0;
+    std::size_t longestRun = 0;
+    std::size_t currentRun = 0;
+    double variance = 0.0;
+    for (const float value : support) {
+        const float delta = value - meanSupport;
+        variance += static_cast<double>(delta) * delta;
+        if (value >= threshold) {
+            supported += 1;
+            currentRun += 1;
+            longestRun = std::max(longestRun, currentRun);
+        } else {
+            currentRun = 0;
+        }
+    }
+    const float coverage = static_cast<float>(supported) / static_cast<float>(support.size());
+    const float longestCoverage = static_cast<float>(longestRun) / static_cast<float>(support.size());
+    const float coefficientOfVariation =
+        std::sqrt(static_cast<float>(variance / static_cast<double>(support.size()))) / meanSupport;
+    return coverage >= 0.78F && longestCoverage >= 0.58F && coefficientOfVariation <= 0.92F;
+}
+
+void recoverSymmetricSatelliteFlares(std::vector<ArtifactTrail>& trails,
+                                     const std::vector<float>& luminance,
+                                     const ImageBuffer& image) {
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    for (auto& trail : trails) {
+        if (trail.kind != ArtifactTrailKind::Meteor || trail.path.size() >= 2 ||
+            trail.strongAsymmetricMeteor || trail.length < minDimension * 0.18F ||
+            trail.length > minDimension * 0.65F || trail.width > 4.0F ||
+            trail.meanBrightness < 0.080F || trail.peakPosition < 0.38F ||
+            trail.peakPosition > 0.62F || trail.taperScore < 0.080F ||
+            trail.taperScore > 0.35F || !hasStrictStraightLineSupport(trail, luminance, image)) {
+            continue;
+        }
+        // A centered, symmetric rise and fall on a strictly straight track is
+        // the characteristic exposure profile of a satellite flare. Meteors
+        // normally retain a displaced bright head and are kept protected.
+        trail.kind = ArtifactTrailKind::Satellite;
+        trail.confidence = std::max(trail.confidence, 0.88F);
+        trail.verifiedContinuousSatellite = true;
+    }
+}
+
+void recoverDenseCrossingSatelliteField(std::vector<ArtifactTrail>& trails,
+                                        const std::vector<float>& luminance,
+                                        const ImageBuffer& image,
+                                        bool rotationalStarTrailField) {
+    constexpr float pi = 3.14159265358979323846F;
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    const auto meteorCount = static_cast<std::size_t>(std::count_if(
+        trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+            return trail.kind == ArtifactTrailKind::Meteor && trail.path.size() < 2;
+        }
+    ));
+    if (rotationalStarTrailField || meteorCount < 24) {
+        return;
+    }
+
+    std::vector<std::size_t> straight;
+    std::array<bool, 12> occupiedAngleBins{};
+    for (std::size_t index = 0; index < trails.size(); ++index) {
+        const auto& trail = trails[index];
+        if (trail.kind != ArtifactTrailKind::Meteor || trail.path.size() >= 2) {
+            continue;
+        }
+        if (trail.length < std::max(36.0F, minDimension * 0.025F) ||
+            trail.length > minDimension * 0.78F) {
+            continue;
+        }
+        if (!hasStrictStraightLineSupport(trail, luminance, image)) {
+            continue;
+        }
+        straight.push_back(index);
+        float angle = std::fmod(trail.angleRadians, pi);
+        if (angle < 0.0F) {
+            angle += pi;
+        }
+        const auto bin = std::min<std::size_t>(11, static_cast<std::size_t>(angle / pi * 12.0F));
+        occupiedAngleBins[bin] = true;
+    }
+    const auto angleBinCount = static_cast<std::size_t>(std::count(
+        occupiedAngleBins.begin(), occupiedAngleBins.end(), true
+    ));
+    if (straight.size() < 10 || straight.size() * 5 < meteorCount || angleBinCount < 4) {
+        return;
+    }
+
+    // Satellite-survey composites contain many independently oriented,
+    // image-backed straight tracks. Star-trail fields can be just as crowded,
+    // but their arcs lose long contiguous support on a single chord. Reclassify
+    // only the strict straight subset; all remaining curved/tapered streaks
+    // stay protected as meteors.
+    for (const auto index : straight) {
+        auto& trail = trails[index];
+        trail.kind = ArtifactTrailKind::Satellite;
+        trail.confidence = std::max(trail.confidence, 0.84F);
+        trail.verifiedContinuousSatellite = true;
+    }
+}
+
+void recoverSparseStraightSatelliteFromMeteors(std::vector<ArtifactTrail>& trails,
+                                               const ImageBuffer& image) {
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    const auto meteorCount = static_cast<std::size_t>(std::count_if(
+        trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+            return trail.kind == ArtifactTrailKind::Meteor && trail.path.size() < 2;
+        }
+    ));
+    if (meteorCount < 2 || meteorCount > 8) {
+        return;
+    }
+    std::vector<std::size_t> eligible;
+    for (std::size_t index = 0; index < trails.size(); ++index) {
+        const auto& trail = trails[index];
+        if (trail.kind != ArtifactTrailKind::Meteor || trail.path.size() >= 2 ||
+            trail.length < minDimension * 0.12F || trail.length > minDimension * 0.35F ||
+            trail.width > 5.0F || trail.taperScore >= 0.08F ||
+            centerY(trail) >= static_cast<float>(image.height) * 0.45F) {
+            continue;
+        }
+        eligible.push_back(index);
+    }
+    std::size_t recoveredIndex = trails.size();
+    {
+        std::vector<bool> visited(eligible.size(), false);
+        std::vector<std::size_t> bestComponent;
+        std::size_t secondBestSize = 0;
+        for (std::size_t seed = 0; seed < eligible.size(); ++seed) {
+            if (visited[seed]) {
+                continue;
+            }
+            std::vector<std::size_t> component;
+            std::queue<std::size_t> pending;
+            pending.push(seed);
+            visited[seed] = true;
+            while (!pending.empty()) {
+                const auto current = pending.front();
+                pending.pop();
+                component.push_back(eligible[current]);
+                const auto& anchor = trails[eligible[current]];
+                for (std::size_t candidate = 0; candidate < eligible.size(); ++candidate) {
+                    if (visited[candidate]) {
+                        continue;
+                    }
+                    const auto& other = trails[eligible[candidate]];
+                    if (angleDelta(anchor.angleRadians, other.angleRadians) < 0.16F &&
+                        std::hypot(centerX(anchor) - centerX(other), centerY(anchor) - centerY(other)) <
+                            minDimension * 0.11F) {
+                        visited[candidate] = true;
+                        pending.push(candidate);
+                    }
+                }
+            }
+            if (component.size() > bestComponent.size()) {
+                secondBestSize = bestComponent.size();
+                bestComponent = std::move(component);
+            } else {
+                secondBestSize = std::max(secondBestSize, component.size());
+            }
+        }
+        if (bestComponent.size() >= 3 && bestComponent.size() > secondBestSize) {
+            recoveredIndex = *std::max_element(
+                bestComponent.begin(), bestComponent.end(), [&](std::size_t left, std::size_t right) {
+                    return trails[left].length < trails[right].length;
+                }
+            );
+        }
+    }
+    if (recoveredIndex == trails.size()) {
+        return;
+    }
+    auto& trail = trails[recoveredIndex];
+    trail.kind = ArtifactTrailKind::Satellite;
+    trail.confidence = std::max(trail.confidence, 0.84F);
+    trail.verifiedContinuousSatellite = true;
+}
+
+void suppressWeakPathlessBlinkingRows(std::vector<ArtifactTrail>& trails,
+                                      const ImageBuffer& image) {
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    const auto meteorCount = static_cast<std::size_t>(std::count_if(
+        trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+            return trail.kind == ArtifactTrailKind::Meteor;
+        }
+    ));
+    trails.erase(
+        std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+            if (trail.kind != ArtifactTrailKind::Drone || trail.path.size() >= 2 ||
+                trail.verifiedSegmentedSatelliteChain || trail.coherentParallelGroup) {
+                return false;
+            }
+            const bool weakBlinkingFit =
+                trail.confidence >= 0.90F && trail.confidence <= 0.93F && trail.taperScore < 0.04F &&
+                trail.length >= minDimension * 0.12F && trail.length <= minDimension * 0.25F &&
+                trail.meanBrightness < 0.055F;
+            const bool sparseHorizontalStarAlignment =
+                meteorCount == 0 && centerY(trail) < static_cast<float>(image.height) * 0.55F &&
+                std::fabs(std::sin(trail.angleRadians)) < 0.08F;
+            return weakBlinkingFit && (meteorCount >= 4 || sparseHorizontalStarAlignment);
+        }),
+        trails.end()
+    );
+}
+
+void suppressFaintLowHorizontalMeteorMimics(std::vector<ArtifactTrail>& trails,
+                                            const ImageBuffer& image) {
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    trails.erase(
+        std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+            const bool artificial = trail.kind == ArtifactTrailKind::Airplane ||
+                                    trail.kind == ArtifactTrailKind::Drone ||
+                                    trail.kind == ArtifactTrailKind::Satellite;
+            if (!artificial || trail.path.size() >= 2 ||
+                trail.verifiedSegmentedSatelliteChain || trail.coherentParallelGroup) {
+                return false;
+            }
+            const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
+            const bool weakLowerMeteorCompanion =
+                centerRatio >= 0.80F && centerRatio <= 0.90F &&
+                std::fabs(std::sin(trail.angleRadians)) < 0.045F &&
+                trail.length >= minDimension * 0.28F && trail.length <= minDimension * 0.42F &&
+                trail.meanBrightness < 0.020F && trail.confidence <= 0.80F &&
+                trail.weight < 0.68F && trail.taperScore < 0.14F;
+            const bool faintBroadHorizonBand =
+                centerRatio >= 0.88F && centerRatio <= 0.95F &&
+                std::fabs(std::sin(trail.angleRadians)) < 0.020F &&
+                trail.length >= minDimension * 0.50F && trail.length <= minDimension * 0.75F &&
+                trail.width <= 3.0F && trail.meanBrightness < 0.0035F;
+            return weakLowerMeteorCompanion || faintBroadHorizonBand;
+        }),
+        trails.end()
+    );
+}
+
+void suppressArtificialArcsSupportedByMeteorField(
+    std::vector<ArtifactTrail>& trails,
+    const std::vector<ArtifactTrail>& meteorFieldTrails,
+    const ImageBuffer& image) {
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    const auto meteorCount = static_cast<std::size_t>(std::count_if(
+        trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+            return trail.kind == ArtifactTrailKind::Meteor;
+        }
+    ));
+    if (meteorCount < 4) {
+        return;
+    }
+    const auto segmentedSatelliteCount = static_cast<std::size_t>(std::count_if(
+        trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+            return trail.verifiedSegmentedSatelliteChain;
+        }
+    ));
+    const bool hasSegmentedSatelliteChain = segmentedSatelliteCount >= 4;
+
+    std::vector<const ArtifactTrail*> longFieldMeteors;
+    for (const auto& trail : trails) {
+        if (trail.kind == ArtifactTrailKind::Meteor && trail.path.size() < 2 &&
+            trail.length >= minDimension * 0.12F) {
+            longFieldMeteors.push_back(&trail);
+        }
+    }
+    float minMeteorX = static_cast<float>(image.width);
+    float maxMeteorX = 0.0F;
+    float minMeteorY = static_cast<float>(image.height);
+    float maxMeteorY = 0.0F;
+    float maximumMeteorAngleDelta = 0.0F;
+    for (std::size_t leftIndex = 0; leftIndex < longFieldMeteors.size(); ++leftIndex) {
+        const auto& left = *longFieldMeteors[leftIndex];
+        minMeteorX = std::min(minMeteorX, centerX(left));
+        maxMeteorX = std::max(maxMeteorX, centerX(left));
+        minMeteorY = std::min(minMeteorY, centerY(left));
+        maxMeteorY = std::max(maxMeteorY, centerY(left));
+        for (std::size_t rightIndex = leftIndex + 1; rightIndex < longFieldMeteors.size(); ++rightIndex) {
+            maximumMeteorAngleDelta = std::max(
+                maximumMeteorAngleDelta,
+                angleDelta(left.angleRadians, longFieldMeteors[rightIndex]->angleRadians)
+            );
+        }
+    }
+    const bool longCurvedMeteorField =
+        longFieldMeteors.size() >= 8 &&
+        maxMeteorX - minMeteorX >= static_cast<float>(image.width) * 0.18F &&
+        maxMeteorY - minMeteorY >= static_cast<float>(image.height) * 0.18F &&
+        maximumMeteorAngleDelta >= 0.25F;
+
+    std::vector<const ArtifactTrail*> lowTaperFieldMeteors;
+    for (const auto& trail : meteorFieldTrails) {
+        if (trail.kind == ArtifactTrailKind::Meteor && trail.path.size() < 2 &&
+            trail.length >= minDimension * 0.08F && trail.length <= minDimension * 0.40F &&
+            trail.width <= 5.0F && trail.taperScore < 0.15F) {
+            lowTaperFieldMeteors.push_back(&trail);
+        }
+    }
+    std::size_t dominantLowTaperCount = 0;
+    float dominantLowTaperAngle = 0.0F;
+    float minLowTaperX = static_cast<float>(image.width);
+    float maxLowTaperX = 0.0F;
+    float minLowTaperY = static_cast<float>(image.height);
+    float maxLowTaperY = 0.0F;
+    for (const auto* trail : lowTaperFieldMeteors) {
+        minLowTaperX = std::min(minLowTaperX, centerX(*trail));
+        maxLowTaperX = std::max(maxLowTaperX, centerX(*trail));
+        minLowTaperY = std::min(minLowTaperY, centerY(*trail));
+        maxLowTaperY = std::max(maxLowTaperY, centerY(*trail));
+        const auto aligned = static_cast<std::size_t>(std::count_if(
+            lowTaperFieldMeteors.begin(), lowTaperFieldMeteors.end(), [&](const ArtifactTrail* other) {
+                return angleDelta(trail->angleRadians, other->angleRadians) < 0.16F;
+            }
+        ));
+        if (aligned > dominantLowTaperCount) {
+            dominantLowTaperCount = aligned;
+            dominantLowTaperAngle = trail->angleRadians;
+        }
+    }
+    const bool sparseLowTaperStarField =
+        lowTaperFieldMeteors.size() >= 4 && dominantLowTaperCount >= 3 &&
+        dominantLowTaperCount * 3 >= lowTaperFieldMeteors.size() * 2 &&
+        maxLowTaperX - minLowTaperX >= static_cast<float>(image.width) * 0.20F &&
+        maxLowTaperY - minLowTaperY >= static_cast<float>(image.height) * 0.25F;
+
+    std::size_t mediumMeteorCount = 0;
+    float minMediumX = static_cast<float>(image.width);
+    float maxMediumX = 0.0F;
+    float minMediumY = static_cast<float>(image.height);
+    float maxMediumY = 0.0F;
+    for (const auto& trail : trails) {
+        if (trail.kind != ArtifactTrailKind::Meteor || trail.path.size() >= 2 ||
+            trail.length < minDimension * 0.04F) {
+            continue;
+        }
+        mediumMeteorCount += 1;
+        minMediumX = std::min(minMediumX, centerX(trail));
+        maxMediumX = std::max(maxMediumX, centerX(trail));
+        minMediumY = std::min(minMediumY, centerY(trail));
+        maxMediumY = std::max(maxMediumY, centerY(trail));
+    }
+    const bool broadMediumMeteorField =
+        mediumMeteorCount >= 16 &&
+        maxMediumX - minMediumX >= static_cast<float>(image.width) * 0.35F &&
+        maxMediumY - minMediumY >= static_cast<float>(image.height) * 0.18F;
+    std::vector<const ArtifactTrail*> upperMeteorFragments;
+    for (const auto& trail : trails) {
+        if (trail.kind == ArtifactTrailKind::Meteor && trail.path.size() < 2 &&
+            trail.length >= 20.0F && centerY(trail) <= static_cast<float>(image.height) * 0.58F) {
+            upperMeteorFragments.push_back(&trail);
+        }
+    }
+    std::size_t dominantUpperMeteorCount = 0;
+    for (const auto* anchor : upperMeteorFragments) {
+        dominantUpperMeteorCount = std::max(
+            dominantUpperMeteorCount,
+            static_cast<std::size_t>(std::count_if(
+                upperMeteorFragments.begin(), upperMeteorFragments.end(), [&](const ArtifactTrail* other) {
+                    return angleDelta(anchor->angleRadians, other->angleRadians) < 0.14F;
+                }
+            ))
+        );
+    }
+    const bool coherentShortStarField =
+        upperMeteorFragments.size() >= 20 && dominantUpperMeteorCount >= 16 &&
+        dominantUpperMeteorCount * 5 >= upperMeteorFragments.size() * 3;
+
+    std::vector<const ArtifactTrail*> parallelFieldMeteors;
+    for (const auto& trail : trails) {
+        if (trail.kind == ArtifactTrailKind::Meteor && trail.path.size() < 2 && trail.length >= 20.0F) {
+            parallelFieldMeteors.push_back(&trail);
+        }
+    }
+    std::size_t dominantParallelCount = 0;
+    float dominantParallelAngle = 0.0F;
+    float dominantParallelTangentSpan = 0.0F;
+    float dominantParallelNormalSpan = 0.0F;
+    for (const auto* anchor : parallelFieldMeteors) {
+        const float unitX = std::cos(anchor->angleRadians);
+        const float unitY = std::sin(anchor->angleRadians);
+        const float normalX = -unitY;
+        const float normalY = unitX;
+        std::size_t alignedCount = 0;
+        float minTangent = std::numeric_limits<float>::max();
+        float maxTangent = std::numeric_limits<float>::lowest();
+        float minNormal = std::numeric_limits<float>::max();
+        float maxNormal = std::numeric_limits<float>::lowest();
+        for (const auto* other : parallelFieldMeteors) {
+            if (angleDelta(anchor->angleRadians, other->angleRadians) >= 0.12F) {
+                continue;
+            }
+            alignedCount += 1;
+            const float tangent = centerX(*other) * unitX + centerY(*other) * unitY;
+            const float normal = centerX(*other) * normalX + centerY(*other) * normalY;
+            minTangent = std::min(minTangent, tangent - other->length * 0.5F);
+            maxTangent = std::max(maxTangent, tangent + other->length * 0.5F);
+            minNormal = std::min(minNormal, normal);
+            maxNormal = std::max(maxNormal, normal);
+        }
+        if (alignedCount > dominantParallelCount) {
+            dominantParallelCount = alignedCount;
+            dominantParallelAngle = anchor->angleRadians;
+            dominantParallelTangentSpan = maxTangent - minTangent;
+            dominantParallelNormalSpan = maxNormal - minNormal;
+        }
+    }
+    const bool coherentParallelStarField =
+        dominantParallelCount >= 24 &&
+        dominantParallelCount * 3 >= parallelFieldMeteors.size() * 2 &&
+        dominantParallelTangentSpan >= minDimension * 0.55F &&
+        dominantParallelNormalSpan >= minDimension * 0.45F;
+    trails.erase(
+        std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+            const bool artificial = trail.kind == ArtifactTrailKind::Airplane ||
+                                    trail.kind == ArtifactTrailKind::Drone ||
+                                    trail.kind == ArtifactTrailKind::Satellite;
+            if (!artificial) {
+                return false;
+            }
+            const bool shortStellarArcInDenseField =
+                broadMediumMeteorField && !trail.verifiedSegmentedSatelliteChain &&
+                !trail.coherentParallelGroup && trail.path.size() < 2 &&
+                trail.length >= 24.0F && trail.length < minDimension * 0.08F;
+            if (shortStellarArcInDenseField) {
+                return true;
+            }
+            const bool parallelStellarArc =
+                coherentParallelStarField && !trail.verifiedSegmentedSatelliteChain &&
+                trail.path.size() < 2 && trail.length >= 20.0F &&
+                angleDelta(trail.angleRadians, dominantParallelAngle) < 0.14F;
+            const bool sparseLowTaperStellarArc =
+                sparseLowTaperStarField && !trail.verifiedSegmentedSatelliteChain &&
+                !trail.coherentParallelGroup && trail.path.size() < 2 &&
+                trail.length >= 20.0F && trail.length <= minDimension * 0.40F &&
+                trail.taperScore < 0.15F &&
+                angleDelta(trail.angleRadians, dominantLowTaperAngle) < 0.20F;
+            if (parallelStellarArc || sparseLowTaperStellarArc) {
+                return true;
+            }
+            if (trail.coherentParallelGroup || trail.verifiedContinuousSatellite ||
+                trail.verifiedSegmentedSatelliteChain) {
+                return false;
+            }
+            const auto localFaintMeteorFragments = std::count_if(
+                trails.begin(), trails.end(), [&](const ArtifactTrail& other) {
+                    return other.kind == ArtifactTrailKind::Meteor && other.path.size() < 2 &&
+                           other.length >= minDimension * 0.10F &&
+                           other.length <= minDimension * 0.24F &&
+                           other.meanBrightness < 0.018F &&
+                           std::fabs(centerX(trail) - centerX(other)) <=
+                               static_cast<float>(image.width) * 0.18F &&
+                           std::fabs(centerY(trail) - centerY(other)) <=
+                               static_cast<float>(image.height) * 0.30F;
+                }
+            );
+            const auto localColoredMeteorFragments = std::count_if(
+                trails.begin(), trails.end(), [&](const ArtifactTrail& other) {
+                    return other.kind == ArtifactTrailKind::Meteor && other.path.size() < 2 &&
+                           other.length >= 12.0F && other.length <= minDimension * 0.18F &&
+                           (other.warmEvidence >= 0.040F || other.colorVariance >= 0.010F) &&
+                           std::fabs(centerX(trail) - centerX(other)) <=
+                               static_cast<float>(image.width) * 0.22F &&
+                           std::fabs(centerY(trail) - centerY(other)) <=
+                               static_cast<float>(image.height) * 0.30F;
+                }
+            );
+            const bool weakBottomPathInMeteorField =
+                trail.path.size() >= 2 && meteorCount >= 10 &&
+                centerY(trail) >= static_cast<float>(image.height) * 0.88F &&
+                trail.meanBrightness < 0.010F;
+            const bool localOpticalGhostFragment =
+                trail.path.size() < 2 && localFaintMeteorFragments >= 6 &&
+                trail.length >= minDimension * 0.08F && trail.length <= minDimension * 0.30F;
+            const bool localizedColoredForegroundTexture =
+                trail.path.size() < 2 && localColoredMeteorFragments >= 8 &&
+                centerY(trail) >= static_cast<float>(image.height) * 0.55F &&
+                trail.length <= minDimension * 0.22F;
+            if (weakBottomPathInMeteorField || localOpticalGhostFragment || localizedColoredForegroundTexture) {
+                return true;
+            }
+            const float minimumCandidateLength =
+                (broadMediumMeteorField || coherentShortStarField ||
+                 hasSegmentedSatelliteChain || meteorCount >= 30)
+                    ? minDimension * 0.08F
+                    : minDimension * 0.15F;
+            if (trail.path.size() >= 2 || trail.length < minimumCandidateLength ||
+                trail.length > minDimension * 0.40F) {
+                return false;
+            }
+            const auto supportingArcs = std::count_if(
+                trails.begin(), trails.end(), [&](const ArtifactTrail& other) {
+                    return other.kind == ArtifactTrailKind::Meteor && other.length >= 20.0F &&
+                           angleDelta(trail.angleRadians, other.angleRadians) < 0.12F &&
+                           std::fabs(centerX(trail) - centerX(other)) <= static_cast<float>(image.width) * 0.30F &&
+                           std::fabs(centerY(trail) - centerY(other)) <= static_cast<float>(image.height) * 0.25F;
+                }
+            );
+            // A real meteor shower is approximately parallel. Long protected
+            // streaks that span the frame and rotate in orientation instead
+            // describe a star-trail exposure; any remaining unverified chord
+            // is another stellar arc rather than an isolated satellite.
+            return hasSegmentedSatelliteChain || longCurvedMeteorField ||
+                   broadMediumMeteorField || coherentShortStarField ||
+                   (meteorCount >= 10 && supportingArcs >= 8);
+        }),
+        trails.end()
+    );
+}
+
+void suppressPortraitParallelStarTrailScene(std::vector<ArtifactTrail>& trails,
+                                            const ImageBuffer& image) {
+    if (static_cast<float>(image.height) < static_cast<float>(image.width) * 1.25F) {
+        return;
+    }
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    const auto meteorCount = static_cast<std::size_t>(std::count_if(
+        trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+            return trail.kind == ArtifactTrailKind::Meteor && trail.path.size() < 2;
+        }
+    ));
+    if (meteorCount >= 8) {
+        trails.erase(
+            std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+                const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
+                return trail.kind == ArtifactTrailKind::Drone &&
+                       !trail.verifiedSegmentedSatelliteChain && !trail.coherentParallelGroup &&
+                       centerRatio >= 0.70F && std::fabs(std::sin(trail.angleRadians)) < 0.060F &&
+                       trail.length >= minDimension * 0.12F && trail.length <= minDimension * 0.45F &&
+                       trail.meanBrightness < 0.015F;
+            }),
+            trails.end()
+        );
+    }
+    if (meteorCount >= 16) {
+        trails.erase(
+            std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+                return trail.kind == ArtifactTrailKind::Drone && trail.path.size() < 2 &&
+                       !trail.verifiedSegmentedSatelliteChain && !trail.coherentParallelGroup &&
+                       trail.length >= minDimension * 0.05F && trail.length <= minDimension * 0.18F &&
+                       trail.width <= 5.0F && trail.taperScore < 0.08F && trail.confidence <= 0.90F;
+            }),
+            trails.end()
+        );
+    }
+    const auto faintLowerScanlineCount = std::count_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+        return trail.kind == ArtifactTrailKind::Drone && trail.path.size() < 2 &&
+               centerY(trail) >= static_cast<float>(image.height) * 0.70F &&
+               trail.length >= minDimension * 0.12F && trail.meanBrightness < 0.020F &&
+               std::fabs(std::sin(trail.angleRadians)) < 0.06F;
+    });
+    if (faintLowerScanlineCount >= 2) {
+        trails.erase(
+            std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+                return trail.kind == ArtifactTrailKind::Drone && trail.path.size() < 2 &&
+                       centerY(trail) >= static_cast<float>(image.height) * 0.70F &&
+                       trail.length >= minDimension * 0.12F && trail.meanBrightness < 0.020F &&
+                       std::fabs(std::sin(trail.angleRadians)) < 0.06F;
+            }),
+            trails.end()
+        );
+    }
+    std::vector<const ArtifactTrail*> upperMeteors;
+    for (const auto& trail : trails) {
+        if (trail.kind == ArtifactTrailKind::Meteor && trail.path.size() < 2 &&
+            centerY(trail) <= static_cast<float>(image.height) * 0.75F && trail.length >= 24.0F) {
+            upperMeteors.push_back(&trail);
+        }
+    }
+    if (upperMeteors.size() < 8) {
+        return;
+    }
+
+    std::size_t dominantCount = 0;
+    float dominantAngle = 0.0F;
+    for (const auto* anchor : upperMeteors) {
+        const auto aligned = static_cast<std::size_t>(std::count_if(
+            upperMeteors.begin(), upperMeteors.end(), [&](const ArtifactTrail* other) {
+                return angleDelta(anchor->angleRadians, other->angleRadians) < 0.14F;
+            }
+        ));
+        if (aligned > dominantCount) {
+            dominantCount = aligned;
+            dominantAngle = anchor->angleRadians;
+        }
+    }
+    if (dominantCount < 8 || dominantCount * 2 < upperMeteors.size()) {
+        return;
+    }
+
+    // A narrow portrait of parallel star trails often places a tall illuminated
+    // foreground across most of the lower frame. Preserve the dominant stellar
+    // direction in the sky and discard line-like texture from that foreground,
+    // while retaining independently verified satellites at other angles.
+    trails.erase(
+        std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+            if (trail.kind == ArtifactTrailKind::Meteor || trail.coherentParallelGroup ||
+                trail.verifiedContinuousSatellite) {
+                return false;
+            }
+            const bool artificial = trail.kind == ArtifactTrailKind::Airplane ||
+                                    trail.kind == ArtifactTrailKind::Drone ||
+                                    trail.kind == ArtifactTrailKind::Satellite;
+            if (!artificial) {
+                return false;
+            }
+            const bool foregroundTexture =
+                centerY(trail) >= static_cast<float>(image.height) * 0.40F;
+            const bool parallelSkyTrail =
+                trail.path.size() < 2 && angleDelta(trail.angleRadians, dominantAngle) < 0.18F;
+            return foregroundTexture || parallelSkyTrail;
+        }),
+        trails.end()
+    );
+}
+
+void suppressForegroundBandTrails(std::vector<ArtifactTrail>& trails,
+                                  const ImageBuffer& image,
+                                  const std::vector<float>& luminance) {
+    const auto profile = measureLowSkyBand(image, luminance);
+    if (!profile.valid) {
+        return;
+    }
+    const bool texturedForeground = profile.averageGradient > 0.050F ||
+                                    profile.strongGradientDensity > 0.035F;
+    const bool nearlyBlackForeground = profile.averageLuminance < 0.045F;
+    if (!texturedForeground && !nearlyBlackForeground) {
+        return;
+    }
+
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+
+    const auto crowdedLowCandidateCount = std::count_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+        return trail.kind != ArtifactTrailKind::Meteor &&
+               centerY(trail) / std::max(1.0F, static_cast<float>(image.height)) >= 0.720F;
+    });
+    const auto broadLowHorizontalCount = std::count_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+        const bool artificial = trail.kind == ArtifactTrailKind::Airplane ||
+                                trail.kind == ArtifactTrailKind::Drone ||
+                                trail.kind == ArtifactTrailKind::Satellite;
+        return artificial && trail.path.size() < 2 &&
+               centerY(trail) >= static_cast<float>(image.height) * 0.75F &&
+               trail.length >= static_cast<float>(image.width) * 0.72F &&
+               std::fabs(std::sin(trail.angleRadians)) < 0.12F;
+    });
+
+    trails.erase(
+        std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+            if (trail.kind == ArtifactTrailKind::Meteor) {
+                return false;
+            }
+            if (trail.coherentParallelGroup || trail.verifiedContinuousSatellite ||
+                trail.verifiedSegmentedSatelliteChain) {
+                return false;
+            }
+            const bool broadLowHorizontalForegroundEdge =
+                broadLowHorizontalCount >= 3 && trail.path.size() < 2 &&
+                centerY(trail) >= static_cast<float>(image.height) * 0.75F &&
+                trail.length >= static_cast<float>(image.width) * 0.72F &&
+                std::fabs(std::sin(trail.angleRadians)) < 0.12F;
+            if (broadLowHorizontalForegroundEdge) {
+                return true;
+            }
+            const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
+            const bool lowBrightSkylineFragment =
+                (texturedForeground || nearlyBlackForeground) && centerRatio >= 0.82F && trail.path.size() < 2 &&
+                trail.kind == ArtifactTrailKind::Airplane && trail.width >= 4.5F &&
+                trail.length < minDimension * 0.16F &&
+                std::fabs(std::sin(trail.angleRadians)) < 0.10F;
+            if (lowBrightSkylineFragment) {
+                return true;
+            }
+            const bool upperForegroundEdgeFragment =
+                texturedForeground && centerRatio >= 0.66F && centerRatio < 0.735F &&
+                trail.kind == ArtifactTrailKind::Drone && trail.path.size() < 2 &&
+                trail.length < minDimension * 0.28F &&
+                std::fabs(std::sin(trail.angleRadians)) < 0.25F;
+            if (upperForegroundEdgeFragment) {
+                return true;
+            }
+            if (centerRatio < 0.720F) {
+                return false;
+            }
+            const bool crowdedDarkForegroundFragment =
+                nearlyBlackForeground && crowdedLowCandidateCount >= 4 &&
+                trail.kind == ArtifactTrailKind::Drone && trail.meanBrightness < 0.040F;
+            if (crowdedDarkForegroundFragment) {
+                return true;
+            }
+            const bool verifiedColoredPath =
+                trail.path.size() >= 8 &&
+                (trail.warmEvidence >= 0.010F || trail.colorVariance >= 0.016F);
+            if ((texturedForeground || nearlyBlackForeground) && crowdedLowCandidateCount >= 12) {
+                return !verifiedColoredPath;
+            }
+            const bool strongColoredBeacon =
+                trail.meanBrightness >= 0.035F &&
+                (trail.warmEvidence >= 0.020F || trail.colorVariance >= 0.030F);
+            if (strongColoredBeacon) {
+                return false;
+            }
+            if (texturedForeground) {
+                return trail.meanBrightness < 0.045F;
+            }
+            const bool neutralDarkCandidate = trail.warmEvidence < 0.012F && trail.colorVariance < 0.016F;
+            return nearlyBlackForeground && neutralDarkCandidate && trail.meanBrightness < 0.040F;
+        }),
+        trails.end()
+    );
+}
+
+void suppressCrowdedShortOpticalStreaks(std::vector<ArtifactTrail>& trails, const ImageBuffer& image) {
+    const float minDimension = static_cast<float>(std::min(image.width, image.height));
+    const bool mediumResolutionFrame = minDimension <= 2200.0F;
+    const auto artificialCount = std::count_if(trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+        return trail.kind == ArtifactTrailKind::Airplane || trail.kind == ArtifactTrailKind::Drone ||
+               trail.kind == ArtifactTrailKind::Satellite;
+    });
+    const auto verifiedPathCount = std::count_if(trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+        return trail.kind != ArtifactTrailKind::Meteor && trail.path.size() >= 2;
+    });
+    const auto strongArtificialCount = std::count_if(trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+        const bool artificial = trail.kind == ArtifactTrailKind::Airplane ||
+                                trail.kind == ArtifactTrailKind::Drone ||
+                                trail.kind == ArtifactTrailKind::Satellite;
+        return artificial && (trail.meanBrightness >= 0.15F || trail.weight >= 0.80F);
+    });
+    const bool moderateWeakPathlessScene =
+        artificialCount >= 8 && artificialCount <= 24 && verifiedPathCount == 0 && strongArtificialCount <= 2;
+    const auto sidePathlessDroneCount = std::count_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+        if (trail.kind != ArtifactTrailKind::Drone || trail.path.size() >= 2) {
+            return false;
+        }
+        const float centerRatio = centerX(trail) / std::max(1.0F, static_cast<float>(image.width));
+        return centerRatio <= 0.15F || centerRatio >= 0.85F;
+    });
+    const auto pathlessDroneCount = std::count_if(trails.begin(), trails.end(), [](const ArtifactTrail& trail) {
+        return trail.kind == ArtifactTrailKind::Drone && trail.path.size() < 2;
+    });
+    const bool sideDominatedClutterScene =
+        pathlessDroneCount >= 18 && sidePathlessDroneCount * 5 >= pathlessDroneCount * 4;
+    const auto lowBandArtificialCount = std::count_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+        const bool artificial = trail.kind == ArtifactTrailKind::Airplane ||
+                                trail.kind == ArtifactTrailKind::Drone ||
+                                trail.kind == ArtifactTrailKind::Satellite;
+        return artificial && centerY(trail) >= static_cast<float>(image.height) * 0.78F;
+    });
+    const bool crowdedLowBandScene =
+        mediumResolutionFrame && artificialCount >= 20 && lowBandArtificialCount * 4 >= artificialCount * 3;
+    std::size_t densestHorizontalBandCount = 0;
+    float densestHorizontalBandCenter = 0.0F;
+    if (mediumResolutionFrame && artificialCount >= 30) {
+        for (const auto& anchor : trails) {
+            if (anchor.kind == ArtifactTrailKind::Meteor) {
+                continue;
+            }
+            const auto bandCount = std::count_if(trails.begin(), trails.end(), [&](const ArtifactTrail& other) {
+                const bool artificial = other.kind == ArtifactTrailKind::Airplane ||
+                                        other.kind == ArtifactTrailKind::Drone ||
+                                        other.kind == ArtifactTrailKind::Satellite;
+                return artificial && std::fabs(centerY(other) - centerY(anchor)) <=
+                                         static_cast<float>(image.height) * 0.10F;
+            });
+            if (static_cast<std::size_t>(bandCount) > densestHorizontalBandCount) {
+                densestHorizontalBandCount = static_cast<std::size_t>(bandCount);
+                densestHorizontalBandCenter = centerY(anchor);
+            }
+        }
+    }
+    const bool crowdedHorizontalTextureBand =
+        mediumResolutionFrame && artificialCount >= 30 && densestHorizontalBandCount * 4 >=
+                                     static_cast<std::size_t>(artificialCount) * 3;
+    const float shortLengthLimit = std::clamp(
+        minDimension * 0.10F,
+        70.0F,
+        140.0F
+    );
+    const float isolatedLengthLimit = std::clamp(minDimension * 0.060F, 62.0F, 130.0F);
+    const float crowdedWeakLengthLimit = std::clamp(minDimension * 0.26F, 180.0F, 620.0F);
+    const float edgeX = std::max(3.0F, static_cast<float>(image.width) * 0.004F);
+    const float edgeY = std::max(3.0F, static_cast<float>(image.height) * 0.004F);
+    trails.erase(
+        std::remove_if(trails.begin(), trails.end(), [&](const ArtifactTrail& trail) {
+            if (trail.kind == ArtifactTrailKind::Meteor) {
+                return false;
+            }
+            if (trail.coherentParallelGroup || trail.verifiedContinuousSatellite) {
+                return false;
+            }
+            if (crowdedLowBandScene && centerY(trail) >= static_cast<float>(image.height) * 0.78F &&
+                trail.kind == ArtifactTrailKind::Drone && trail.length < minDimension * 0.75F) {
+                return true;
+            }
+            if (crowdedHorizontalTextureBand && trail.kind == ArtifactTrailKind::Drone &&
+                trail.length < minDimension * 0.30F &&
+                std::fabs(centerY(trail) - densestHorizontalBandCenter) <=
+                    static_cast<float>(image.height) * 0.12F) {
+                return true;
+            }
+            if (crowdedHorizontalTextureBand && trail.length < minDimension * 0.40F &&
+                (centerY(trail) < static_cast<float>(image.height) * 0.16F ||
+                 centerY(trail) > static_cast<float>(image.height) * 0.80F)) {
+                return true;
+            }
+            if (mediumResolutionFrame && artificialCount >= 30 && trail.kind == ArtifactTrailKind::Drone &&
+                trail.length < minDimension * 0.28F) {
+                const auto localCandidateCount = std::count_if(
+                    trails.begin(), trails.end(), [&](const ArtifactTrail& other) {
+                        return other.kind == ArtifactTrailKind::Drone &&
+                               other.length < minDimension * 0.28F &&
+                               std::fabs(centerX(other) - centerX(trail)) <= static_cast<float>(image.width) * 0.18F &&
+                               std::fabs(centerY(other) - centerY(trail)) <= static_cast<float>(image.height) * 0.12F;
+                    }
+                );
+                const auto denseLocalThreshold = static_cast<std::ptrdiff_t>(
+                    std::max<std::size_t>(18, artificialCount * 2 / 5)
+                );
+                if (localCandidateCount >= denseLocalThreshold) {
+                    return true;
+                }
+            }
+            if (trail.path.size() >= 2) {
+                return false;
+            }
+            const bool hugsVerticalEdge =
+                (std::max(trail.x1, trail.x2) <= edgeX ||
+                 std::min(trail.x1, trail.x2) >= static_cast<float>(image.width) - edgeX) &&
+                trail.length >= minDimension * 0.55F;
+            const bool hugsHorizontalEdge =
+                (std::max(trail.y1, trail.y2) <= edgeY ||
+                 std::min(trail.y1, trail.y2) >= static_cast<float>(image.height) - edgeY) &&
+                trail.length >= minDimension * 0.55F;
+            if (hugsVerticalEdge || hugsHorizontalEdge) {
+                return true;
+            }
+            if (sideDominatedClutterScene &&
+                ((trail.kind == ArtifactTrailKind::Drone && trail.length < minDimension * 0.30F) ||
+                 trail.kind == ArtifactTrailKind::Satellite)) {
+                return true;
+            }
+            if (trail.kind == ArtifactTrailKind::Satellite) {
+                return false;
+            }
+
+            std::size_t parallelCount = 0;
+            bool parallelVerifiedPath = false;
+            for (const auto& other : trails) {
+                if (&other == &trail || other.kind == ArtifactTrailKind::Meteor ||
+                    angleDelta(trail.angleRadians, other.angleRadians) >= 0.075F) {
+                    continue;
+                }
+                parallelCount += 1;
+                parallelVerifiedPath = parallelVerifiedPath || other.path.size() >= 2;
+            }
+
+            const bool isolatedWeakStreak =
+                trail.length < isolatedLengthLimit && trail.meanBrightness < 0.12F &&
+                trail.weight < 0.74F && parallelCount == 0;
+            if (isolatedWeakStreak) {
+                return true;
+            }
+            const bool ultraFaintIsolatedStreak =
+                trail.length < minDimension * 0.60F && trail.meanBrightness < 0.012F &&
+                trail.weight < 0.65F && parallelCount < 2 && !parallelVerifiedPath;
+            if (ultraFaintIsolatedStreak) {
+                return true;
+            }
+            if (moderateWeakPathlessScene && trail.length < minDimension * 0.30F &&
+                trail.meanBrightness < 0.15F && trail.weight < 0.74F) {
+                return true;
+            }
+            if (artificialCount < 12) {
+                return false;
+            }
+
+            const bool veryShortWeakStreak =
+                trail.length < shortLengthLimit && trail.weight < 0.75F;
+            const bool crowdedWeakPathlessStreak =
+                trail.length < crowdedWeakLengthLimit && trail.meanBrightness < 0.15F &&
+                trail.weight < 0.74F && parallelCount < 2 && !parallelVerifiedPath;
+            return veryShortWeakStreak || crowdedWeakPathlessStreak;
+        }),
+        trails.end()
+    );
 }
 
 void suppressLikelyEdgeStarStreaks(std::vector<ArtifactTrail>& trails, const ImageBuffer& image) {
@@ -6717,7 +9328,10 @@ void suppressLikelyEdgeStarStreaks(std::vector<ArtifactTrail>& trails, const Ima
             trail.confidence *= 0.42F;
         }
 
-        if (trail.kind == ArtifactTrailKind::Meteor || trail.warmEvidence >= 0.02F) {
+        if (trail.kind == ArtifactTrailKind::Meteor ||
+            (trail.coherentParallelGroup || trail.verifiedContinuousSatellite ||
+             trail.verifiedSegmentedSatelliteChain) ||
+            trail.warmEvidence >= 0.02F) {
             continue;
         }
 
@@ -6735,7 +9349,10 @@ void suppressLikelyEdgeStarStreaks(std::vector<ArtifactTrail>& trails, const Ima
 
     for (std::size_t index = 0; index < trails.size(); ++index) {
         auto& trail = trails[index];
-        if (trail.kind == ArtifactTrailKind::Meteor || trail.length >= 260.0F || trail.warmEvidence >= 0.04F) {
+        if (trail.kind == ArtifactTrailKind::Meteor ||
+            (trail.coherentParallelGroup || trail.verifiedContinuousSatellite ||
+             trail.verifiedSegmentedSatelliteChain) ||
+            trail.length >= 260.0F || trail.warmEvidence >= 0.04F) {
             continue;
         }
 
@@ -6767,7 +9384,9 @@ void pruneLowConfidenceStarStreaks(std::vector<ArtifactTrail>& trails, const Ima
                                         : 0.0F;
 
     for (auto& trail : trails) {
-        if (trail.kind == ArtifactTrailKind::Meteor) {
+        if (trail.kind == ArtifactTrailKind::Meteor ||
+            (trail.coherentParallelGroup || trail.verifiedContinuousSatellite ||
+             trail.verifiedSegmentedSatelliteChain)) {
             continue;
         }
 
@@ -6788,12 +9407,23 @@ void pruneLowConfidenceStarStreaks(std::vector<ArtifactTrail>& trails, const Ima
                            if (trail.kind == ArtifactTrailKind::Meteor) {
                                return trail.confidence < 0.18F;
                            }
+                           if (trail.coherentParallelGroup || trail.verifiedContinuousSatellite ||
+                               trail.verifiedSegmentedSatelliteChain) {
+                               return false;
+                           }
                            if (largeAstroFrame &&
                                trail.length < std::max(24.0F, options.minLength * 1.8F)) {
                                return true;
                            }
                            const bool beaconBacked = trail.warmEvidence >= 0.014F ||
                                                      (trail.kind == ArtifactTrailKind::Drone && trail.colorVariance >= 0.030F);
+                           const float centerRatio =
+                               centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
+                           const bool weakBottomBoundaryCandidate =
+                               centerRatio > 0.985F && !beaconBacked && trail.confidence <= 0.50F;
+                           if (weakBottomBoundaryCandidate) {
+                               return true;
+                           }
                            const float minimumConfidence = beaconBacked ? 0.28F : (largeAstroFrame ? 0.42F : 0.20F);
                            return trail.confidence < minimumConfidence;
                        }),
@@ -6877,7 +9507,6 @@ void suppressLowSkyParallelDuplicateTrails(std::vector<ArtifactTrail>& trails,
             if (verifiedEvidencePath && existing.trail.path.size() < 12) {
                 continue;
             }
-
             const float normalDistance =
                 std::fabs((centerX(trail) - centerX(existing.trail)) * normalX +
                           (centerY(trail) - centerY(existing.trail)) * normalY);
@@ -6999,13 +9628,20 @@ void suppressLargeFrameLowSkyTextureTrails(std::vector<ArtifactTrail>& trails, c
         std::remove_if(trails.begin(),
                        trails.end(),
                        [&](const ArtifactTrail& trail) {
+                           const float centerYRatio = centerY(trail) / static_cast<float>(image.height);
+                           const bool shortHorizonPath =
+                               trail.kind == ArtifactTrailKind::Drone && trail.path.size() >= 8 &&
+                               trail.length >= 140.0F && trail.length < 400.0F && trail.width <= 5.0F &&
+                               centerYRatio >= 0.880F && centerYRatio <= 0.970F;
+                           if (shortHorizonPath) {
+                               return trail.meanBrightness < 0.025F;
+                           }
                            if (trail.kind != ArtifactTrailKind::Drone || trail.length < 400.0F ||
-                               trail.width > 5.0F || std::fabs(std::sin(trail.angleRadians)) > 0.10F) {
+                               trail.width > 5.0F || std::fabs(std::sin(trail.angleRadians)) > 0.16F) {
                                return false;
                            }
 
                            const float centerXRatio = centerX(trail) / static_cast<float>(image.width);
-                           const float centerYRatio = centerY(trail) / static_cast<float>(image.height);
                            if (centerYRatio < 0.775F || centerYRatio > 0.990F) {
                                return false;
                            }
@@ -7015,10 +9651,12 @@ void suppressLargeFrameLowSkyTextureTrails(std::vector<ArtifactTrail>& trails, c
                                centerYRatio >= 0.800F && centerYRatio <= 0.875F &&
                                trail.length >= 650.0F && trail.meanBrightness >= 0.028F;
                            const bool bottomHorizonPeriodicTrail =
-                               centerXRatio >= 0.300F && centerXRatio <= 0.700F &&
-                               centerYRatio >= 0.938F && centerYRatio <= 0.970F &&
-                               trail.length >= 430.0F && trail.length <= 1100.0F &&
-                               std::fabs(std::sin(trail.angleRadians)) <= 0.140F && trail.path.size() >= 12;
+                               centerYRatio >= 0.885F && centerYRatio <= 0.970F &&
+                               trail.length >= 430.0F && trail.length <= 2400.0F &&
+                               std::fabs(std::sin(trail.angleRadians)) <= 0.140F &&
+                               (trail.path.size() >= 12 ||
+                                (trail.path.size() >= 8 && trail.weight >= 0.90F &&
+                                 trail.meanBrightness >= 0.0048F && trail.warmEvidence >= 0.012F));
                            const bool strongBeaconBackedTrail =
                                trail.meanBrightness >= 0.040F &&
                                (trail.colorVariance >= 0.035F || trail.warmEvidence >= 0.035F);
@@ -7359,6 +9997,10 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
     ArtifactTrailResult result;
     result.ok = true;
     result.image = image;
+    ArtifactTrailOptions rotationalEvidenceOptions = options;
+    rotationalEvidenceOptions.minLength = std::min(options.minLength, 12.0F);
+    rotationalEvidenceOptions.maxWidth = std::max(options.maxWidth, 18.0F);
+    std::vector<ArtifactTrail> componentRotationalEvidence;
     for (std::size_t componentIndex = 0; componentIndex < components.size(); ++componentIndex) {
         const auto& component = components[componentIndex];
         const auto trail = classifyComponent(image, luminance, component, mean, options);
@@ -7368,6 +10010,13 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
                 result.protectedMeteors += 1;
             }
         }
+        auto sceneTrail = trail;
+        if (sceneTrail.kind == ArtifactTrailKind::Unknown) {
+            sceneTrail = classifyComponent(image, luminance, component, mean, rotationalEvidenceOptions);
+        }
+        if (sceneTrail.kind != ArtifactTrailKind::Unknown) {
+            componentRotationalEvidence.push_back(std::move(sceneTrail));
+        }
         if (componentIndex + 1 == components.size() || (componentIndex + 1) % 64 == 0) {
             const double fraction = components.empty()
                                         ? 1.0
@@ -7376,9 +10025,14 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
                             scaled(0.16 + fraction * 0.10), componentIndex + 1, components.size());
         }
     }
-    const bool allowFaintFragmentMerging = image.pixelCount() <= 500000 || options.sigmaThreshold < 2.5F;
+    const bool allowFaintFragmentMerging = true;
     if (allowFaintFragmentMerging) {
         appendFaintMergedTrails(result, image, luminance, mean, standardDeviation, options);
+    }
+    for (auto& trail : detectLocallyContrastedContinuousTrails(image, luminance, result.trails, options)) {
+        if (!isDuplicateTrail(result.trails, trail)) {
+            result.trails.push_back(std::move(trail));
+        }
     }
     progress.report(ArtifactTrailProgressStage::Components, scaled(0.28));
     profileStage("components");
@@ -7387,11 +10041,10 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
     profileStage("blinking");
     for (auto& trail : blinkingTrails) {
         const float centerYRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
-        const float centerXRatio = centerX(trail) / std::max(1.0F, static_cast<float>(image.width));
         const bool bottomHorizonPathCandidate =
-            trail.kind == ArtifactTrailKind::Drone && trail.path.size() >= 12 && centerYRatio >= 0.940F &&
-            centerYRatio <= 0.970F && centerXRatio >= 0.300F && centerXRatio <= 0.700F &&
-            trail.length >= 430.0F && trail.length <= 1100.0F;
+            trail.kind == ArtifactTrailKind::Drone && trail.path.size() >= 12 && centerYRatio >= 0.885F &&
+            centerYRatio <= 0.970F && trail.length >= 430.0F &&
+            trail.length <= (image.height >= 2600 ? 2400.0F : 1100.0F);
         if (!bottomHorizonPathCandidate && isDuplicateTrail(result.trails, trail)) {
             continue;
         }
@@ -7402,7 +10055,13 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
     progress.report(ArtifactTrailProgressStage::Refining, scaled(0.86));
     for (std::size_t trailIndex = 0; trailIndex < result.trails.size(); ++trailIndex) {
         auto& trail = result.trails[trailIndex];
-        snapDottedDronePathToLocalEvidence(trail, luminance, image);
+        const float centerYRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
+        const bool denseShortHorizonPath =
+            trail.kind == ArtifactTrailKind::Drone && trail.path.size() >= 12 && trail.length < 500.0F &&
+            centerYRatio >= 0.880F && centerYRatio <= 0.970F;
+        if (!denseShortHorizonPath) {
+            snapDottedDronePathToLocalEvidence(trail, luminance, image);
+        }
         const double fraction = result.trails.empty()
                                     ? 1.0
                                     : static_cast<double>(trailIndex + 1) / result.trails.size();
@@ -7412,17 +10071,74 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
     if (options.includeMeteors) {
         extendMeteorTrails(result.trails, luminance, image, mean, standardDeviation);
     }
+    promoteSparseContinuousMeteorFragments(
+        result.trails, luminance, image, mean, standardDeviation, options
+    );
+    protectCollinearMeteorFragmentGroups(result.trails, image);
+    protectConnectedCurvingSatelliteSegments(result.trails, image);
+    // Establish image-backed continuity before any scene-level star-trail
+    // pruning. This lets a single uninterrupted satellite survive a false
+    // rotational fit in a crowded Milky Way or foreground scene.
+    promoteContinuousSatelliteTrails(result.trails, luminance, image, options, true);
+    auto rotationalAnalysisTrails = result.trails;
+    for (const auto& sceneTrail : componentRotationalEvidence) {
+        if (!isDuplicateTrail(rotationalAnalysisTrails, sceneTrail)) {
+            rotationalAnalysisTrails.push_back(sceneTrail);
+        }
+    }
+    const bool componentBackedRotationalStarTrailField =
+        suppressRotationalStarTrailField(rotationalAnalysisTrails, image);
+    bool rotationalStarTrailField = suppressRotationalStarTrailField(result.trails, image);
+    if (componentBackedRotationalStarTrailField && !rotationalStarTrailField) {
+        // Record the scene now, but defer pruning until all continuity and
+        // crossing-line recovery passes have run. A real satellite crossing a
+        // dense rotational field can otherwise be discarded before it earns
+        // verifiedContinuousSatellite.
+        rotationalStarTrailField = true;
+    }
     suppressLikelyEdgeStarStreaks(result.trails, image);
     pruneLowConfidenceStarStreaks(result.trails, image, options);
     progress.report(ArtifactTrailProgressStage::Refining, scaled(0.95));
     updateArtifactTrailWeights(result.trails, luminance, image);
+    // Promote candidates with continuous along-track support before crowded
+    // scene pruning. A dense satellite exposure can contain many individually
+    // faint short trails; their continuous support is stronger evidence than
+    // brightness or scene-level candidate count alone.
+    promoteContinuousSatelliteTrails(result.trails, luminance, image, options);
+    suppressForegroundBandTrails(result.trails, image, luminance);
+    suppressCrowdedShortOpticalStreaks(result.trails, image);
     suppressLowSkyParallelDuplicateTrails(result.trails, luminance, image);
     mergeConnectedDottedTrailSegments(result.trails);
     suppressLargeFrameLowSkyTextureTrails(result.trails, image);
-    suppressCrowdedWeakPointTrails(result.trails);
+    suppressCrowdedWeakPointTrails(result.trails, image);
     suppressRefinedDuplicateTrails(result.trails);
-    promoteContinuousSatelliteTrails(result.trails, luminance, image, options);
+    suppressCrowdedShortOpticalStreaks(result.trails, image);
+    rotationalStarTrailField = suppressRotationalStarTrailField(result.trails, image) || rotationalStarTrailField;
+    suppressRotationalFieldWithCoherentBeacon(result.trails);
+    protectCollinearMeteorFragmentGroups(result.trails, image, false, true);
+    // Refine a private copy for scene classification. Refining the live
+    // candidates when meteors are not requested can turn genuine satellite
+    // chains into protected meteors, so the analysis geometry must not leak
+    // back into the removal result.
+    auto refinedMeteorFieldTrails = result.trails;
+    extendMeteorTrails(refinedMeteorFieldTrails, luminance, image, mean, standardDeviation);
+    suppressArtificialArcsSupportedByMeteorField(result.trails, refinedMeteorFieldTrails, image);
+    suppressPortraitParallelStarTrailScene(result.trails, image);
+    suppressWeakFragmentsAroundProtectedMeteor(result.trails, image);
+    recoverSparseStraightSatelliteFromMeteors(result.trails, image);
+    recoverSymmetricSatelliteFlares(result.trails, luminance, image);
+    recoverDenseCrossingSatelliteField(result.trails, luminance, image, rotationalStarTrailField);
+    if (rotationalStarTrailField) {
+        suppressUnverifiedArtifactsInRotationalScene(result.trails, image);
+    }
+    suppressWeakPathlessBlinkingRows(result.trails, image);
+    suppressFaintLowHorizontalMeteorMimics(result.trails, image);
     profileStage("refining");
+    result.protectedMeteors = static_cast<std::size_t>(std::count_if(
+        result.trails.begin(), result.trails.end(), [](const ArtifactTrail& trail) {
+            return trail.kind == ArtifactTrailKind::Meteor;
+        }
+    ));
     if (!options.includeMeteors) {
         result.trails.erase(std::remove_if(result.trails.begin(),
                                            result.trails.end(),
@@ -7437,12 +10153,6 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
         }
         return left.confidence > right.confidence;
     });
-    result.protectedMeteors = 0;
-    for (const auto& trail : result.trails) {
-        if (trail.kind == ArtifactTrailKind::Meteor) {
-            result.protectedMeteors += 1;
-        }
-    }
     progress.report(ArtifactTrailProgressStage::Refining, end);
     return result;
 }
@@ -7549,9 +10259,15 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
         const bool bottomEdgeHorizonAirplaneForMask = !usesPath && trail.kind == ArtifactTrailKind::Airplane &&
                                                       removalCenterRatio >= 0.955F && removalCenterRatio <= 0.995F &&
                                                       trail.length >= 120.0F && trail.length <= 4000.0F;
+        const bool faintWideLowHorizonAirplane =
+            !usesPath && trail.kind == ArtifactTrailKind::Airplane && removalCenterRatio >= 0.880F &&
+            removalCenterRatio <= 0.980F && trail.length <= 500.0F && trail.width >= 6.0F &&
+            trail.meanBrightness < 0.030F;
         const float trailRadiusBonus =
             usesPath ? (dottedDroneTrail ? 4.25F : 6.75F)
-                     : (bottomEdgeHorizonAirplaneForMask ? 1.15F : (artificialTrail ? 3.25F : 0.0F));
+                     : (bottomEdgeHorizonAirplaneForMask
+                            ? 1.15F
+                            : (faintWideLowHorizonAirplane ? 10.5F : (artificialTrail ? 3.25F : 0.0F)));
         const float radius =
             std::max(1.0F, trail.width * 0.5F + static_cast<float>(options.maskRadius) + trailRadiusBonus);
         float minTrailX = std::min(trail.x1, trail.x2);

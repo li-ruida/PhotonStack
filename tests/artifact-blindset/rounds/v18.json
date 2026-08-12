@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "description": "Untouched v18 network blind set, frozen against ArtifactTrailRemover.cpp sha256 240614dde70dc9c61f4a43aa1f7462dc064b66c72c34d3f890339aaf762a24a6 before first detector run.",
+  "cases": [
+    {
+      "id": "v18-positive-satellite-starry-night",
+      "split": "evaluation",
+      "group": "chad-ajamian",
+      "filename": "v18-positive-satellite-trail-starry-night.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Satellite%20trail%20in%20a%20starry%20night%20%28175371665%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Satellite_trail_in_a_starry_night_(175371665).jpg",
+      "sha256": "d95d36fc7fe926c8a4f2daa494639532dd61621f3198b74d5867306fdf6a763f",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v18-positive-milky-way-satellite",
+      "split": "evaluation",
+      "group": "martin-bernardi",
+      "filename": "v18-positive-milky-way-satellite.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Milky%20Way%20and%20satellite%20trail.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Milky_Way_and_satellite_trail.jpg",
+      "sha256": "924773b19bde127179079163037bbf8e88636c0d88fda2b5bdbda84b3b8e0b67",
+      "expectation": { "minimumArtifacts": 1 }
+    },
+    {
+      "id": "v18-negative-2009-leonid",
+      "split": "evaluation",
+      "group": "ed-sweeney",
+      "filename": "v18-negative-2009-leonid.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2009%20Leonid%20Meteor%20%284111291263%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2009_Leonid_Meteor_(4111291263).jpg",
+      "sha256": "0d7608cfb8260be19010de7e53bb5e7e021cccec6f3cc82ac56fef7f93965c45",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v18-negative-leonid-wipf",
+      "split": "evaluation",
+      "group": "david-wipf",
+      "filename": "v18-negative-leonid-wipf.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Leonid%20meteor%20%2850627764111%29.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Leonid_meteor_(50627764111).jpg",
+      "sha256": "52e8f9b4760db54ff55a1ce21833d1dcda31cdebdac3d09e41d6e06a14554633",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v18-negative-egyptian-desert",
+      "split": "evaluation",
+      "group": "esraa-farahat",
+      "filename": "v18-negative-egyptian-desert.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/A%20night%20in%20Egyptian%20desert.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:A_night_in_Egyptian_desert.jpg",
+      "sha256": "3e2cd59a07cb9023084a5c081706190bd6d83a667ac5f3cfdb7df58c9cb054ed",
+      "expectation": { "maximumArtifacts": 0 }
+    },
+    {
+      "id": "v18-negative-star-trail-night-sky",
+      "split": "evaluation",
+      "group": "talesofaviewfinder",
+      "filename": "v18-negative-star-trail-night-sky.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trail%20in%20night%20sky.jpg?width=1920",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trail_in_night_sky.jpg",
+      "sha256": "1d4a8abeffc35af4fdfe21f8845e2687dc3ffe2af885b5ef0cc5797aed8cffb5",
+      "expectation": { "maximumArtifacts": 0 }
+    }
+  ]
+}

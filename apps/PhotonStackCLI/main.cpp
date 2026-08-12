@@ -291,7 +291,8 @@ void printUsage() {
               << "  photonstack drizzle --output <image> [--scale 2] [--pixfrac 1] "
                  "[--align none|translation|similarity|affine|distortion] "
                  "[--match-tolerance 12] <image>...\n"
-              << "  photonstack artifacts detect --input <image> [--preserve-meteors on|off]\n"
+              << "  photonstack artifacts detect --input <image> [--preserve-meteors on|off] "
+                 "[--include-meteors on|off]\n"
               << "  photonstack artifacts remove --input <image> --output <image> "
                  "[--remove-kinds airplane,drone,satellite] [--selected-indices 0,2] "
                  "[--detected-trails-v1 <encoded>] [--preserve-meteors on|off]\n"
@@ -3833,6 +3834,10 @@ int processArtifacts(const std::string& mode, const std::vector<std::string>& ar
             if (!parseOnOff(args, i, "--preserve-meteors", options.preserveMeteors)) {
                 return 1;
             }
+        } else if (arg == "--include-meteors") {
+            if (!parseOnOff(args, i, "--include-meteors", options.includeMeteors)) {
+                return 1;
+            }
         } else if (arg.rfind("--raw-", 0) == 0) {
             if (!parseRawDecodeArgument(args, i, readOptions.raw)) {
                 return 1;
@@ -4054,7 +4059,15 @@ int processArtifacts(const std::string& mode, const std::vector<std::string>& ar
                   << "\"meanBrightness\":" << trail.meanBrightness << ","
                   << "\"weight\":" << trail.weight << ","
                   << "\"peakPosition\":" << trail.peakPosition << ","
-                  << "\"taperScore\":" << trail.taperScore;
+                  << "\"taperScore\":" << trail.taperScore << ","
+                  << "\"colorVariance\":" << trail.colorVariance << ","
+                  << "\"warmEvidence\":" << trail.warmEvidence << ","
+                  << "\"coherentParallelGroup\":" << (trail.coherentParallelGroup ? "true" : "false") << ","
+                  << "\"verifiedContinuousSatellite\":"
+                  << (trail.verifiedContinuousSatellite ? "true" : "false") << ","
+                  << "\"verifiedSegmentedSatelliteChain\":"
+                  << (trail.verifiedSegmentedSatelliteChain ? "true" : "false") << ","
+                  << "\"strongAsymmetricMeteor\":" << (trail.strongAsymmetricMeteor ? "true" : "false");
         if (trail.path.size() >= 2) {
             std::cout << ",\"path\":[";
             for (std::size_t pathIndex = 0; pathIndex < trail.path.size(); ++pathIndex) {

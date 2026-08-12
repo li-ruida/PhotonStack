@@ -1,0 +1,4243 @@
+{
+  "schemaVersion": 1,
+  "description": "AI visually reviewed high-confidence subset of the frozen v22 development corpus.",
+  "created": "2026-08-05",
+  "labelPolicy": {
+    "reviewer": "OpenAI Codex visual review",
+    "scope": "first-pass visual labels, not human ground truth",
+    "positivePolicy": "minimum visible removable trails; no maximum because one trail may be segmented",
+    "protectedPolicy": "maximumArtifacts 0 for high-confidence meteor/star-trail/no-trail images"
+  },
+  "cases": [
+    {
+      "id": "v22-meteor-88539010",
+      "split": "development",
+      "group": "commons-page-88539010",
+      "filename": "v22-meteor-88539010.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/30%202017-07-07%20123458%20S%20DSC%200482.thumb.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:30_2017-07-07_123458_S_DSC_0482.thumb.jpg",
+      "sha256": "f97b3cbaff814092003a624d8aba09b1bb0073e8b3073b848574c246228b8096",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteors",
+      "commonsPageId": 88539010,
+      "commonsTitle": "File:30 2017-07-07 123458 S DSC 0482.thumb.jpg",
+      "commonsSha1": "cb69b906d381d4f6df3dd600084d3288f61baf9d",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Pshober",
+      "credit": "Own work",
+      "originalWidth": 7360,
+      "originalHeight": 4912,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-166262974",
+      "split": "development",
+      "group": "commons-page-166262974",
+      "filename": "v22-meteor-166262974.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Fireball%20Over%20Kitt%20Peak%20%28Fulldome%29%20%28iotw2522c%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Fireball_Over_Kitt_Peak_(Fulldome)_(iotw2522c).jpg",
+      "sha256": "95a95ecc5df774772a8b71ca88a6e9c01131d54d828c8a61b14c2bcfd6b0b513",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteors",
+      "commonsPageId": 166262974,
+      "commonsTitle": "File:Fireball Over Kitt Peak (Fulldome) (iotw2522c).jpg",
+      "commonsSha1": "c5002e7cbe65484b176c06092c2a7e6362ef4891",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "KPNO/NOIRLab/NSF/AURA/J. Dai",
+      "credit": "Fireball Over Kitt Peak (Fulldome)",
+      "originalWidth": 8192,
+      "originalHeight": 8192,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-10597578",
+      "split": "development",
+      "group": "commons-page-10597578",
+      "filename": "v22-meteor-10597578.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Leonids%20Shishizaryuuseigun2%202001%2011%2019.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Leonids_Shishizaryuuseigun2_2001_11_19.jpg",
+      "sha256": "2dbbeb34ad71e05d3f9e7226d6cfe369b15f290a8e0b1d0107d4116831005820",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 10597578,
+      "commonsTitle": "File:Leonids Shishizaryuuseigun2 2001 11 19.jpg",
+      "commonsSha1": "f38f2621b21326a8fe8a8ba1b7e049b1aaa6d5f7",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "artist": "Alpsdake",
+      "credit": "Own work1.File:Leonids and Orion in Japan 01.jpg2.File:Leonids and Orion in Japan 02.jpg",
+      "originalWidth": 1280,
+      "originalHeight": 960,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-133667973",
+      "split": "development",
+      "group": "commons-page-133667973",
+      "filename": "v22-meteor-133667973.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Between%20Two%20Skies%20%28ann22042ai%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Between_Two_Skies_(ann22042ai).jpg",
+      "sha256": "25ff3fe97f6c20eb7a36b93f18e108f8c77108cc2a083ac476312352aa2a97f5",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 133667973,
+      "commonsTitle": "File:Between Two Skies (ann22042ai).jpg",
+      "commonsSha1": "f3bd0409cba3c2a3a7c65a381b4870268ad64c79",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "Fabrizio Melandri/IAU OAE",
+      "credit": "This media was produced by the International Astronomical Union (IAU), under the identifier ann22042ai.\nThis tag does not indicate the copyright status of the attached work. A normal copyright tag is still required. See Commons:Licensing.",
+      "originalWidth": 2464,
+      "originalHeight": 1632,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-3808406",
+      "split": "development",
+      "group": "commons-page-3808406",
+      "filename": "v22-meteor-3808406.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Asteroid%2021-07-2006.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Asteroid_21-07-2006.jpg",
+      "sha256": "4cc929346be5a3d6b4ac3f8341bba3e3ac97597d6643844641a8b751f84e3259",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteors",
+      "commonsPageId": 3808406,
+      "commonsTitle": "File:Asteroid 21-07-2006.jpg",
+      "commonsSha1": "62f8d37a11c884867ff8381c1b95bce7b192cfa5",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Norris Wong from Hong Kong",
+      "credit": "plane",
+      "originalWidth": 2048,
+      "originalHeight": 1536,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-8650198",
+      "split": "development",
+      "group": "commons-page-8650198",
+      "filename": "v22-meteor-8650198.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Perseid%20Meteor1.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Perseid_Meteor1.jpg",
+      "sha256": "c22378b56d8dd685b0557effa862d16c40c2f2df44095bea8ea25de394a3519e",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 8650198,
+      "commonsTitle": "File:Perseid Meteor1.jpg",
+      "commonsSha1": "459b3adbcfc4de358c1f47590fd44c2562ee65a3",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "artist": "Nick Ares from Auburn, CA, United States",
+      "credit": "Perseid Meteor 8/12/08",
+      "originalWidth": 751,
+      "originalHeight": 1053,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-8650243",
+      "split": "development",
+      "group": "commons-page-8650243",
+      "filename": "v22-meteor-8650243.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Perseid%20Meteor%208.12.09.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Perseid_Meteor_8.12.09.jpg",
+      "sha256": "bb21c1f9cea1803f5e49d25bd087f04c0e63c31caca9a7492104a23d152df2a3",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 8650243,
+      "commonsTitle": "File:Perseid Meteor 8.12.09.jpg",
+      "commonsSha1": "8e487fa307f0cdd25a9f3dd55651b73b96ef0860",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "artist": "Nick Ares from Auburn, CA, United States",
+      "credit": "Perseid Meteor 8.12.09",
+      "originalWidth": 943,
+      "originalHeight": 1570,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-193353507",
+      "split": "development",
+      "group": "commons-page-193353507",
+      "filename": "v22-meteor-193353507.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Don%E2%80%99t%20Miss%20the%20Meteor%21%20%28iotw2622a%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Don%E2%80%99t_Miss_the_Meteor!_(iotw2622a).jpg",
+      "sha256": "ffd6dde373bc06707c6dacf2fd2605ad855b25405b568e9edaef60187d55e774",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 193353507,
+      "commonsTitle": "File:Don’t Miss the Meteor! (iotw2622a).jpg",
+      "commonsSha1": "ecd4749fa4b02d7f09094641e23c1e768f0eacfb",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "KPNO/NOIRLab/NSF/AURA/P. Horálek (Institute of Physics in Opava)",
+      "credit": "Don’t Miss the Meteor!",
+      "originalWidth": 6636,
+      "originalHeight": 4424,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-151520799",
+      "split": "development",
+      "group": "commons-page-151520799",
+      "filename": "v22-meteor-151520799.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Meteor%20trail%20Bensheim%20Germany%2020240730%20003303%20CET.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Meteor_trail_Bensheim_Germany_20240730_003303_CET.jpg",
+      "sha256": "74078d7c9d7a96b9f3b12b6cf85251179fb56df6f1a040850f9b971133c522ea",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 151520799,
+      "commonsTitle": "File:Meteor trail Bensheim Germany 20240730 003303 CET.jpg",
+      "commonsSha1": "5369b7207c4db5a330c6a5f5a1b40d5756e8afe7",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Kuebi = Armin Kübelbeck",
+      "credit": "Own work",
+      "originalWidth": 4000,
+      "originalHeight": 3000,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-48936192",
+      "split": "development",
+      "group": "commons-page-48936192",
+      "filename": "v22-meteor-48936192.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Orionid%20Meteor%20%2822369914212%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Orionid_Meteor_(22369914212).jpg",
+      "sha256": "83d14261b368dbc74e0e0c03dfbde79dad2b7915491978c12c6f931f4b5b2aeb",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteors",
+      "commonsPageId": 48936192,
+      "commonsTitle": "File:Orionid Meteor (22369914212).jpg",
+      "commonsSha1": "d947ebf97e979cb0c7e30c7a58de6af6d1ee01c9",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "artist": "John Flannery from Richmond County, North Carolina, USA",
+      "credit": "Orionid Meteor",
+      "originalWidth": 5335,
+      "originalHeight": 3454,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-162608885",
+      "split": "development",
+      "group": "commons-page-162608885",
+      "filename": "v22-meteor-162608885.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Meteor%20over%20Maunakea%20%28012909-CC%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Meteor_over_Maunakea_(012909-CC).jpg",
+      "sha256": "1892794c81d70f3fca7c18564c6e7d649a6c05880671f4a6e72b039249042fca",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteors",
+      "commonsPageId": 162608885,
+      "commonsTitle": "File:Meteor over Maunakea (012909-CC).jpg",
+      "commonsSha1": "03d590cb3cbd97f2f7c26a76b0929a465f6b6c5f",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "International Gemini Observatory/NOIRLab/NSF/AURA",
+      "credit": "Meteor over Maunakea",
+      "originalWidth": 3124,
+      "originalHeight": 1897,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-11212868",
+      "split": "development",
+      "group": "commons-page-11212868",
+      "filename": "v22-meteor-11212868.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/The%202010%20Perseids%20over%20the%20VLT.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:The_2010_Perseids_over_the_VLT.jpg",
+      "sha256": "8e6fa3a21d72266a9c4f6ad5e38d25705d4ee01b9efc31b3ebf68f5cd14e8ffd",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 11212868,
+      "commonsTitle": "File:The 2010 Perseids over the VLT.jpg",
+      "commonsSha1": "5ab90a50313307fdf3c75e0ecb14c333bc14a8f0",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "ESO/S. Guisard",
+      "credit": "http://www.eso.org/public/images/potw1033a/",
+      "originalWidth": 5616,
+      "originalHeight": 3744,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-55303043",
+      "split": "development",
+      "group": "commons-page-55303043",
+      "filename": "v22-meteor-55303043.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Perseid.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Perseid.jpg",
+      "sha256": "da0c17d4370d92ee27ffdbb09725988e349dcc4374e2d90271d7b1ed2b5ae039",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 55303043,
+      "commonsTitle": "File:Perseid.jpg",
+      "commonsSha1": "ec46398aa04a0f36bd59fa7ee47e2910e160c552",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Siarakduz",
+      "credit": "Own work",
+      "originalWidth": 1200,
+      "originalHeight": 801,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-172692289",
+      "split": "development",
+      "group": "commons-page-172692289",
+      "filename": "v22-meteor-172692289.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2025-08-13%20Perseiden%20Meteor%2004.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2025-08-13_Perseiden_Meteor_04.jpg",
+      "sha256": "508a33b9197b2ef87366925357a90db03391530fb138e51bbdbf8cd9672e068f",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 172692289,
+      "commonsTitle": "File:2025-08-13 Perseiden Meteor 04.jpg",
+      "commonsSha1": "7a71c25d84d25ed5618db2386bcd2defb6300394",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Georgfotoart",
+      "credit": "Own work",
+      "originalWidth": 1510,
+      "originalHeight": 1000,
+      "aiReview": {
+        "disposition": "none",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-105376392",
+      "split": "development",
+      "group": "commons-page-105376392",
+      "filename": "v22-meteor-105376392.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Paralelas%20%2814457605083%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Paralelas_(14457605083).jpg",
+      "sha256": "f51318c9eb0754212aa21ff78b1b52965f6593958aee4053e0ecad3c09911069",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteors",
+      "commonsPageId": 105376392,
+      "commonsTitle": "File:Paralelas (14457605083).jpg",
+      "commonsSha1": "6136ab06d0fd6e7cbd4cf1d8a9a36c271c14762f",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "artist": "Alvaro Sánchez Izquierdo",
+      "credit": "Paralelas",
+      "originalWidth": 1620,
+      "originalHeight": 1080,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-15051498",
+      "split": "development",
+      "group": "commons-page-15051498",
+      "filename": "v22-meteor-15051498.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Meteor%20Bolide.JPG?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Meteor_Bolide.JPG",
+      "sha256": "3426c929d0bc4998723802e5a4b83e43c22103a63c1ae0bd62bcba4f0fe7d746",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 15051498,
+      "commonsTitle": "File:Meteor Bolide.JPG",
+      "commonsSha1": "ea613b3e3e590029fa0cb59270c4d0b802ee67a6",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+      "artist": "C m handler",
+      "credit": "Own work",
+      "originalWidth": 4288,
+      "originalHeight": 2848,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-170477188",
+      "split": "development",
+      "group": "commons-page-170477188",
+      "filename": "v22-meteor-170477188.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Falling%20from%20the%20stars%20%28potw2134a%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Falling_from_the_stars_(potw2134a).jpg",
+      "sha256": "91727580b798b6cc3a2b3148b73099ce4bef527eac4fcaa7d80a39cd693f9ddf",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 170477188,
+      "commonsTitle": "File:Falling from the stars (potw2134a).jpg",
+      "commonsSha1": "5ca78bb9f9d909b713f55b2ca8c03f27bff4b116",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "ESO/ M. Zamani",
+      "credit": "This media was produced by the European Southern Observatory (ESO), under the identifier potw2134a\nThis tag does not indicate the copyright status of the attached work. A normal copyright tag is still required. See Commons:Licensing.",
+      "originalWidth": 5472,
+      "originalHeight": 3648,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-109112993",
+      "split": "development",
+      "group": "commons-page-109112993",
+      "filename": "v22-meteor-109112993.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2021-08-12%20Perseiden%20Meteor.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2021-08-12_Perseiden_Meteor.jpg",
+      "sha256": "f0db43d398722d91d7ad708a32490d6204c05cc4e94485b26332e9d9055a82bd",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 109112993,
+      "commonsTitle": "File:2021-08-12 Perseiden Meteor.jpg",
+      "commonsSha1": "60e39e8c51149abe6652d5306d878fc190586ebf",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Radler59 (talk)",
+      "credit": "Self-photographed",
+      "originalWidth": 4596,
+      "originalHeight": 3064,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-113359224",
+      "split": "development",
+      "group": "commons-page-113359224",
+      "filename": "v22-meteor-113359224.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Comet%20NEOWISE%20and%20meteor.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Comet_NEOWISE_and_meteor.jpg",
+      "sha256": "bb22f8a3df1d6e8db6debbc76e309600bac50f272e4a44d7e422464182ef3db2",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteors",
+      "commonsPageId": 113359224,
+      "commonsTitle": "File:Comet NEOWISE and meteor.jpg",
+      "commonsSha1": "1d3b8cdbcf607e0e3fdca5c365505c2df821f8c3",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "Igorzinchenko",
+      "credit": "Own work",
+      "originalWidth": 4000,
+      "originalHeight": 6000,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-54699005",
+      "split": "development",
+      "group": "commons-page-54699005",
+      "filename": "v22-meteor-54699005.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/%D0%9F%D0%B0%D0%B4%D0%B0%D1%8E%D1%89%D0%B0%D1%8F%20%D0%B7%D0%B2%D0%B5%D0%B7%D0%B4%D0%B0.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:%D0%9F%D0%B0%D0%B4%D0%B0%D1%8E%D1%89%D0%B0%D1%8F_%D0%B7%D0%B2%D0%B5%D0%B7%D0%B4%D0%B0.jpg",
+      "sha256": "15adb94e756116ca53462e896c4dcdaa363d8e72ff1ab98a6ec8c68a62d80e1c",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor showers",
+      "commonsPageId": 54699005,
+      "commonsTitle": "File:Падающая звезда.jpg",
+      "commonsSha1": "01bc8393f6835cab80cb8bbd10d97fba2abdbad2",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+      "artist": "Daniel Borsos",
+      "credit": "https://500px.com/photo/148920373/shooting-star-by-daniel-borsos",
+      "originalWidth": 900,
+      "originalHeight": 600,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-62073112",
+      "split": "development",
+      "group": "commons-page-62073112",
+      "filename": "v22-meteor-62073112.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Hugo%20Kemmel%202017-05-28%20%28Unsplash%20VgXDfuR6XdE%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Hugo_Kemmel_2017-05-28_(Unsplash_VgXDfuR6XdE).jpg",
+      "sha256": "24a2982940219e1e96b1ff30af40af89b80d613d202ced026d8d4c30bfb94f19",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteors",
+      "commonsPageId": 62073112,
+      "commonsTitle": "File:Hugo Kemmel 2017-05-28 (Unsplash VgXDfuR6XdE).jpg",
+      "commonsSha1": "9e5bf9a7e1b8c182e5d9db59bbd40c93174cbc61",
+      "license": "CC0",
+      "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+      "artist": "Hugo Kemmel hkemmel",
+      "credit": "https://unsplash.com/photos/VgXDfuR6XdE\nImage at the Wayback Machine\n\nGallery at the Wayback Machine",
+      "originalWidth": 6720,
+      "originalHeight": 4480,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-42620787",
+      "split": "development",
+      "group": "commons-page-42620787",
+      "filename": "v22-meteor-42620787.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Perseid%20meteor-trail%20Corona%20Borealis0.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Perseid_meteor-trail_Corona_Borealis0.jpg",
+      "sha256": "365db446e081167b2778acb4a6ed0198874a6455e5b3a72cd13053db98fc109f",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 42620787,
+      "commonsTitle": "File:Perseid meteor-trail Corona Borealis0.jpg",
+      "commonsSha1": "274d2a7fd9cefdd1bf540d35d61ac833e9eeb1fd",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Tomruen",
+      "credit": "Own work",
+      "originalWidth": 675,
+      "originalHeight": 675,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-174857688",
+      "split": "development",
+      "group": "commons-page-174857688",
+      "filename": "v22-meteor-174857688.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Act%20Fast%20%28Like%20Gemini%21%29%20%28iotw2537a%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Act_Fast_(Like_Gemini!)_(iotw2537a).jpg",
+      "sha256": "5c081b703d47cc13938b1c999c1b6861810d56be22361a8bb4b612a7ec9c3b58",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteors",
+      "commonsPageId": 174857688,
+      "commonsTitle": "File:Act Fast (Like Gemini!) (iotw2537a).jpg",
+      "commonsSha1": "fd26d80e050a30b0b2a0fb361f3f66be8cc7c1c2",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "International Gemini Observatory/NOIRLab/NSF/AURA/P. Horálek (Institute of Physics in Opava)",
+      "credit": "Act Fast (Like Gemini!)",
+      "originalWidth": 3158,
+      "originalHeight": 3947,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-151449184",
+      "split": "development",
+      "group": "commons-page-151449184",
+      "filename": "v22-meteor-151449184.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2024-08-11%20Perseiden%20Meteor%2002.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2024-08-11_Perseiden_Meteor_02.jpg",
+      "sha256": "2ccd94bab92f449c4f2ba561ac7348ce36fb5e5bb7edae8bcdda52e572332d36",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 151449184,
+      "commonsTitle": "File:2024-08-11 Perseiden Meteor 02.jpg",
+      "commonsSha1": "222e3615d15f3ee0f3d9141cf7b905be3702ca8e",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Georgfotoart",
+      "credit": "Own work",
+      "originalWidth": 1506,
+      "originalHeight": 1000,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-108902353",
+      "split": "development",
+      "group": "commons-page-108902353",
+      "filename": "v22-meteor-108902353.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2020%20Droga%20Mleczna%20i%20meteor.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2020_Droga_Mleczna_i_meteor.jpg",
+      "sha256": "7728da1f04c35cbe22694bb0b833382ccf65af5be79f258319920be0b1479d7c",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteors",
+      "commonsPageId": 108902353,
+      "commonsTitle": "File:2020 Droga Mleczna i meteor.jpg",
+      "commonsSha1": "e393913e472105643970c3b6fe9a1734e12155d6",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Jacek Halicki",
+      "credit": "Own work",
+      "originalWidth": 3156,
+      "originalHeight": 5500,
+      "aiReview": {
+        "disposition": "none",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-meteor-55286978",
+      "split": "development",
+      "group": "commons-page-55286978",
+      "filename": "v22-meteor-55286978.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Bolid%20ze%20stacji%20Stary%20Sielc.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Bolid_ze_stacji_Stary_Sielc.jpg",
+      "sha256": "7701292acd7280d683d6631c7dffb4e2d21e7284bc946fd263a46285871a877b",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-meteor",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Meteor trails",
+      "commonsPageId": 55286978,
+      "commonsTitle": "File:Bolid ze stacji Stary Sielc.jpg",
+      "commonsSha1": "10da3bbee55590edadcc66b747edb33783ad1558",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Marcin Stolarz",
+      "credit": "Pracownia Komet i Meteorów, Polska Sieć Bolidowa",
+      "originalWidth": 1200,
+      "originalHeight": 750,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-81935611",
+      "split": "development",
+      "group": "commons-page-81935611",
+      "filename": "v22-startrail-81935611.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Shah%20Firouz%20Sirjan%20.%20This%20Image%20was%20taken%20by%20Movahed%20Movahedi%20Parizi%20in%20Sirjan%2CKerman%2CIran.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Shah_Firouz_Sirjan_._This_Image_was_taken_by_Movahed_Movahedi_Parizi_in_Sirjan,Kerman,Iran.jpg",
+      "sha256": "2a4956ccd67b37214e2b8ac8a1aba83cd44a2142ef8b6661f3720cd8e5b01582",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 81935611,
+      "commonsTitle": "File:Shah Firouz Sirjan . This Image was taken by Movahed Movahedi Parizi in Sirjan,Kerman,Iran.jpg",
+      "commonsSha1": "c22f303988384949a509f49435e177bd4826a1d3",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Movahed Movahedi Parizi",
+      "credit": "Own work",
+      "originalWidth": 5180,
+      "originalHeight": 3338,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-35602602",
+      "split": "development",
+      "group": "commons-page-35602602",
+      "filename": "v22-startrail-35602602.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2014-09-23%2020-40-15%20startrails-salbert.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2014-09-23_20-40-15_startrails-salbert.jpg",
+      "sha256": "88f163ab2e804a210133d2457501f6e010e8bb65be996d756c60bd4eef6f98c6",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 35602602,
+      "commonsTitle": "File:2014-09-23 20-40-15 startrails-salbert.jpg",
+      "commonsSha1": "8417315a14e87c2e0b65aff42d7e67228ca73774",
+      "license": "CC BY 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
+      "artist": "Thomas Bresson",
+      "credit": "Own work",
+      "originalWidth": 4358,
+      "originalHeight": 3786,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-151710480",
+      "split": "development",
+      "group": "commons-page-151710480",
+      "filename": "v22-startrail-151710480.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Zvaig%C5%BE%C5%86u%20ce%C4%BCi%2C%20da%C5%BEas%20Perse%C4%ABdas%2C%20lidma%C5%A1%C4%ABnu%20un%20satel%C4%ABtu%20ce%C4%BCi%20%2837516559291%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Zvaig%C5%BE%C5%86u_ce%C4%BCi,_da%C5%BEas_Perse%C4%ABdas,_lidma%C5%A1%C4%ABnu_un_satel%C4%ABtu_ce%C4%BCi_(37516559291).jpg",
+      "sha256": "04046ada0ed894bbce441d38ccfc0dc1f7356b3a07341691116c05d50af5d50c",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 151710480,
+      "commonsTitle": "File:Zvaigžņu ceļi, dažas Perseīdas, lidmašīnu un satelītu ceļi (37516559291).jpg",
+      "commonsSha1": "04afed7cdd708cb02ca8ae908ba82c3785e08c30",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Juris Seņņikovs",
+      "credit": "Zvaigžņu ceļi, dažas Perseīdas, lidmašīnu un satelītu ceļi",
+      "originalWidth": 3266,
+      "originalHeight": 2180,
+      "aiReview": {
+        "disposition": "mixed",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-startrail-21464290",
+      "split": "development",
+      "group": "commons-page-21464290",
+      "filename": "v22-startrail-21464290.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Startrails%20%287921065020%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Startrails_(7921065020).jpg",
+      "sha256": "3631f3d817c76388997d3d98711ce992ee3e68add6d03fdee6c5b5e75c80626c",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 21464290,
+      "commonsTitle": "File:Startrails (7921065020).jpg",
+      "commonsSha1": "56d99c6ae3d76d350ebff0111feaacaf72b70b3b",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Nikos Koutoulas from Kozani, Greece",
+      "credit": "Startrails, 500px.com/photo/13071153 Startrails\n\nUploaded by ComputerHotline",
+      "originalWidth": 1400,
+      "originalHeight": 931,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-61801794",
+      "split": "development",
+      "group": "commons-page-61801794",
+      "filename": "v22-startrail-61801794.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Shihao%20Mei%202017%20%28Unsplash%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Shihao_Mei_2017_(Unsplash).jpg",
+      "sha256": "3d6bf1f69a9049fc05ae25616c628d4bfcffdb549d34f9e72a1a19fe0be837e3",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 61801794,
+      "commonsTitle": "File:Shihao Mei 2017 (Unsplash).jpg",
+      "commonsSha1": "fae1b300d036d551835c90543a894d8af423987d",
+      "license": "CC0",
+      "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+      "artist": "Shihao Mei garymei",
+      "credit": "https://unsplash.com/photos/11gveZJo_ac\nImage at the Wayback Machine\n\nGallery at the Wayback Machine",
+      "originalWidth": 3840,
+      "originalHeight": 2560,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-73084654",
+      "split": "development",
+      "group": "commons-page-73084654",
+      "filename": "v22-startrail-73084654.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/%E6%96%B0%E7%AB%B9%E7%B8%A3%20%E8%A4%92%E5%BF%A0%E4%BA%AD%E7%BE%A9%E6%B0%91%E5%BB%9F%20%E5%A4%9C%E7%A9%BA%E6%98%9F%E8%BB%8C.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:%E6%96%B0%E7%AB%B9%E7%B8%A3_%E8%A4%92%E5%BF%A0%E4%BA%AD%E7%BE%A9%E6%B0%91%E5%BB%9F_%E5%A4%9C%E7%A9%BA%E6%98%9F%E8%BB%8C.jpg",
+      "sha256": "51e7e090d91c104b3185dc890d43eac6de2f51c8fc3953c1226b9103735ea140",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 73084654,
+      "commonsTitle": "File:新竹縣 褒忠亭義民廟 夜空星軌.jpg",
+      "commonsSha1": "424ad10ef3aaa73c998847b67f91273ced7255fa",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "曾傳富",
+      "credit": "Own work",
+      "originalWidth": 7952,
+      "originalHeight": 5304,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-79278371",
+      "split": "development",
+      "group": "commons-page-79278371",
+      "filename": "v22-startrail-79278371.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/PLO%207373.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:PLO_7373.jpg",
+      "sha256": "ee4b9b7106db20044f94c5bbc9fc3c7f4ad3e948a14451bbde4edd6fa4e456fd",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 79278371,
+      "commonsTitle": "File:PLO 7373.jpg",
+      "commonsSha1": "0b9233f37b2cb50066977875973b60d5ceb60717",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "Maria Plotnikova",
+      "credit": "Own work",
+      "originalWidth": 1500,
+      "originalHeight": 1000,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-21998896",
+      "split": "development",
+      "group": "commons-page-21998896",
+      "filename": "v22-startrail-21998896.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/The%20World%20is%20Spinning%20%288072994557%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:The_World_is_Spinning_(8072994557).jpg",
+      "sha256": "c822add343057b63ba90b839ced50eda2f9f8e25ad9054df653c1d251ac0fa92",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 21998896,
+      "commonsTitle": "File:The World is Spinning (8072994557).jpg",
+      "commonsSha1": "f027da4f7f9a575cc4af721941a6113b4a175fdc",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Johnny Angelone from United States",
+      "credit": "The World is Spinning\n\nUploaded by ComputerHotline",
+      "originalWidth": 4742,
+      "originalHeight": 3264,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-5209378",
+      "split": "development",
+      "group": "commons-page-5209378",
+      "filename": "v22-startrail-5209378.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Rotating%20stars.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Rotating_stars.jpg",
+      "sha256": "6227b140ba8a4a4ba7729376482f8b979656234cb47b6eeeab2e10c58134987d",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 5209378,
+      "commonsTitle": "File:Rotating stars.jpg",
+      "commonsSha1": "08df4954149aa774930c1cb57025c617872e3f29",
+      "license": "GFDL 1.2",
+      "licenseUrl": "http://www.gnu.org/licenses/old-licenses/fdl-1.2.html",
+      "artist": "Prolineserver (talk)",
+      "credit": "Own work",
+      "originalWidth": 3872,
+      "originalHeight": 2592,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-162913565",
+      "split": "development",
+      "group": "commons-page-162913565",
+      "filename": "v22-startrail-162913565.png",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Spinning%20stars%20and%20faint%20aurora%20above%20Betsey%20Island%20from%20South%20Arm%20Tasmania%2C%20July%202022%20%2852236583266%29.png?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Spinning_stars_and_faint_aurora_above_Betsey_Island_from_South_Arm_Tasmania,_July_2022_(52236583266).png",
+      "sha256": "7b8a9d078fafda64b0a71c32abaad6035961438117ccbcce8976117ca200ff63",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 162913565,
+      "commonsTitle": "File:Spinning stars and faint aurora above Betsey Island from South Arm Tasmania, July 2022 (52236583266).png",
+      "commonsSha1": "61f8243cc07518d29739d77a6c2399e601b46696",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Thomas & Olivia Williams from Australia",
+      "credit": "Spinning stars and faint aurora above Betsey Island from South Arm Tasmania, July 2022",
+      "originalWidth": 4608,
+      "originalHeight": 3456,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-76915081",
+      "split": "development",
+      "group": "commons-page-76915081",
+      "filename": "v22-startrail-76915081.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trails%20in%20Munnar.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trails_in_Munnar.jpg",
+      "sha256": "25bdf534b49a3bca7d9ede459ba284bd9cfe966db7613e87a95d3be5258c8fa0",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 76915081,
+      "commonsTitle": "File:Star trails in Munnar.jpg",
+      "commonsSha1": "5b99dc2bd65c5ad665adbdb1c7e8cf5e5b007dd9",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Jibukrajan",
+      "credit": "Own work",
+      "originalWidth": 1335,
+      "originalHeight": 2000,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-60537469",
+      "split": "development",
+      "group": "commons-page-60537469",
+      "filename": "v22-startrail-60537469.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Startrails%20toroan.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Startrails_toroan.jpg",
+      "sha256": "554bb2b681be25c7788283aecd1e7795984fa05fc459a08b039201267d09bf13",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 60537469,
+      "commonsTitle": "File:Startrails toroan.jpg",
+      "commonsSha1": "c882590af7b0e42e996e6ebec7cd724185ed2942",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Rizaldby",
+      "credit": "Own work",
+      "originalWidth": 6000,
+      "originalHeight": 4000,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-94952980",
+      "split": "development",
+      "group": "commons-page-94952980",
+      "filename": "v22-startrail-94952980.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/%D8%B9%DA%A9%D8%A7%D8%B3%DB%8C%20%D8%A7%D8%B2%20%D8%B1%D8%AF%20%D8%B3%D8%AA%D8%A7%D8%B1%DA%AF%D8%A7%D9%86%20%D8%AF%D8%B1%20%D8%A7%D9%84%D9%85%D9%88%D8%AA%20%D9%82%D8%B2%D9%88%DB%8C%D9%86.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:%D8%B9%DA%A9%D8%A7%D8%B3%DB%8C_%D8%A7%D8%B2_%D8%B1%D8%AF_%D8%B3%D8%AA%D8%A7%D8%B1%DA%AF%D8%A7%D9%86_%D8%AF%D8%B1_%D8%A7%D9%84%D9%85%D9%88%D8%AA_%D9%82%D8%B2%D9%88%DB%8C%D9%86.jpg",
+      "sha256": "059a2bc183b5cd72196508335c3d0dbbe9ebd11053f65a8302b9b2d20cff7821",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 94952980,
+      "commonsTitle": "File:عکاسی از رد ستارگان در الموت قزوین.jpg",
+      "commonsSha1": "73046726c61eb67d9d06a94061047d6479be285b",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "P.bajelan",
+      "credit": "Own work",
+      "originalWidth": 2000,
+      "originalHeight": 1270,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-83762296",
+      "split": "development",
+      "group": "commons-page-83762296",
+      "filename": "v22-startrail-83762296.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Sunflower%20startrail.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Sunflower_startrail.jpg",
+      "sha256": "aeada4174aefd1e4e71147c9aecb4c68f9be27ac179b3c61e820442a4fa2c8b1",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 83762296,
+      "commonsTitle": "File:Sunflower startrail.jpg",
+      "commonsSha1": "849e5d759e670288b15dc5c1fa511117ef5a792f",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Martincco",
+      "credit": "Own work",
+      "originalWidth": 3937,
+      "originalHeight": 2677,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149041675",
+      "split": "development",
+      "group": "commons-page-149041675",
+      "filename": "v22-startrail-149041675.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/ALREDEDOR%20DE%20LA%20ESTRELLA%20POLAR%20%2821017416552%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:ALREDEDOR_DE_LA_ESTRELLA_POLAR_(21017416552).jpg",
+      "sha256": "464b92e6a16f2eaa0fa4b0aa43a0df967b8dcbc3974cde04056d8ed63ac38551",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 149041675,
+      "commonsTitle": "File:ALREDEDOR DE LA ESTRELLA POLAR (21017416552).jpg",
+      "commonsSha1": "7a0174871638ffde110ba5614dbfd30914b3913c",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "artist": "Marcela Escandell from Valencia, España",
+      "credit": "ALREDEDOR DE LA ESTRELLA POLAR",
+      "originalWidth": 4496,
+      "originalHeight": 3000,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-71435060",
+      "split": "development",
+      "group": "commons-page-71435060",
+      "filename": "v22-startrail-71435060.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Trails%20With%20A%20Passerby%20%2860810216%29.jpeg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Trails_With_A_Passerby_(60810216).jpeg",
+      "sha256": "78c40a42d356a54f33c26a57c61f83ba2c5292fbb870a87e2f8fa4c45e00140c",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 71435060,
+      "commonsTitle": "File:Trails With A Passerby (60810216).jpeg",
+      "commonsSha1": "65423b64e7a0758e94ff7abddc47b3e07a23da8b",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+      "artist": "Makia Minich",
+      "credit": "Imported from 500px (archived version) by the Archive Team. (detail page)",
+      "originalWidth": 2048,
+      "originalHeight": 1365,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-139656276",
+      "split": "development",
+      "group": "commons-page-139656276",
+      "filename": "v22-startrail-139656276.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Leonid%20Meteor%20Shower%20over%20Maunakea%20%28gemini-20080212-startrailleonid1%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Leonid_Meteor_Shower_over_Maunakea_(gemini-20080212-startrailleonid1).jpg",
+      "sha256": "39d292ec6050a5ea5baf1afbdc02ffd537e4874e583cc96ef8c5336612a09374",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 139656276,
+      "commonsTitle": "File:Leonid Meteor Shower over Maunakea (gemini-20080212-startrailleonid1).jpg",
+      "commonsSha1": "115c94a632f2fbd460d83087aaac315793ce3e1f",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "International Gemini Observatory",
+      "credit": "Leonid Meteor Shower over Maunakea",
+      "originalWidth": 5000,
+      "originalHeight": 5000,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-84216005",
+      "split": "development",
+      "group": "commons-page-84216005",
+      "filename": "v22-startrail-84216005.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Circpex.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Circpex.jpg",
+      "sha256": "92a446fa612ca91460bf7152585c9ff07e7e4396ba1def201165d5cddd3c1466",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 84216005,
+      "commonsTitle": "File:Circpex.jpg",
+      "commonsSha1": "4ba6a9d01a72051f456820f1705207633cff72c9",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "kkiks_ (eon)",
+      "credit": "Own work",
+      "originalWidth": 4070,
+      "originalHeight": 3256,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-160792226",
+      "split": "development",
+      "group": "commons-page-160792226",
+      "filename": "v22-startrail-160792226.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Celestial%20Night%20%2850326841636%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Celestial_Night_(50326841636).jpg",
+      "sha256": "957845e3a639c8e89acd11eeb6a8149d93f414c676709f25aed347387b4517f5",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 160792226,
+      "commonsTitle": "File:Celestial Night (50326841636).jpg",
+      "commonsSha1": "e0434ed0c8bfa6900ae331969dbacbceadf476e3",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "artist": "Savannah River Site",
+      "credit": "Celestial Night",
+      "originalWidth": 3000,
+      "originalHeight": 2100,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-97499529",
+      "split": "development",
+      "group": "commons-page-97499529",
+      "filename": "v22-startrail-97499529.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Southern%20hemisphere%20star%20trails%20%287562064954%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Southern_hemisphere_star_trails_(7562064954).jpg",
+      "sha256": "bff2035c50909e416fdc8c6830690e82f9cc816394eb6a6f6d075abb40eeb4e2",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 97499529,
+      "commonsTitle": "File:Southern hemisphere star trails (7562064954).jpg",
+      "commonsSha1": "8989aace68fdab815cdb277413bb76ebbba67eff",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Dave Young from New Zealand",
+      "credit": "southern hemisphere star trails",
+      "originalWidth": 4752,
+      "originalHeight": 3168,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-15270259",
+      "split": "development",
+      "group": "commons-page-15270259",
+      "filename": "v22-startrail-15270259.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Circumpolar%20AZ81.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Circumpolar_AZ81.jpg",
+      "sha256": "01a6d28976479d5e5ae57656a1152d5ae16e723b0bd12bc5a22a3a0a3a9408bc",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 15270259,
+      "commonsTitle": "File:Circumpolar AZ81.jpg",
+      "commonsSha1": "9b21afc4a8833d4ec40906cecdf532fab688dcbb",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+      "artist": "LCGS Russ",
+      "credit": "Own work",
+      "originalWidth": 4775,
+      "originalHeight": 4760,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-71304327",
+      "split": "development",
+      "group": "commons-page-71304327",
+      "filename": "v22-startrail-71304327.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Trails%20At%20The%20Farm%20%2825624507%29.jpeg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Trails_At_The_Farm_(25624507).jpeg",
+      "sha256": "fb062cd7c3cb5f18f5556a981d117ec82e83ea27d7f93d979d350b4d64f70a02",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 71304327,
+      "commonsTitle": "File:Trails At The Farm (25624507).jpeg",
+      "commonsSha1": "665aa658b89d58d0c6428737d7043e764c7278fe",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+      "artist": "Jason Brown",
+      "credit": "Imported from 500px (archived version) by the Archive Team. (detail page)",
+      "originalWidth": 1365,
+      "originalHeight": 2048,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-182698423",
+      "split": "development",
+      "group": "commons-page-182698423",
+      "filename": "v22-startrail-182698423.png",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Blurred%20star%20trails%20in%20Orion%20%2854444410402%29.png?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Blurred_star_trails_in_Orion_(54444410402).png",
+      "sha256": "13b28a8b53ba3a6b48f06d7ff2fd9296a5b3288354acbec87acf779dd93374c0",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 182698423,
+      "commonsTitle": "File:Blurred star trails in Orion (54444410402).png",
+      "commonsSha1": "a5833e86b352cb0d57cd824a253ed383611952b1",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Mark McCaughrean",
+      "credit": "Blurred star trails in Orion",
+      "originalWidth": 1970,
+      "originalHeight": 2953,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-134674640",
+      "split": "development",
+      "group": "commons-page-134674640",
+      "filename": "v22-startrail-134674640.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20Trails%20over%20SOAR%20%28SOAR%2014mm%201-CC%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_Trails_over_SOAR_(SOAR_14mm_1-CC).jpg",
+      "sha256": "d1ddf579ab1507057d0a113e48a145b6a092aa29f73e3951db292d3a1b4e1e78",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 134674640,
+      "commonsTitle": "File:Star Trails over SOAR (SOAR 14mm 1-CC).jpg",
+      "commonsSha1": "e3acb10a210b39d52f51fc019f4bf2457999672e",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "International Gemini Observatory/NOIRLab/NSF/AURA/M. Paredes",
+      "credit": "Star Trails over SOAR",
+      "originalWidth": 1920,
+      "originalHeight": 1080,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-73312797",
+      "split": "development",
+      "group": "commons-page-73312797",
+      "filename": "v22-startrail-73312797.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Startrail%20Colours%20%288278210851%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Startrail_Colours_(8278210851).jpg",
+      "sha256": "9010dd732ad4393346592cc4d3c8efcf30fa6627cf0f4e646c07b85c660480fd",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 73312797,
+      "commonsTitle": "File:Startrail Colours (8278210851).jpg",
+      "commonsSha1": "73672d081957d715c2ea40271674ef72364f835d",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "David Warrington from England",
+      "credit": "Startrail Colours",
+      "originalWidth": 1280,
+      "originalHeight": 853,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-48581645",
+      "split": "development",
+      "group": "commons-page-48581645",
+      "filename": "v22-startrail-48581645.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2016-05%20Grand%20Ballon%20circumpolar%20star%20trails%2001.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2016-05_Grand_Ballon_circumpolar_star_trails_01.jpg",
+      "sha256": "d55487b95045a9bb3d3fe7ee778f7aae4688dbf92ed30a49567d6ab2edef3fb5",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 48581645,
+      "commonsTitle": "File:2016-05 Grand Ballon circumpolar star trails 01.jpg",
+      "commonsSha1": "e917384d1d8d938b9b5fdba1b8ee33fc652c7839",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "0x010C",
+      "credit": "Own work",
+      "originalWidth": 5905,
+      "originalHeight": 3937,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-139263626",
+      "split": "development",
+      "group": "commons-page-139263626",
+      "filename": "v22-startrail-139263626.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Summit%20Multimedia%20Visit%202017%20%28rubin-rubin-stills-0013%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Summit_Multimedia_Visit_2017_(rubin-rubin-stills-0013).jpg",
+      "sha256": "c92dfada6a14fad423fd857bb53e353906738626acd25b6f8cdfe7b6d62aa606",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 139263626,
+      "commonsTitle": "File:Summit Multimedia Visit 2017 (rubin-rubin-stills-0013).jpg",
+      "commonsSha1": "494791b5e4ac5ef3aed2de0e335720f741f7e4bd",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "M. Park/Inigo Films/Rubin Observatory/ NSF/ AURA",
+      "credit": "Summit Multimedia Visit 2017",
+      "originalWidth": 7680,
+      "originalHeight": 4320,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-30384713",
+      "split": "development",
+      "group": "commons-page-30384713",
+      "filename": "v22-startrail-30384713.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Hill%20whitehorse%20diurnal%20trail%20short%20Orangefloyd.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Hill_whitehorse_diurnal_trail_short_Orangefloyd.jpg",
+      "sha256": "147a4221609f93d86c405ed77a871d3898e6c92c6a66e4e388cd4a6c862b3b98",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 30384713,
+      "commonsTitle": "File:Hill whitehorse diurnal trail short Orangefloyd.jpg",
+      "commonsSha1": "88198c18c2a6d14b89a07d4fc97477a009617e24",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+      "artist": "Orange Floyd",
+      "credit": "http://stringnerd.com/archives/1539",
+      "originalWidth": 1024,
+      "originalHeight": 683,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-136179157",
+      "split": "development",
+      "group": "commons-page-136179157",
+      "filename": "v22-startrail-136179157.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trails%2C%20First%20Place%20%28ann21047m%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trails,_First_Place_(ann21047m).jpg",
+      "sha256": "8d85b8747c226c20c0a71e6eb3103aea576e86f235b9b2f3650efb82027211ae",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 136179157,
+      "commonsTitle": "File:Star trails, First Place (ann21047m).jpg",
+      "commonsSha1": "b88df37387a4329e68e026f81ace039cbbaf508c",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "Fabrizio Melandri/IAU OAE",
+      "credit": "This media was produced by the International Astronomical Union (IAU), under the identifier ann21047m.\nThis tag does not indicate the copyright status of the attached work. A normal copyright tag is still required. See Commons:Licensing.",
+      "originalWidth": 3935,
+      "originalHeight": 2470,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-151573241",
+      "split": "development",
+      "group": "commons-page-151573241",
+      "filename": "v22-startrail-151573241.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Perseids%20star%20trails%2C%2030%20second%20frames%20%2850219708721%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Perseids_star_trails,_30_second_frames_(50219708721).jpg",
+      "sha256": "10e064821caf2059acfef00c2b54b9167549a8c5693eb93af4865737793fcd9f",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 151573241,
+      "commonsTitle": "File:Perseids star trails, 30 second frames (50219708721).jpg",
+      "commonsSha1": "0b8810826f398a8f4832bd444108ba4aa97f5e22",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "artist": "phatman",
+      "credit": "Perseids star trails, 30 second frames",
+      "originalWidth": 4752,
+      "originalHeight": 3158,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-109425526",
+      "split": "development",
+      "group": "commons-page-109425526",
+      "filename": "v22-startrail-109425526.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/ISS-65%20Earth%27s%20atmospheric%20glow%20and%20star%20trails%20above%20the%20Indian%20Ocean.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:ISS-65_Earth's_atmospheric_glow_and_star_trails_above_the_Indian_Ocean.jpg",
+      "sha256": "311edd44732d546425eda2f0428d8e2047061fd03cd6ad95b90e05ee77466594",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 109425526,
+      "commonsTitle": "File:ISS-65 Earth's atmospheric glow and star trails above the Indian Ocean.jpg",
+      "commonsSha1": "4ed63b9de7d6603e8d3590a6295aac797466f285",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "artist": "NASA",
+      "credit": "https://www.flickr.com/photos/nasa2explore/51239145420/",
+      "originalWidth": 5568,
+      "originalHeight": 3712,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-163577548",
+      "split": "development",
+      "group": "commons-page-163577548",
+      "filename": "v22-startrail-163577548.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trails%20and%20Earth%27s%20atmospheric%20glow%20above%20the%20southern%20Atlantic%20Ocean%20%28iss072e941128%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trails_and_Earth's_atmospheric_glow_above_the_southern_Atlantic_Ocean_(iss072e941128).jpg",
+      "sha256": "8be7720d644f7a5884be31174b3586e087c5a99f6ee52403683a18b951ee225b",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 163577548,
+      "commonsTitle": "File:Star trails and Earth's atmospheric glow above the southern Atlantic Ocean (iss072e941128).jpg",
+      "commonsSha1": "7fce2ad170c4faaeddd89722e31ba74af7428353",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "artist": "NASA Johnson Space Center",
+      "credit": "This image or video was catalogued by Lyndon B. Johnson Space Center of the United States National Aeronautics and Space Administration (NASA) under Photo ID: iss072e941128.",
+      "originalWidth": 8256,
+      "originalHeight": 5504,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-89436285",
+      "split": "development",
+      "group": "commons-page-89436285",
+      "filename": "v22-startrail-89436285.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/%D8%B9%DA%A9%D8%A7%D8%B3%DB%8C%20%D9%86%D8%AC%D9%88%D9%85%DB%8C%20-%20%D8%B1%D8%AF%20%D8%B3%D8%AA%D8%A7%D8%B1%DA%AF%D8%A7%D9%86.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:%D8%B9%DA%A9%D8%A7%D8%B3%DB%8C_%D9%86%D8%AC%D9%88%D9%85%DB%8C_-_%D8%B1%D8%AF_%D8%B3%D8%AA%D8%A7%D8%B1%DA%AF%D8%A7%D9%86.jpg",
+      "sha256": "39dc868e20bb9b8d877cdcc531f5cd5e03cc8ac6c765052c19453b33dfc06cff",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 89436285,
+      "commonsTitle": "File:عکاسی نجومی - رد ستارگان.jpg",
+      "commonsSha1": "5c64b4cd8dba8931a5cd87a317dc4bef5a033a87",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Pendar83",
+      "credit": "Own work",
+      "originalWidth": 1445,
+      "originalHeight": 965,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-98564827",
+      "split": "development",
+      "group": "commons-page-98564827",
+      "filename": "v22-startrail-98564827.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Mountain%20startrail.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Mountain_startrail.jpg",
+      "sha256": "f60fce27f42531805118bd92eacf2059517eba7a770aad94b931b9af9894be79",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 98564827,
+      "commonsTitle": "File:Mountain startrail.jpg",
+      "commonsSha1": "d27f2d1068ef0cd6bc3ae0f1777e11764cc6891b",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Camillo Granchelli",
+      "credit": "Own work",
+      "originalWidth": 1800,
+      "originalHeight": 1198,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149101017",
+      "split": "development",
+      "group": "commons-page-149101017",
+      "filename": "v22-startrail-149101017.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Boring%20TRON%20racers%20from%20the%20top%20%2852732877974%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Boring_TRON_racers_from_the_top_(52732877974).jpg",
+      "sha256": "6314502fd3ca5b395544fbb3db5664400c1d2d8e24b38cf1204cdec02b1058b2",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 149101017,
+      "commonsTitle": "File:Boring TRON racers from the top (52732877974).jpg",
+      "commonsSha1": "bd21875b1f993974797de5a2fcdc0fe9ba99b1ee",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Hauke Musicaloris",
+      "credit": "Boring TRON racers from the top",
+      "originalWidth": 4160,
+      "originalHeight": 6240,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149029519",
+      "split": "development",
+      "group": "commons-page-149029519",
+      "filename": "v22-startrail-149029519.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Circumpolar%20%284922474353%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Circumpolar_(4922474353).jpg",
+      "sha256": "b8d117b8543e5d65011683cf0a873bbfc937600650866640e43315b3ded5c97e",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 149029519,
+      "commonsTitle": "File:Circumpolar (4922474353).jpg",
+      "commonsSha1": "6ad036f912ca2758f5322c1c197f97543e1d5d8d",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Toroide",
+      "credit": "Circumpolar",
+      "originalWidth": 4288,
+      "originalHeight": 2848,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-138230096",
+      "split": "development",
+      "group": "commons-page-138230096",
+      "filename": "v22-startrail-138230096.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Circumpolar%20above%20Marseille%20%2815644404107%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Circumpolar_above_Marseille_(15644404107).jpg",
+      "sha256": "9aac2f76255149ff4d155ee0b0ff5d9255362fe734a92f974b95270beb693939",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 138230096,
+      "commonsTitle": "File:Circumpolar above Marseille (15644404107).jpg",
+      "commonsSha1": "23b998ae5729ce03b5ee3c24f339c6a2892c652e",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "artist": "Ludovic Lubeigt from Taiwan",
+      "credit": "Circumpolar above Marseille",
+      "originalWidth": 4000,
+      "originalHeight": 2768,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-59378432",
+      "split": "development",
+      "group": "commons-page-59378432",
+      "filename": "v22-startrail-59378432.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/%D0%97%D0%BE%D1%80%D1%96%20%D0%BD%D0%B0%D0%B4%20%D0%9B%D1%8F%D0%B3%D1%83%D1%88%D0%BA%D0%BE%D1%8E.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:%D0%97%D0%BE%D1%80%D1%96_%D0%BD%D0%B0%D0%B4_%D0%9B%D1%8F%D0%B3%D1%83%D1%88%D0%BA%D0%BE%D1%8E.jpg",
+      "sha256": "25b0f8fcdb8dd31f23010458ced7b1e4a491d0309e766c26dbd2ca9fc0caddf5",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 59378432,
+      "commonsTitle": "File:Зорі над Лягушкою.jpg",
+      "commonsSha1": "75996251aa390755832a8578b14251e1b5a9329e",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Dmytro Balkhovitin",
+      "credit": "Own work",
+      "originalWidth": 4256,
+      "originalHeight": 2832,
+      "aiReview": {
+        "disposition": "mixed",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-startrail-67542865",
+      "split": "development",
+      "group": "commons-page-67542865",
+      "filename": "v22-startrail-67542865.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/%D9%85%D8%B3%D8%A7%D8%B1%20%D8%A7%D9%84%D9%86%D8%AC%D9%88%D9%85%20-%20%D8%A7%D9%84%D8%B5%D8%AD%D8%B1%D8%A7%D8%A1%20%D8%A7%D9%84%D8%A8%D9%8A%D8%B6%D8%A7%D8%A1.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:%D9%85%D8%B3%D8%A7%D8%B1_%D8%A7%D9%84%D9%86%D8%AC%D9%88%D9%85_-_%D8%A7%D9%84%D8%B5%D8%AD%D8%B1%D8%A7%D8%A1_%D8%A7%D9%84%D8%A8%D9%8A%D8%B6%D8%A7%D8%A1.jpg",
+      "sha256": "0fca1b5bcf6f08cf2b1a1de4109d843fb1480caf1e38ab9e08a984500d5f3f70",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 67542865,
+      "commonsTitle": "File:مسار النجوم - الصحراء البيضاء.jpg",
+      "commonsSha1": "cb9e63976a54f28cee52e64395f953fd37028ef5",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Ahmed abd elkader mohamed",
+      "credit": "Own work",
+      "originalWidth": 4962,
+      "originalHeight": 3129,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-137746101",
+      "split": "development",
+      "group": "commons-page-137746101",
+      "filename": "v22-startrail-137746101.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Gemini%20North%20with%20circumpolar%20star%20trails%20%28noao-gntr%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Gemini_North_with_circumpolar_star_trails_(noao-gntr).jpg",
+      "sha256": "36a736be712dad5e4f48eff4a047841d1a8f591e6068d6d53f2b6257ad3d4ea3",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 137746101,
+      "commonsTitle": "File:Gemini North with circumpolar star trails (noao-gntr).jpg",
+      "commonsSha1": "e6d491a420db08349536d04b19854d3b953a6b22",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "International Gemini Observatory/NOIRLab/NSF/AURA/",
+      "credit": "Gemini North with circumpolar star trails",
+      "originalWidth": 1648,
+      "originalHeight": 2307,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-22216202",
+      "split": "development",
+      "group": "commons-page-22216202",
+      "filename": "v22-startrail-22216202.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Fixed%20North%20on%20the%20Heavens%20%288104835347%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Fixed_North_on_the_Heavens_(8104835347).jpg",
+      "sha256": "d22aa6a59ce93a6451d2858a2ab3a01e1a288f5c4d3b6ee1a5b6520e71b17a67",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 22216202,
+      "commonsTitle": "File:Fixed North on the Heavens (8104835347).jpg",
+      "commonsSha1": "bff3b826a7b23cbdd668a16832db1495a24e5c45",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Johnny Angelone from United States",
+      "credit": "Fixed North on the Heavens\n\nUploaded by ComputerHotline",
+      "originalWidth": 4566,
+      "originalHeight": 3126,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-89318605",
+      "split": "development",
+      "group": "commons-page-89318605",
+      "filename": "v22-startrail-89318605.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20Trails%20over%20the%20Ocotillo%20Garden%20%2830287786895%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_Trails_over_the_Ocotillo_Garden_(30287786895).jpg",
+      "sha256": "76d340f28bb7b2b53238cd49fbbbcc0b3af2f24c47da1b2fe4fe9e95a21a2ad3",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 89318605,
+      "commonsTitle": "File:Star Trails over the Ocotillo Garden (30287786895).jpg",
+      "commonsSha1": "8066efad18913428e978fee22cdd1fa7707dd9bf",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "artist": "Joshua Tree National Park",
+      "credit": "Star Trails over the Ocotillo Garden",
+      "originalWidth": 7360,
+      "originalHeight": 4912,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-27747658",
+      "split": "development",
+      "group": "commons-page-27747658",
+      "filename": "v22-startrail-27747658.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2013-08-15%2022-47-27-nuit-salbert.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2013-08-15_22-47-27-nuit-salbert.jpg",
+      "sha256": "bca9cfb85344b80a7937ab01bde4c7d9a779ebc2275fa9c5b455e67908159b36",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 27747658,
+      "commonsTitle": "File:2013-08-15 22-47-27-nuit-salbert.jpg",
+      "commonsSha1": "da3ae00182a55bf473000be7e32e764e91d068b3",
+      "license": "CC BY 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
+      "artist": "Thomas Bresson",
+      "credit": "Own work",
+      "originalWidth": 3230,
+      "originalHeight": 2565,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-151235537",
+      "split": "development",
+      "group": "commons-page-151235537",
+      "filename": "v22-startrail-151235537.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/LyraMeteorStarTrails%20%2849806859483%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:LyraMeteorStarTrails_(49806859483).jpg",
+      "sha256": "d38e15cb15f4d07a47954b48db5582ad30c4c95416805cd688edfb4c1edae494",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 151235537,
+      "commonsTitle": "File:LyraMeteorStarTrails (49806859483).jpg",
+      "commonsSha1": "870424bde0e0691c3d10921e2fb8cf4a50276b71",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Strange Luke",
+      "credit": "LyraMeteorStarTrails",
+      "originalWidth": 8256,
+      "originalHeight": 5504,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-92741469",
+      "split": "development",
+      "group": "commons-page-92741469",
+      "filename": "v22-startrail-92741469.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/52%20Frames%20of%20the%20Nov%2015%2C%202014%20Aurora%20%2815802410771%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:52_Frames_of_the_Nov_15,_2014_Aurora_(15802410771).jpg",
+      "sha256": "3ba6e90f456040ed683a5baf41835f0131177f3e20e1401f093725417500af12",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 92741469,
+      "commonsTitle": "File:52 Frames of the Nov 15, 2014 Aurora (15802410771).jpg",
+      "commonsSha1": "459efe9dec931d0a83b4b860a73aca502d6cb213",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Mike Lewinski",
+      "credit": "52 Frames of the Nov 15, 2014 Aurora",
+      "originalWidth": 4912,
+      "originalHeight": 3102,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149029518",
+      "split": "development",
+      "group": "commons-page-149029518",
+      "filename": "v22-startrail-149029518.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Sampaio%20de%20noche%20%284923071986%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Sampaio_de_noche_(4923071986).jpg",
+      "sha256": "8400728164ab98f10c491136fe43a452f672f9fdfe76390ef02cedd110e69def",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 149029518,
+      "commonsTitle": "File:Sampaio de noche (4923071986).jpg",
+      "commonsSha1": "b97bd7cdda4042bce34942a44eb6f1e556a588ce",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Toroide",
+      "credit": "Sampaio de noche",
+      "originalWidth": 4288,
+      "originalHeight": 2848,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-27722140",
+      "split": "development",
+      "group": "commons-page-27722140",
+      "filename": "v22-startrail-27722140.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2013-08-14%2022-29-57-startrails-malsaucy-7f.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2013-08-14_22-29-57-startrails-malsaucy-7f.jpg",
+      "sha256": "327cb2a2f88642b700479003a5b28d0c5f94fd59602bcdb3fcfe73a297f8f39e",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 27722140,
+      "commonsTitle": "File:2013-08-14 22-29-57-startrails-malsaucy-7f.jpg",
+      "commonsSha1": "a33268aa441f764cf51e2832f88e661a476cc85f",
+      "license": "CC BY 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
+      "artist": "Thomas Bresson",
+      "credit": "Own work",
+      "originalWidth": 4288,
+      "originalHeight": 2848,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-79278373",
+      "split": "development",
+      "group": "commons-page-79278373",
+      "filename": "v22-startrail-79278373.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/PLO%200272.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:PLO_0272.jpg",
+      "sha256": "c06d34bfc39dd4874ede93a9741600484ca769a58cc2fd8934a52d10e9f073f8",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 79278373,
+      "commonsTitle": "File:PLO 0272.jpg",
+      "commonsSha1": "298eb1b05c76491d3676c28e12b179591bc3f7d0",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "Maria Plotnikova",
+      "credit": "Own work",
+      "originalWidth": 1500,
+      "originalHeight": 1000,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-73438477",
+      "split": "development",
+      "group": "commons-page-73438477",
+      "filename": "v22-startrail-73438477.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20Trail%20%2873217165%29.jpeg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_Trail_(73217165).jpeg",
+      "sha256": "817e64b53a6d6bfc88e60ba7e31636a3dc2da542d9f1f85c1abd351b35c6d10d",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 73438477,
+      "commonsTitle": "File:Star Trail (73217165).jpeg",
+      "commonsSha1": "e818048b6c82a33819dc20b15981236ae88ae813",
+      "license": "CC BY 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
+      "artist": "Nick Franco",
+      "credit": "Imported from 500px (archived version) by the Archive Team. (detail page)",
+      "originalWidth": 2048,
+      "originalHeight": 1365,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-52036492",
+      "split": "development",
+      "group": "commons-page-52036492",
+      "filename": "v22-startrail-52036492.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2016-09%20Aurora%20Saguenay%2013.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2016-09_Aurora_Saguenay_13.jpg",
+      "sha256": "b5eb0350e4c6bbb439357e82e5a4196e48aa5cbf4c8cacf152a3d5b30b3d999e",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 52036492,
+      "commonsTitle": "File:2016-09 Aurora Saguenay 13.jpg",
+      "commonsSha1": "2eb965b2b505f8fb959842f4b3d1facadad57548",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "0x010C",
+      "credit": "Own work",
+      "originalWidth": 5809,
+      "originalHeight": 3873,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-67542859",
+      "split": "development",
+      "group": "commons-page-67542859",
+      "filename": "v22-startrail-67542859.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/%D9%88%D8%A7%D8%AF%D9%89%20%D8%A7%D9%84%D8%AD%D9%8A%D8%AA%D8%A7%D9%86%20-%20%D9%85%D8%B3%D8%A7%D8%B1%20%D8%A7%D9%84%D9%86%D8%AC%D9%88%D9%85.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:%D9%88%D8%A7%D8%AF%D9%89_%D8%A7%D9%84%D8%AD%D9%8A%D8%AA%D8%A7%D9%86_-_%D9%85%D8%B3%D8%A7%D8%B1_%D8%A7%D9%84%D9%86%D8%AC%D9%88%D9%85.jpg",
+      "sha256": "f477b92abdb4894d8726009d9a5f5eb586aae25e7e6d44c08a7cee7ee6397bad",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 67542859,
+      "commonsTitle": "File:وادى الحيتان - مسار النجوم.jpg",
+      "commonsSha1": "0341c4a7ab6a2695d3d45ce3247ad0344bf9939d",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Ahmed abd elkader mohamed",
+      "credit": "Own work",
+      "originalWidth": 5133,
+      "originalHeight": 3268,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-40213634",
+      "split": "development",
+      "group": "commons-page-40213634",
+      "filename": "v22-startrail-40213634.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Gavea%20South%20Vortex%20B%20by%20Alex.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Gavea_South_Vortex_B_by_Alex.jpg",
+      "sha256": "fb6b2102469c72a79a146bdc4d24c28e681cc7a20bb66e6711d9b47e4cfc14e9",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 40213634,
+      "commonsTitle": "File:Gavea South Vortex B by Alex.jpg",
+      "commonsSha1": "3aebf4512839284e5bdc3c350959dec3ecd796f4",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+      "artist": "Alex MacDowell",
+      "credit": "Own work",
+      "originalWidth": 4145,
+      "originalHeight": 2763,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-84846624",
+      "split": "development",
+      "group": "commons-page-84846624",
+      "filename": "v22-startrail-84846624.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/STARLINE.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:STARLINE.jpg",
+      "sha256": "c6f4a883c591463835968a119ea31d5c6f0d8e864ea500ad5aaccb16c39b3069",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 84846624,
+      "commonsTitle": "File:STARLINE.jpg",
+      "commonsSha1": "792df7cc7ddb99800aec9ef64589fdef5e4954f1",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "Victor Olmos",
+      "credit": "Own work",
+      "originalWidth": 1920,
+      "originalHeight": 1280,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-142368418",
+      "split": "development",
+      "group": "commons-page-142368418",
+      "filename": "v22-startrail-142368418.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Gemini%20South%20Dark%20Trails%20%28gemini-20080212-gs-star-trails%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Gemini_South_Dark_Trails_(gemini-20080212-gs-star-trails).jpg",
+      "sha256": "dfeb71e429f12da47c451a2074a23b6ae5c86b54a994b7d1f0ad2a362bc338bc",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 142368418,
+      "commonsTitle": "File:Gemini South Dark Trails (gemini-20080212-gs-star-trails).jpg",
+      "commonsSha1": "5175a7cbca2d39746a932a5b0aba596f5ae4f054",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "International Gemini Observatory",
+      "credit": "Gemini South Dark Trails",
+      "originalWidth": 3277,
+      "originalHeight": 2534,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-83910102",
+      "split": "development",
+      "group": "commons-page-83910102",
+      "filename": "v22-startrail-83910102.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trail%20over%20frozen%20Lake%20Inari.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trail_over_frozen_Lake_Inari.jpg",
+      "sha256": "20f5f1f2bf4ced2c00c9e5e624c81990dc9c3ca91f951988070470906bc67950",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 83910102,
+      "commonsTitle": "File:Star trail over frozen Lake Inari.jpg",
+      "commonsSha1": "27fa2958ccf8755391a585995918d7626e06e01c",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Martin Stojanovski",
+      "credit": "Own work",
+      "originalWidth": 3000,
+      "originalHeight": 2000,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-15929049",
+      "split": "development",
+      "group": "commons-page-15929049",
+      "filename": "v22-startrail-15929049.png",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/PSM%20V60%20D301%20Star%20trails.png?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:PSM_V60_D301_Star_trails.png",
+      "sha256": "90316d979037885e9bd18c516df1f139c16bf9ade2e4669ebda36d05040418e6",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 15929049,
+      "commonsTitle": "File:PSM V60 D301 Star trails.png",
+      "commonsSha1": "8741c15c4cabf4d3c6933e02ff78fcd2f214e742",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "artist": "Unknown authorUnknown author",
+      "credit": "Popular Science Monthly Volume 60",
+      "originalWidth": 1681,
+      "originalHeight": 2114,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-22161992",
+      "split": "development",
+      "group": "commons-page-22161992",
+      "filename": "v22-startrail-22161992.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20Trails%20%288077898576%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_Trails_(8077898576).jpg",
+      "sha256": "62b8677cee139ff109ef2f2cbe2eaf37484c2091bbccf8b94b7e65fc9b6db2b0",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 22161992,
+      "commonsTitle": "File:Star Trails (8077898576).jpg",
+      "commonsSha1": "758e157fc35fb0d3abc0ec98317b2bcb8cbdbc33",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Paxson Woelber",
+      "credit": "Star Trails\n\nUploaded by ComputerHotline",
+      "originalWidth": 2048,
+      "originalHeight": 1360,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-121573243",
+      "split": "development",
+      "group": "commons-page-121573243",
+      "filename": "v22-startrail-121573243.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Fotograf%C3%ADa%20circumpolar%20del%20Alc%C3%A1zar%20de%20Segovia.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Fotograf%C3%ADa_circumpolar_del_Alc%C3%A1zar_de_Segovia.jpg",
+      "sha256": "6aff3fb2620e6ccbb53a1ad6f007d292c495f3297ce4ebe40c6861d23bdf8034",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 121573243,
+      "commonsTitle": "File:Fotografía circumpolar del Alcázar de Segovia.jpg",
+      "commonsSha1": "bd3c01771d662844c9e2c5a001f856e233ed629e",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Ángel Sanz Andrés",
+      "credit": "Own work",
+      "originalWidth": 1600,
+      "originalHeight": 1848,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-52232985",
+      "split": "development",
+      "group": "commons-page-52232985",
+      "filename": "v22-startrail-52232985.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Jeep%20and%20old%20house%20Star%20trail%2C%20India%20%282016%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Jeep_and_old_house_Star_trail,_India_(2016).jpg",
+      "sha256": "81e5a4109d20dfd7262a491282823f0c3cb42f6a885769eea6db4e57c47cb9b1",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 52232985,
+      "commonsTitle": "File:Jeep and old house Star trail, India (2016).jpg",
+      "commonsSha1": "28d219ae6436bd61f4c3b4582eb99feef473aeb3",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Nikhilmore nimo",
+      "credit": "Own work",
+      "originalWidth": 2592,
+      "originalHeight": 1728,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-64268881",
+      "split": "development",
+      "group": "commons-page-64268881",
+      "filename": "v22-startrail-64268881.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Startrails%20Pardubice.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Startrails_Pardubice.jpg",
+      "sha256": "acac94dbd5dfef6fc0456e7ea67c8459e24a7080bb7d49b0a30c44fc14ed5ea0",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 64268881,
+      "commonsTitle": "File:Startrails Pardubice.jpg",
+      "commonsSha1": "9ec9b69eb797b7ce5d44af60e911fb6b5676a957",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Adam Malíř",
+      "credit": "Own work",
+      "originalWidth": 5184,
+      "originalHeight": 3456,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149041749",
+      "split": "development",
+      "group": "commons-page-149041749",
+      "filename": "v22-startrail-149041749.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Circumpolar%20y%20traza%20de%20la%20estaci%C3%B3n%20internacional%20%2820040721523%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Circumpolar_y_traza_de_la_estaci%C3%B3n_internacional_(20040721523).jpg",
+      "sha256": "e3ca2bde275cd0d72fc332e9b7bcbdf8cb03f4b987f4184b2b8d0f5e698d2684",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 149041749,
+      "commonsTitle": "File:Circumpolar y traza de la estación internacional (20040721523).jpg",
+      "commonsSha1": "9da157696b7d51083bef627530c2b109d93654a3",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Jorge CG",
+      "credit": "Circumpolar y traza de la estación internacional",
+      "originalWidth": 2500,
+      "originalHeight": 1875,
+      "aiReview": {
+        "disposition": "mixed",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-startrail-33218750",
+      "split": "development",
+      "group": "commons-page-33218750",
+      "filename": "v22-startrail-33218750.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/PikiWiki%20Israel%2036125%20Geography%20of%20Israel.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:PikiWiki_Israel_36125_Geography_of_Israel.jpg",
+      "sha256": "41adf57e133160463bd2d595c96250915b854658bfd3f0f5e6eda5fc909f57b3",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 33218750,
+      "commonsTitle": "File:PikiWiki Israel 36125 Geography of Israel.jpg",
+      "commonsSha1": "f78ddba4ca03662d6d4cd391a9d961ab6e1ac463",
+      "license": "CC BY 2.5",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.5",
+      "artist": "Gilad Harel",
+      "credit": "Gilad Harel via the PikiWiki - Israel free image collection project",
+      "originalWidth": 3808,
+      "originalHeight": 2243,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-196610538",
+      "split": "development",
+      "group": "commons-page-196610538",
+      "filename": "v22-startrail-196610538.png",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/A%20long%20exposure%20of%20the%20night%20sky.png?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:A_long_exposure_of_the_night_sky.png",
+      "sha256": "0bfa8e2e36f7c53018d44344fa52a7ef27c51761a188befe2de6786b6f42c43a",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 196610538,
+      "commonsTitle": "File:A long exposure of the night sky.png",
+      "commonsSha1": "74fa40631ef2b6591bac93ab5bbad02124b995c8",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Zax71",
+      "credit": "Own work",
+      "originalWidth": 6026,
+      "originalHeight": 4024,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-36511131",
+      "split": "development",
+      "group": "commons-page-36511131",
+      "filename": "v22-startrail-36511131.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2014-10-30%2021-15-58%20nuit-petit-croix.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2014-10-30_21-15-58_nuit-petit-croix.jpg",
+      "sha256": "a4c92c6ddbb4ca69f110ea83bd3ec16680e1c0e076864ca0a70ec3611b29ffef",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 36511131,
+      "commonsTitle": "File:2014-10-30 21-15-58 nuit-petit-croix.jpg",
+      "commonsSha1": "7a942f1f1a38b0da73d9887e3a5aaa556b76fe3a",
+      "license": "CC BY 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
+      "artist": "Thomas Bresson",
+      "credit": "Own work",
+      "originalWidth": 5880,
+      "originalHeight": 3998,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-152430619",
+      "split": "development",
+      "group": "commons-page-152430619",
+      "filename": "v22-startrail-152430619.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Teide%20under%20stars%20%2826957007957%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Teide_under_stars_(26957007957).jpg",
+      "sha256": "3270b9509bfb379ecd86d846c7efce2c0d97cfdfb9ed3c6247b363f2d3b8dc84",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 152430619,
+      "commonsTitle": "File:Teide under stars (26957007957).jpg",
+      "commonsSha1": "c91d80e6be5011a9493d29b7ce848dd73cc5a33e",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Ronny Kreuzberg",
+      "credit": "Teide under stars",
+      "originalWidth": 800,
+      "originalHeight": 600,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149028789",
+      "split": "development",
+      "group": "commons-page-149028789",
+      "filename": "v22-startrail-149028789.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Circumpolar%20Gamboa%20%2825752030061%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Circumpolar_Gamboa_(25752030061).jpg",
+      "sha256": "24689d07ab07b5496592bf0f1f5d67fcd629241ee3aebccd7f3101735211c32d",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 149028789,
+      "commonsTitle": "File:Circumpolar Gamboa (25752030061).jpg",
+      "commonsSha1": "ef9f9d4200d0f49990576bd4911dba82f4030262",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Eduardo Martinez",
+      "credit": "circumpolar Gamboa",
+      "originalWidth": 2500,
+      "originalHeight": 1526,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-138239774",
+      "split": "development",
+      "group": "commons-page-138239774",
+      "filename": "v22-startrail-138239774.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Circumpolar%20-%20Sky%20full%20of%20stars%20%2815934982119%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Circumpolar_-_Sky_full_of_stars_(15934982119).jpg",
+      "sha256": "aa0c98b53eefa3539e3d824b1ad889bd4ca9a4b30a49980cbd7f0d3b9e0f1d2f",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 138239774,
+      "commonsTitle": "File:Circumpolar - Sky full of stars (15934982119).jpg",
+      "commonsSha1": "9f7d9f970cc80dc41fbf233e96d3afd48f3c4ac5",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "artist": "Ludovic Lubeigt from Taiwan",
+      "credit": "Circumpolar - Sky full of stars",
+      "originalWidth": 4000,
+      "originalHeight": 3000,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-2542239",
+      "split": "development",
+      "group": "commons-page-2542239",
+      "filename": "v22-startrail-2542239.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Kanchanaburi%20night%20sky.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Kanchanaburi_night_sky.jpg",
+      "sha256": "f687e318b35e31b9a72c23ff0dda0ce3295cea9b22c75c7853a8f112ca28722b",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 2542239,
+      "commonsTitle": "File:Kanchanaburi night sky.jpg",
+      "commonsSha1": "6e5414ca0c0011913d606fed17844641721c5a92",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "http://creativecommons.org/licenses/by-sa/3.0/",
+      "artist": "Chris huh",
+      "credit": "Own work",
+      "originalWidth": 3609,
+      "originalHeight": 2256,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-63958584",
+      "split": "development",
+      "group": "commons-page-63958584",
+      "filename": "v22-startrail-63958584.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2017-04%20Circumpolar%20trails%20sunset%20at%20La%20Hague%20lighthouse.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2017-04_Circumpolar_trails_sunset_at_La_Hague_lighthouse.jpg",
+      "sha256": "886e1b9b3f7801802cdc05ad256ab9f80d4ca651d997c8b2d2181e34562233cb",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 63958584,
+      "commonsTitle": "File:2017-04 Circumpolar trails sunset at La Hague lighthouse.jpg",
+      "commonsSha1": "dbefcdd340ce64ea714e9e339679ae6fd2256a00",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Antoine Lamielle",
+      "credit": "Own work",
+      "originalWidth": 5944,
+      "originalHeight": 3344,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-48071639",
+      "split": "development",
+      "group": "commons-page-48071639",
+      "filename": "v22-startrail-48071639.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trails....%20%286950443859%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trails...._(6950443859).jpg",
+      "sha256": "4ca6963f9b9d32dbcc59470a9bd2ce1cf2f52d11f0acb5ff9ec6df5a131f0f71",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 48071639,
+      "commonsTitle": "File:Star trails.... (6950443859).jpg",
+      "commonsSha1": "8ce467b89fa00c187f4c846eeeda33fc0fb89962",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "artist": "Chris Isherwood",
+      "credit": "Star trails....",
+      "originalWidth": 3888,
+      "originalHeight": 2592,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-83834259",
+      "split": "development",
+      "group": "commons-page-83834259",
+      "filename": "v22-startrail-83834259.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trail%20above%20Krushevo.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trail_above_Krushevo.jpg",
+      "sha256": "e30bf16c318187d16705b72686451feaff898bcb915a6eebb6aa458598300a61",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 83834259,
+      "commonsTitle": "File:Star trail above Krushevo.jpg",
+      "commonsSha1": "7e0d6125a08e1542ded1139ba1b5766818f85783",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Martin Stojanovski",
+      "credit": "Own work",
+      "originalWidth": 2400,
+      "originalHeight": 1600,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-94426507",
+      "split": "development",
+      "group": "commons-page-94426507",
+      "filename": "v22-startrail-94426507.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Zamek%20w%20Bydlinie%20noc%C4%85.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Zamek_w_Bydlinie_noc%C4%85.jpg",
+      "sha256": "f907ac47478394de4d89d7c76ccfdb498989e9db205809c3f164cb77c2b8e9fe",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 94426507,
+      "commonsTitle": "File:Zamek w Bydlinie nocą.jpg",
+      "commonsSha1": "f97304a2c3a21bbf7b0b039dd057cc251b9987aa",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Q'bot",
+      "credit": "Own work",
+      "originalWidth": 6240,
+      "originalHeight": 4160,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-149041920",
+      "split": "development",
+      "group": "commons-page-149041920",
+      "filename": "v22-startrail-149041920.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Startrails%20%284984557938%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Startrails_(4984557938).jpg",
+      "sha256": "2d370f520c8b378632a2231a1c82a8c096b73e441ad3bcda7fe4c2eb694fbb9b",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 149041920,
+      "commonsTitle": "File:Startrails (4984557938).jpg",
+      "commonsSha1": "6007584adcb017740f1aa20b167f94fbef96e259",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "artist": "Gaudencio Garcinuño",
+      "credit": "Startrails",
+      "originalWidth": 1000,
+      "originalHeight": 667,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-105006043",
+      "split": "development",
+      "group": "commons-page-105006043",
+      "filename": "v22-startrail-105006043.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Polar%20y%20estrellas%20circumpolares%201512.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Polar_y_estrellas_circumpolares_1512.jpg",
+      "sha256": "8da75326b028aac7ab31d907700af0ec68ff5e40c8d28fcf19a228dc6512f664",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 105006043,
+      "commonsTitle": "File:Polar y estrellas circumpolares 1512.jpg",
+      "commonsSha1": "3389416b38ce3d76f2b102813613bd3edeb45887",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Amasuela - Luis Lafuente",
+      "credit": "Own work",
+      "originalWidth": 825,
+      "originalHeight": 1100,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-58801044",
+      "split": "development",
+      "group": "commons-page-58801044",
+      "filename": "v22-startrail-58801044.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Michael%20Hull%202015%20%28Unsplash%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Michael_Hull_2015_(Unsplash).jpg",
+      "sha256": "251637c670e790264b074063f10a34775f81c13811538a01947101b3425b4a40",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 58801044,
+      "commonsTitle": "File:Michael Hull 2015 (Unsplash).jpg",
+      "commonsSha1": "540ae0fbeb4c7988261768f3fda8e417222fa996",
+      "license": "CC0",
+      "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+      "artist": "Michael Hull michaelhull",
+      "credit": "http://unsplash.com/photos/UdvXJ95Yqt8\nImage at the Wayback Machine\n\nGallery at the Wayback Machine",
+      "originalWidth": 5184,
+      "originalHeight": 3456,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-109423259",
+      "split": "development",
+      "group": "commons-page-109423259",
+      "filename": "v22-startrail-109423259.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/ISS-65%20African%20city%20lights%2C%20atmospheric%20glow%20and%20star%20trails.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:ISS-65_African_city_lights,_atmospheric_glow_and_star_trails.jpg",
+      "sha256": "3ffaefff6d1e566a80bab249a39e00cc6373a74ddd6150211cb9248681cebafc",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 109423259,
+      "commonsTitle": "File:ISS-65 African city lights, atmospheric glow and star trails.jpg",
+      "commonsSha1": "48a1de158e3dc9f53a9e93c0b397da45a0178447",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "artist": "NASA",
+      "credit": "https://www.flickr.com/photos/nasa2explore/51238292938/",
+      "originalWidth": 5568,
+      "originalHeight": 3712,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-121573246",
+      "split": "development",
+      "group": "commons-page-121573246",
+      "filename": "v22-startrail-121573246.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Fotograf%C3%ADa%20circumpolar%20del%20Alc%C3%A1zar%20de%20Segovia%201.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Fotograf%C3%ADa_circumpolar_del_Alc%C3%A1zar_de_Segovia_1.jpg",
+      "sha256": "08094e268a7d64796c7fcb79b53464642ffbf844dc3c7ee6b586495ed4a40d21",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 121573246,
+      "commonsTitle": "File:Fotografía circumpolar del Alcázar de Segovia 1.jpg",
+      "commonsSha1": "c0cd099f97eddb127fa8afcfd2dc9de980d926cf",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Ángel Sanz Andrés",
+      "credit": "Own work",
+      "originalWidth": 1944,
+      "originalHeight": 2592,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-104875781",
+      "split": "development",
+      "group": "commons-page-104875781",
+      "filename": "v22-startrail-104875781.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/A%20night%20at%20Coolum%20Beach%20%2828497804484%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:A_night_at_Coolum_Beach_(28497804484).jpg",
+      "sha256": "28a6e00afefdd695ba09711a1cf039bcfb9a0ba68bf26afa40c720f851c4a769",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 104875781,
+      "commonsTitle": "File:A night at Coolum Beach (28497804484).jpg",
+      "commonsSha1": "6b36c2fb89986bd83a13ef9b93e754c3bde22f2f",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Josselin Berger",
+      "credit": "A night at Coolum Beach",
+      "originalWidth": 3264,
+      "originalHeight": 4928,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-170340514",
+      "split": "development",
+      "group": "commons-page-170340514",
+      "filename": "v22-startrail-170340514.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trails%20%28starstax%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trails_(starstax).jpg",
+      "sha256": "934ed4564f61b2570e30c6ac6f0806828b0de44cc5e0b457916a12a406065439",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 170340514,
+      "commonsTitle": "File:Star trails (starstax).jpg",
+      "commonsSha1": "87ca33a23caa0e0a9e1002f43621c7d46ec4a6d9",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "A. Duro/ESO",
+      "credit": "This media was produced by the European Southern Observatory (ESO), under the identifier starstax\nThis tag does not indicate the copyright status of the attached work. A normal copyright tag is still required. See Commons:Licensing.",
+      "originalWidth": 5450,
+      "originalHeight": 3633,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-16099328",
+      "split": "development",
+      "group": "commons-page-16099328",
+      "filename": "v22-startrail-16099328.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Sterneamwalberla2b.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Sterneamwalberla2b.jpg",
+      "sha256": "34e08100bd314f42fcda3d4c8e384fda1080028654972c4585f070991f587775",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 16099328,
+      "commonsTitle": "File:Sterneamwalberla2b.jpg",
+      "commonsSha1": "2dba68d6aa72090ae40b0c5f3717d3e0ff6e20af",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+      "artist": "Udo Kügel",
+      "credit": "WikiMedia Commons",
+      "originalWidth": 1182,
+      "originalHeight": 1695,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-138232146",
+      "split": "development",
+      "group": "commons-page-138232146",
+      "filename": "v22-startrail-138232146.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Circumpolar%20-%20Sky%20full%20of%20stars%20%2816592987225%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Circumpolar_-_Sky_full_of_stars_(16592987225).jpg",
+      "sha256": "a4d230e2e6e8133fffe85b4316b2eaff2ad846fff2922b75b4934bfa00b4a377",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 138232146,
+      "commonsTitle": "File:Circumpolar - Sky full of stars (16592987225).jpg",
+      "commonsSha1": "6bbdc00e51d99285a3fb14d62f50766c85df78df",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "artist": "Ludovic Lubeigt from Taiwan",
+      "credit": "Circumpolar - Sky full of stars",
+      "originalWidth": 4592,
+      "originalHeight": 3448,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-139367261",
+      "split": "development",
+      "group": "commons-page-139367261",
+      "filename": "v22-startrail-139367261.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Maunakea%20Star%20Trails%20Over%20Gemini%20North%27s%20Photo%20Voltaic%20Panels%20%28gemini-gn-pv-tl-star-trails-dark-fin%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Maunakea_Star_Trails_Over_Gemini_North's_Photo_Voltaic_Panels_(gemini-gn-pv-tl-star-trails-dark-fin).jpg",
+      "sha256": "7ab019d62bb89d130e921648273c08210b28e3ee73173ace58bee4438a59a12a",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 139367261,
+      "commonsTitle": "File:Maunakea Star Trails Over Gemini North's Photo Voltaic Panels (gemini-gn-pv-tl-star-trails-dark-fin).jpg",
+      "commonsSha1": "fa024bf9355d7cd00ce3970284861f1177d4efb5",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "International Gemini Observatory/Joy Pollard",
+      "credit": "Maunakea Star Trails Over Gemini North's Photo Voltaic Panels",
+      "originalWidth": 4365,
+      "originalHeight": 2910,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-107207046",
+      "split": "development",
+      "group": "commons-page-107207046",
+      "filename": "v22-startrail-107207046.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Church%20at%20the%20summit%20of%20Magdalensberg%20in%20Carinthia.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Church_at_the_summit_of_Magdalensberg_in_Carinthia.jpg",
+      "sha256": "e5979f588f05704d5384b67688cfe5ebd858d3c51e1322a604615443d237a22e",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 107207046,
+      "commonsTitle": "File:Church at the summit of Magdalensberg in Carinthia.jpg",
+      "commonsSha1": "2e4cafb7c32ca1720e2e6e643c14d2200322c75a",
+      "license": "CC0",
+      "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+      "artist": "Dimitry Anikin",
+      "credit": "Own work",
+      "originalWidth": 5184,
+      "originalHeight": 3888,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-91216156",
+      "split": "development",
+      "group": "commons-page-91216156",
+      "filename": "v22-startrail-91216156.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Gorakshep%20and%20startrail.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Gorakshep_and_startrail.jpg",
+      "sha256": "7e836a63f27cc535cf69eabc7a07ea7d898093baecf9b1b6f6fea2b374b1de36",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 91216156,
+      "commonsTitle": "File:Gorakshep and startrail.jpg",
+      "commonsSha1": "c8d28338c8d5ab411e194c69f553b4f533967807",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Samdesherpa",
+      "credit": "Own work",
+      "originalWidth": 3000,
+      "originalHeight": 2003,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-84295264",
+      "split": "development",
+      "group": "commons-page-84295264",
+      "filename": "v22-startrail-84295264.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Tower%20trails.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Tower_trails.jpg",
+      "sha256": "b64a9fd048780e9c0dd0decefa520f6391d0e4aafb4fb7ec60bbaffb44a672ff",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 84295264,
+      "commonsTitle": "File:Tower trails.jpg",
+      "commonsSha1": "a51b8deaab95615a5f6bac30fb3189fa355ed6cf",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "AstroAnthony",
+      "credit": "Own work",
+      "originalWidth": 5472,
+      "originalHeight": 3648,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-71699823",
+      "split": "development",
+      "group": "commons-page-71699823",
+      "filename": "v22-startrail-71699823.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Southern%20Swirls%20%28140112831%29.jpeg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Southern_Swirls_(140112831).jpeg",
+      "sha256": "4972f5e6f16a27d58138fc0e3a9019a4f8b66f4305252e957b3e539d32555589",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 71699823,
+      "commonsTitle": "File:Southern Swirls (140112831).jpeg",
+      "commonsSha1": "637be842e3dcb77478048c89d25a0a7d24a54ab0",
+      "license": "CC BY 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
+      "artist": "Jordan Condon",
+      "credit": "Imported from 500px (archived version) by the Archive Team. (detail page)",
+      "originalWidth": 2048,
+      "originalHeight": 1365,
+      "aiReview": {
+        "disposition": "mixed",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-startrail-71366866",
+      "split": "development",
+      "group": "commons-page-71366866",
+      "filename": "v22-startrail-71366866.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20Trails%20%2850714462%29.jpeg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_Trails_(50714462).jpeg",
+      "sha256": "3fab760be03f5f50dcbe3c9e9bff0cd5b4e71517be240265817f0d6e5396a16c",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 71366866,
+      "commonsTitle": "File:Star Trails (50714462).jpeg",
+      "commonsSha1": "2a9c08bd8c556bfbf699041bd87476a50055ccb0",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+      "artist": "Brian Gaugler",
+      "credit": "Imported from 500px (archived version) by the Archive Team. (detail page)",
+      "originalWidth": 2048,
+      "originalHeight": 1365,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-97381700",
+      "split": "development",
+      "group": "commons-page-97381700",
+      "filename": "v22-startrail-97381700.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Fotografia%20on%20es%20mostra%20el%20rastre%20dels%20astres..jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Fotografia_on_es_mostra_el_rastre_dels_astres..jpg",
+      "sha256": "c88f440f473d79a57ed3a54fb9e05ec6cd723dea45fecba9765591b3c17f3b52",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 97381700,
+      "commonsTitle": "File:Fotografia on es mostra el rastre dels astres..jpg",
+      "commonsSha1": "a3197a5d46d6386b7453eae136bb367b7f3db711",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Alba Riverio Iraola",
+      "credit": "Own work",
+      "originalWidth": 1280,
+      "originalHeight": 1920,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-113015824",
+      "split": "development",
+      "group": "commons-page-113015824",
+      "filename": "v22-startrail-113015824.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/From%20my%20garden%20%2849093148208%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:From_my_garden_(49093148208).jpg",
+      "sha256": "3317669b172fafda7813272bd5ac3aca259534011e7560cb0f69fd5467365636",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 113015824,
+      "commonsTitle": "File:From my garden (49093148208).jpg",
+      "commonsSha1": "beebe78bab32c8ac3440f911516576423927d593",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Steven Penton from Bakers Beach, Tasmania Australia",
+      "credit": "From my garden",
+      "originalWidth": 5184,
+      "originalHeight": 3456,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-18788754",
+      "split": "development",
+      "group": "commons-page-18788754",
+      "filename": "v22-startrail-18788754.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/2012-03-21%2023-20-56-circumpolaire.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:2012-03-21_23-20-56-circumpolaire.jpg",
+      "sha256": "c3f3cc8c5b221be9c97d846367209f13ca7f6752a376eba19f77bd4670be9f0e",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 18788754,
+      "commonsTitle": "File:2012-03-21 23-20-56-circumpolaire.jpg",
+      "commonsSha1": "46cfd1fa7e41cd9054fee2c05b2c28225b01f6db",
+      "license": "CC BY 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/3.0",
+      "artist": "Thomas Bresson",
+      "credit": "Own work",
+      "originalWidth": 4288,
+      "originalHeight": 2848,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-130674061",
+      "split": "development",
+      "group": "commons-page-130674061",
+      "filename": "v22-startrail-130674061.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Star%20trails%20and%20some%20visitors.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Star_trails_and_some_visitors.jpg",
+      "sha256": "0e9e5af627271e8289b990dab3361e5970da914ed03f42196d504e651f804131",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 130674061,
+      "commonsTitle": "File:Star trails and some visitors.jpg",
+      "commonsSha1": "438da25f3dca5429de48c02026706b5f33ea8728",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Virosity",
+      "credit": "Own work",
+      "originalWidth": 3264,
+      "originalHeight": 2448,
+      "aiReview": {
+        "disposition": "mixed",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-startrail-81941882",
+      "split": "development",
+      "group": "commons-page-81941882",
+      "filename": "v22-startrail-81941882.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/%D9%82%D9%84%D8%B9%D9%87%20%D9%82%D9%85%DA%86%D9%82%D8%A7%20%D8%AF%D8%B1%D9%87%20%D8%B4%D8%A7%D9%87%D8%A7%D9%86.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:%D9%82%D9%84%D8%B9%D9%87_%D9%82%D9%85%DA%86%D9%82%D8%A7_%D8%AF%D8%B1%D9%87_%D8%B4%D8%A7%D9%87%D8%A7%D9%86.jpg",
+      "sha256": "4a44bd73e1ba52abba82defe878afef500db3a5aba5e9bd08fa7d66214b0377c",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Circumpolar stars in star trails",
+      "commonsPageId": 81941882,
+      "commonsTitle": "File:قلعه قمچقا دره شاهان.jpg",
+      "commonsSha1": "f2564933862bcc377de192c8a97fe2f922ca76f0",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Anvarghaderi",
+      "credit": "Own work",
+      "originalWidth": 3648,
+      "originalHeight": 5328,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-startrail-49343683",
+      "split": "development",
+      "group": "commons-page-49343683",
+      "filename": "v22-startrail-49343683.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Startrail%20em%20%C3%81guas%20Claras%20-%20DF.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Startrail_em_%C3%81guas_Claras_-_DF.jpg",
+      "sha256": "d5c0c3ee443939ab32e630a0edb627a0e8c3259a01bff585b5ad3ca1c4f36105",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "protected-star-trail",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Star trails",
+      "commonsPageId": 49343683,
+      "commonsTitle": "File:Startrail em Águas Claras - DF.jpg",
+      "commonsSha1": "1d61468dd13b8f8f6fc7f30f49c97ec84c1d1b9f",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Paulomelo.adv",
+      "credit": "Own work",
+      "originalWidth": 5008,
+      "originalHeight": 2817,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-satellite-89070230",
+      "split": "development",
+      "group": "commons-page-89070230",
+      "filename": "v22-satellite-89070230.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Hubble%20Space%20Telescope%20in%20Orion.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Hubble_Space_Telescope_in_Orion.jpg",
+      "sha256": "e7bf5452e0bfddc9a0a29f52d8a39b557f81b7ac3d0acab3bd73307d09ff1efd",
+      "expectation": {
+        "minimumArtifacts": 2
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 89070230,
+      "commonsTitle": "File:Hubble Space Telescope in Orion.jpg",
+      "commonsSha1": "455482294ab05c16a3868e57bfb0db66c1b4ff08",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Jud McCranie",
+      "credit": "Own work",
+      "originalWidth": 2909,
+      "originalHeight": 2909,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 2,
+        "visibleRemovableMaximum": 2
+      }
+    },
+    {
+      "id": "v22-satellite-92383584",
+      "split": "development",
+      "group": "commons-page-92383584",
+      "filename": "v22-satellite-92383584.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Comet%20NEOWISE%20and%20ISS%20%28NHQ202007180001%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Comet_NEOWISE_and_ISS_(NHQ202007180001).jpg",
+      "sha256": "4ea86f8a6cd6fb608ce4ed833451ac8e8c5165d6891d821afd258bb2553db235",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 92383584,
+      "commonsTitle": "File:Comet NEOWISE and ISS (NHQ202007180001).jpg",
+      "commonsSha1": "edf1d5ad801a298c2ee523274b5efe51fb910881",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "artist": "Bill Ingalls",
+      "credit": "https://www.flickr.com/photos/nasahqphoto/50127920811/",
+      "originalWidth": 5568,
+      "originalHeight": 3712,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-satellite-73312796",
+      "split": "development",
+      "group": "commons-page-73312796",
+      "filename": "v22-satellite-73312796.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/ISS%200994%20%283724418911%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:ISS_0994_(3724418911).jpg",
+      "sha256": "648537aa9cdf01c2090bf80cc5d446096be15d136c3763f096df053330ba1e6e",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 73312796,
+      "commonsTitle": "File:ISS 0994 (3724418911).jpg",
+      "commonsSha1": "17ecf71b31f2c7b310f4051c0fad2d7a073d5498",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "David Warrington from England",
+      "credit": "IMG_0994",
+      "originalWidth": 1280,
+      "originalHeight": 853,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-satellite-69386280",
+      "split": "development",
+      "group": "commons-page-69386280",
+      "filename": "v22-satellite-69386280.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Orion%20satellite%20highway.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Orion_satellite_highway.jpg",
+      "sha256": "4285d1263fa7fc1ee1e11f4fe54c26b75e6ff018b4617a56d5ca7ea45377e719",
+      "expectation": {
+        "minimumArtifacts": 10
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite flares",
+      "commonsPageId": 69386280,
+      "commonsTitle": "File:Orion satellite highway.jpg",
+      "commonsSha1": "6ad764ab9f9cfc3e3473c65c73600608104a43ab",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Keesscherer",
+      "credit": "Own work",
+      "originalWidth": 2549,
+      "originalHeight": 2295,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 10,
+        "visibleRemovableMaximum": 30
+      }
+    },
+    {
+      "id": "v22-satellite-13256934",
+      "split": "development",
+      "group": "commons-page-13256934",
+      "filename": "v22-satellite-13256934.png",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/COSMO%20Skymed%20flare.PNG?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:COSMO_Skymed_flare.PNG",
+      "sha256": "0798888925494f933a77dd97d544b5451e79c8e9362cbb598707ba62ea56793f",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite flares",
+      "commonsPageId": 13256934,
+      "commonsTitle": "File:COSMO Skymed flare.PNG",
+      "commonsSha1": "85ddbedb474c509fdc15b227ee7991176fa669aa",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+      "artist": "",
+      "credit": "Own work",
+      "originalWidth": 4000,
+      "originalHeight": 3000,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-satellite-4289703",
+      "split": "development",
+      "group": "commons-page-4289703",
+      "filename": "v22-satellite-4289703.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/19960905%203l.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:19960905_3l.jpg",
+      "sha256": "a016774c5d9c52e21c6ebcea15f2543d3a2dab033ed1378b5322340deadc852d",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite flares",
+      "commonsPageId": 4289703,
+      "commonsTitle": "File:19960905 3l.jpg",
+      "commonsSha1": "3a5d817215dde8ceadf7a90e9511e0d97596e3a8",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "http://creativecommons.org/licenses/by-sa/3.0/",
+      "artist": "Speifensender",
+      "credit": "Own work",
+      "originalWidth": 2228,
+      "originalHeight": 1519,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-satellite-4288802",
+      "split": "development",
+      "group": "commons-page-4288802",
+      "filename": "v22-satellite-4288802.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/19970808%2010l.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:19970808_10l.jpg",
+      "sha256": "5bd72f1a0cc5841c371b375743b78db050298097e19a50f3178810c4f9c6a122",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 4288802,
+      "commonsTitle": "File:19970808 10l.jpg",
+      "commonsSha1": "7b68a065cdca0ec589ba967b467d225cabbf9d01",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+      "artist": "Speifensender",
+      "credit": "Own work",
+      "originalWidth": 2326,
+      "originalHeight": 1522,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-satellite-26541853",
+      "split": "development",
+      "group": "commons-page-26541853",
+      "filename": "v22-satellite-26541853.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/ISS%20%26%20Vega.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:ISS_%26_Vega.jpg",
+      "sha256": "9c7a117306bcfb06c854da80e7e1cdb9cee33d7ddc529eacebaf8028d093cc7c",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 26541853,
+      "commonsTitle": "File:ISS & Vega.jpg",
+      "commonsSha1": "d9fb3d6e40824179baf8129ed16c15835d21fe05",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "Pommiebastards from London",
+      "credit": "ISS & Vega",
+      "originalWidth": 3077,
+      "originalHeight": 2616,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-satellite-93681298",
+      "split": "development",
+      "group": "commons-page-93681298",
+      "filename": "v22-satellite-93681298.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/ISS%20pass.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:ISS_pass.jpg",
+      "sha256": "e437c5446af65f5712b40ae354eb2c219d352982d23087ddb7e7dbadf2417017",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 93681298,
+      "commonsTitle": "File:ISS pass.jpg",
+      "commonsSha1": "5540447cecff28acf02be53717d2c0f71ee3010c",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "artist": "Martin Bernardi",
+      "credit": "Own work",
+      "originalWidth": 3672,
+      "originalHeight": 5492,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-satellite-27220705",
+      "split": "development",
+      "group": "commons-page-27220705",
+      "filename": "v22-satellite-27220705.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/ISS%20passing%20through%20the%20Plough%20%28Ursa%20Major%29%20-%2015%20April%202012.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:ISS_passing_through_the_Plough_(Ursa_Major)_-_15_April_2012.jpg",
+      "sha256": "14c200028daa243df5673d749c45ec253ce62103435049fee7147d20b91bcdaa",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 27220705,
+      "commonsTitle": "File:ISS passing through the Plough (Ursa Major) - 15 April 2012.jpg",
+      "commonsSha1": "6aeaa895de45ec5a1468dcd5d56e9e623505d4d6",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "artist": "Steve Elliott from UK",
+      "credit": "ISS passing through the Plough",
+      "originalWidth": 4272,
+      "originalHeight": 2848,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-satellite-156538548",
+      "split": "development",
+      "group": "commons-page-156538548",
+      "filename": "v22-satellite-156538548.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Tiangong%20space%20station%20and%20Starlink%20satellites%20over%20M.B%20Gonnet%20-%20BugWarp.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Tiangong_space_station_and_Starlink_satellites_over_M.B_Gonnet_-_BugWarp.jpg",
+      "sha256": "e5d42faa3851f1aed1180188368b70098991f139c5e3b16e029664904c86f272",
+      "expectation": {
+        "minimumArtifacts": 2
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 156538548,
+      "commonsTitle": "File:Tiangong space station and Starlink satellites over M.B Gonnet - BugWarp.jpg",
+      "commonsSha1": "4bd4557c2cd2a1e780ec70fba0c97eb7c1bb4157",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "BugWarp",
+      "credit": "Own work",
+      "originalWidth": 2976,
+      "originalHeight": 3968,
+      "aiReview": {
+        "disposition": "mixed",
+        "confidence": "high",
+        "visibleRemovableMinimum": 2,
+        "visibleRemovableMaximum": 2
+      }
+    },
+    {
+      "id": "v22-satellite-14653409",
+      "split": "development",
+      "group": "commons-page-14653409",
+      "filename": "v22-satellite-14653409.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Lacrosse3%2019032011%201.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Lacrosse3_19032011_1.jpg",
+      "sha256": "28f03e90558940498e80092ced2f0aca4f61faab617d6014952a665a68939dbf",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 14653409,
+      "commonsTitle": "File:Lacrosse3 19032011 1.jpg",
+      "commonsSha1": "7f56ec592d0e52d55b782c90a8c9ad3aba1bad27",
+      "license": "CC BY-SA 3.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0",
+      "artist": "Marcoaliaslama",
+      "credit": "Own work",
+      "originalWidth": 800,
+      "originalHeight": 700,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-satellite-42851848",
+      "split": "development",
+      "group": "commons-page-42851848",
+      "filename": "v22-satellite-42851848.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Far%20down%20within%20the%20dim%20West%20%2820590204905%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Far_down_within_the_dim_West_(20590204905).jpg",
+      "sha256": "8f2e207c531017332455fe273d140c9e90232f7c6dd0a91dc23c20f1b373c62c",
+      "expectation": {
+        "maximumArtifacts": 0
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 42851848,
+      "commonsTitle": "File:Far down within the dim West (20590204905).jpg",
+      "commonsSha1": "5acfd853071820de124d957069cdf714491a3468",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "@sage_solar from Chichester, United Kingdom",
+      "credit": "Far down within the dim West",
+      "originalWidth": 3504,
+      "originalHeight": 2336,
+      "aiReview": {
+        "disposition": "protected",
+        "confidence": "high",
+        "visibleRemovableMinimum": 0,
+        "visibleRemovableMaximum": 0
+      }
+    },
+    {
+      "id": "v22-satellite-134292074",
+      "split": "development",
+      "group": "commons-page-134292074",
+      "filename": "v22-satellite-134292074.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Starlink%20Satellites%20over%20Carson%20National%20Forest%2C%20New%20Mexico%20%28noirlab2206b%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Starlink_Satellites_over_Carson_National_Forest,_New_Mexico_(noirlab2206b).jpg",
+      "sha256": "7c2473f01ceac56bf95740c0aaddb9f1ffbdc6d2a60a4b6fa9b9e602d07de57c",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 134292074,
+      "commonsTitle": "File:Starlink Satellites over Carson National Forest, New Mexico (noirlab2206b).jpg",
+      "commonsSha1": "e4bed5200b74d877ffeb510ab62cfd9cc5818c18",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "M. Lewinsky/Creative Commons Attribution",
+      "credit": "Starlink Satellites over Carson National Forest, New Mexico",
+      "originalWidth": 6000,
+      "originalHeight": 4000,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-satellite-114946798",
+      "split": "development",
+      "group": "commons-page-114946798",
+      "filename": "v22-satellite-114946798.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Starlink%20satellites%20near%20Carson%20National%20Forest.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Starlink_satellites_near_Carson_National_Forest.jpg",
+      "sha256": "058f2daf38ca033584dda7dc9f14094755a0e03345bc00b0586731d2a61690aa",
+      "expectation": {
+        "minimumArtifacts": 10
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 114946798,
+      "commonsTitle": "File:Starlink satellites near Carson National Forest.jpg",
+      "commonsSha1": "fc971207bdef7af00d49881f8cb926dadc614be8",
+      "license": "CC BY 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/2.0",
+      "artist": "M. Lewinsky",
+      "credit": "[1]",
+      "originalWidth": 1280,
+      "originalHeight": 853,
+      "aiReview": {
+        "disposition": "mixed",
+        "confidence": "high",
+        "visibleRemovableMinimum": 10,
+        "visibleRemovableMaximum": 30
+      }
+    },
+    {
+      "id": "v22-satellite-134333184",
+      "split": "development",
+      "group": "commons-page-134333184",
+      "filename": "v22-satellite-134333184.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Orion%20Nebula%20with%20Satellite%20Trails%20%28ann21021b%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Orion_Nebula_with_Satellite_Trails_(ann21021b).jpg",
+      "sha256": "01e8bd4d6bed835e40a031987aa92be256fc18094ac04f63fd0e58d4782818fd",
+      "expectation": {
+        "minimumArtifacts": 20
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 134333184,
+      "commonsTitle": "File:Orion Nebula with Satellite Trails (ann21021b).jpg",
+      "commonsSha1": "d6e93ca3dc474faf1546ac9e95b394082fed348f",
+      "license": "CC BY 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0",
+      "artist": "A. H. Abolfath",
+      "credit": "Orion Nebula with Satellite Trails",
+      "originalWidth": 2138,
+      "originalHeight": 1729,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 20,
+        "visibleRemovableMaximum": 40
+      }
+    },
+    {
+      "id": "v22-satellite-90916892",
+      "split": "development",
+      "group": "commons-page-90916892",
+      "filename": "v22-satellite-90916892.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/ISS%20%2B%20Crew%20Dragon.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:ISS_%2B_Crew_Dragon.jpg",
+      "sha256": "7e40f1938702043e03b5e663d7d37a0559491170fc327ec6a6b4ab57bd1f365c",
+      "expectation": {
+        "minimumArtifacts": 2
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Satellite trails",
+      "commonsPageId": 90916892,
+      "commonsTitle": "File:ISS + Crew Dragon.jpg",
+      "commonsSha1": "0febb07767b6817a858f577ca3aee994fe9c4326",
+      "license": "CC0",
+      "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+      "artist": "Giuseppe Donatiello",
+      "credit": "https://www.flickr.com/photos/133259498@N05/49961174936/",
+      "originalWidth": 2025,
+      "originalHeight": 2652,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 2,
+        "visibleRemovableMaximum": 2
+      }
+    },
+    {
+      "id": "v22-aircraft-31605676",
+      "split": "development",
+      "group": "commons-page-31605676",
+      "filename": "v22-aircraft-31605676.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/737%20landing%20%28269049565%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:737_landing_(269049565).jpg",
+      "sha256": "bdd0df5e9c0930c3d3463fcd9806455cb31a5759a72572bced64e40b4cee0389",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Aircraft light trails",
+      "commonsPageId": 31605676,
+      "commonsTitle": "File:737 landing (269049565).jpg",
+      "commonsSha1": "d436dd7b6ce99afa22a44e4c1bbdd949d9e51ba3",
+      "license": "CC BY-SA 2.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/2.0",
+      "artist": "Shawn from Airdrie, Canada",
+      "credit": "737 landing",
+      "originalWidth": 2272,
+      "originalHeight": 1704,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-aircraft-8203016",
+      "split": "development",
+      "group": "commons-page-8203016",
+      "filename": "v22-aircraft-8203016.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/US%20Navy%20050516-N-8213G-014%20An%20F-A-18C%20Hornet%20launches%20from%20the%20flight%20deck%20of%20the%20Nimitz-class%20aircraft%20carrier%20USS%20Ronald%20Reagan%20%28CVN%2076%29%20during%20night%20flight%20operations.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:US_Navy_050516-N-8213G-014_An_F-A-18C_Hornet_launches_from_the_flight_deck_of_the_Nimitz-class_aircraft_carrier_USS_Ronald_Reagan_(CVN_76)_during_night_flight_operations.jpg",
+      "sha256": "a76a6eee3f6e5e61411405b9b9d8a6c6ca6b8b52ff78d12a73521da7ae67595c",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Aircraft light trails",
+      "commonsPageId": 8203016,
+      "commonsTitle": "File:US Navy 050516-N-8213G-014 An F-A-18C Hornet launches from the flight deck of the Nimitz-class aircraft carrier USS Ronald Reagan (CVN 76) during night flight operations.jpg",
+      "commonsSha1": "25005fbff050d0b81da35442e38df9af4d003028",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "artist": "U.S. Navy photo by Photographer’s Mate Airman Konstandinos Goumenidis",
+      "credit": "This image was released by the United States Navy with the ID 050516-N-8213G-014 (next).\nThis tag does not indicate the copyright status of the attached work. A normal copyright tag is still required. See Commons:Licensing.\n\n\nالعربية ∙ বাংলা ∙ \nBahasa Indonesia ∙ \nBahaso Jambi ∙ \nDeutsch ∙ Deutsch (Sie-Form) ∙ English ∙ español ∙ euskara ∙ فارسی ∙ français ∙ italiano ∙ 日本語 ∙ 한국어 ∙ македонски ∙ മലയാളം ∙ Plattdüütsch ∙ Nederlands ∙ polski ∙ پښتو ∙ português ∙ русский ∙ slovenščina ∙ svenska ∙ Türkçe ∙ українська ∙ 简体中文 ∙ 繁體中文 ∙ +/−",
+      "originalWidth": 2104,
+      "originalHeight": 1296,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-aircraft-39972098",
+      "split": "development",
+      "group": "commons-page-39972098",
+      "filename": "v22-aircraft-39972098.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Alaska%20Aurora%20150217-F-LX370-003.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Alaska_Aurora_150217-F-LX370-003.jpg",
+      "sha256": "ead084fab75399daa8e2857af9d13864b3bb83a59ecd61b479685faa2f3ffb07",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Aircraft light trails",
+      "commonsPageId": 39972098,
+      "commonsTitle": "File:Alaska Aurora 150217-F-LX370-003.jpg",
+      "commonsSha1": "13f33aa3516353f8fb677a9d752dc7734e649118",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "artist": "Justin Connaher",
+      "credit": "https://www.dvidshub.net/image/1774390",
+      "originalWidth": 4278,
+      "originalHeight": 2778,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-aircraft-9054743",
+      "split": "development",
+      "group": "commons-page-9054743",
+      "filename": "v22-aircraft-9054743.png",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Plane%20landing%20over%20Potomac.png?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:Plane_landing_over_Potomac.png",
+      "sha256": "af1f9131e3b33734aa4efa2090e0db3f801fd15e78748701b4ea02d65742e0f0",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Aircraft light trails",
+      "commonsPageId": 9054743,
+      "commonsTitle": "File:Plane landing over Potomac.png",
+      "commonsSha1": "10f5980aecd9ec624e4a404481d855ffaffc2e44",
+      "license": "FAL",
+      "licenseUrl": "http://artlibre.org/licence/lal/en",
+      "artist": "The original uploader was Micahmn at English Wikipedia.",
+      "credit": "Transferred from en.wikipedia to Commons by IngerAlHaosului using CommonsHelper.",
+      "originalWidth": 3240,
+      "originalHeight": 1615,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    },
+    {
+      "id": "v22-aircraft-49461272",
+      "split": "development",
+      "group": "commons-page-49461272",
+      "filename": "v22-aircraft-49461272.jpg",
+      "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/AV-8B%20Harrier%20II%20takes%20off%20from%20USS%20Boxer%20%28LHD%204%29.jpg?width=1280",
+      "sourcePage": "https://commons.wikimedia.org/wiki/File:AV-8B_Harrier_II_takes_off_from_USS_Boxer_(LHD_4).jpg",
+      "sha256": "9d982e87ac632568344e362d0713af9f37b46a4284387a99e687dce29c309452",
+      "expectation": {
+        "minimumArtifacts": 1
+      },
+      "categoryLabel": "removable-artifact",
+      "labelProvenance": "codex-ai-contact-sheet-visual-review",
+      "sourceCategory": "Aircraft light trails",
+      "commonsPageId": 49461272,
+      "commonsTitle": "File:AV-8B Harrier II takes off from USS Boxer (LHD 4).jpg",
+      "commonsSha1": "ff1732957cc7e074cb5a71e2f0fec1002c8663b7",
+      "license": "Public domain",
+      "licenseUrl": "",
+      "artist": "U.S. Navy photo by Mass Communication Specialist 3rd Class Craig Z. Rodarte",
+      "credit": "http://www.navy.mil/view_image.asp?id=220213",
+      "originalWidth": 4382,
+      "originalHeight": 3130,
+      "aiReview": {
+        "disposition": "removable",
+        "confidence": "high",
+        "visibleRemovableMinimum": 1,
+        "visibleRemovableMaximum": 1
+      }
+    }
+  ]
+}

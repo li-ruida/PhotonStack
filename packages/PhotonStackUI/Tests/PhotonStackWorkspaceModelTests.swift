@@ -265,7 +265,8 @@ import Testing
         previewDirectory: previewDirectory
     )
 
-    model.startRunStackWorkflow()
+    let workflow = Task { await model.runStackWorkflow() }
+    defer { workflow.cancel() }
     let deadline = ContinuousClock.now + .seconds(5)
     while ContinuousClock.now < deadline,
           model.progressMessage != "stack combine" {
@@ -275,8 +276,8 @@ import Testing
     let expected = (2.0 + 0.94) / 19.0
     #expect(abs((model.progressFraction ?? 0) - expected) < 0.000_001)
     #expect(model.progressFraction ?? 1 < 0.2)
-    model.cancelCurrentTask()
-    try await waitForProcessingCompletion(in: model)
+    workflow.cancel()
+    await workflow.value
 }
 
 @Test @MainActor func stackWorkflowUsesRegisteredSequenceArtifactWhenAvailable() async throws {
@@ -7200,6 +7201,254 @@ import Testing
     #expect(layer.parameters["sourceLayerID"] == model.project.layers.first?.id.uuidString)
 }
 
+@Test @MainActor func astroDevelopPreviewRetainsSettingsAndSixteenBitOutputPath() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackAstroHistory-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let input = directory.appendingPathComponent("linear.fits")
+    try writeMinimalFITS(to: input)
+    var project = PhotonStackProject(name: "Astro history")
+    project.addAssets(from: [input])
+    project.workspaceState = ProjectWorkspaceState(selectedAssetID: project.assets.first?.id, canvasMode: .sourcePreview)
+    let service = RecordingProcessingService()
+    let model = PhotonStackWorkspaceModel(project: project, processingService: service,
+        previewDirectory: directory.appendingPathComponent("previews"))
+    var settings = AstroDevelopSettings()
+    settings.starExposure = 0.25
+    settings.redGain = 0.92
+    settings.starPeakThreshold = 0.75
+    await model.astroDevelopPreview(settings: settings)
+    let operation = try #require(model.project.editGraph.operations.last)
+    #expect(operation.kind == .stretch)
+    #expect(operation.parameters["mode"] == "astro-v1")
+    #expect(operation.parameters["starExposure"] == "0.25")
+    #expect(operation.parameters["redGain"] == "0.92")
+    #expect(operation.parameters["starPeakThreshold"] == "0.75")
+    #expect(operation.parameters["input"] == input.path)
+    #expect(operation.parameters["output"]?.hasSuffix(".tiff") == true)
+    let replayService = RecordingProcessingService()
+    let replay = PhotonStackWorkspaceModel(project: model.project, processingService: replayService,
+        previewDirectory: directory.appendingPathComponent("replay"))
+    replay.startReplayEditGraph()
+    try await waitForStartedProcessingCompletion(in: replay)
+    let snapshot = await replayService.snapshot()
+    #expect(snapshot.cliArguments.first == "develop")
+    #expect(snapshot.cliArguments.contains("0.25"))
+    #expect(snapshot.cliArguments.contains("--star-peak-threshold"))
+    #expect(snapshot.cliArguments.contains("0.75"))
+    #expect(snapshot.autoStretchCalls == 0)
+    #expect(replay.latestJob?.status == .succeeded)
+    #expect(replay.previewURL?.pathExtension == "tiff")
+}
+
+@Test @MainActor func greenCastPreviewPersistsEditableSettingsAndReplaysAsDisplay() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackGreenHistory-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let input = directory.appendingPathComponent("display.png")
+    // CPU fixture creation also works when a locked session has no Metal context.
+    let context = try #require(CGContext(data: nil, width: 16, height: 8,
+        bitsPerComponent: 8, bytesPerRow: 64, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+    context.setFillColor(CGColor(red: 0.3, green: 0.4, blue: 0.3, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: 16, height: 8))
+    let image = try #require(context.makeImage())
+    let destination = try #require(CGImageDestinationCreateWithURL(input as CFURL, "public.png" as CFString, 1, nil))
+    CGImageDestinationAddImage(destination, image, nil)
+    #expect(CGImageDestinationFinalize(destination))
+    var project = PhotonStackProject(name: "Green history")
+    project.addAssets(from: [input])
+    project.workspaceState = ProjectWorkspaceState(selectedAssetID: project.assets.first?.id, canvasMode: .sourcePreview)
+    let service = RecordingProcessingService()
+    let model = PhotonStackWorkspaceModel(project: project, processingService: service,
+        previewDirectory: directory.appendingPathComponent("previews"))
+    await model.greenCastPreview(settings: GreenCastSettings())
+    #expect(model.latestJob?.status == .succeeded, Comment(rawValue: model.errorMessage ?? "Green preview did not complete"))
+    let operation = try #require(model.project.editGraph.operations.last)
+    #expect(operation.kind == .colorNeutralize)
+    #expect(operation.parameters["greenMethod"] == "average-neutral")
+    #expect(operation.parameters["preserveLightness"] == "true")
+    #expect(operation.parameters["greenThreshold"] == "0.0")
+    #expect(operation.parameters["input"] == input.path)
+    #expect(operation.parameters["output"]?.hasSuffix(".tiff") == true)
+    #expect(model.updateEditOperationParameter(operation.id, key: "amount", value: "0.42"))
+    #expect(!model.updateEditOperationParameter(operation.id, key: "greenMethod", value: "unknown"))
+    #expect(!model.updateEditOperationParameter(operation.id, key: "greenThreshold", value: "nan"))
+    let encoded = try JSONEncoder().encode(model.project)
+    let savedProject = try JSONDecoder().decode(PhotonStackProject.self, from: encoded)
+    let replayService = RecordingProcessingService()
+    let replay = PhotonStackWorkspaceModel(project: savedProject, processingService: replayService,
+        previewDirectory: directory.appendingPathComponent("replay"))
+    replay.startReplayEditGraph()
+    try await waitForStartedProcessingCompletion(in: replay)
+    let snapshot = await replayService.snapshot()
+    #expect(Array(snapshot.cliArguments.prefix(2)) == ["color", "remove-green"])
+    #expect(snapshot.cliArguments.contains("average-neutral"))
+    #expect(snapshot.cliArguments.contains("--preserve-lightness"))
+    #expect(snapshot.cliArguments.contains("0.42"))
+    #expect(snapshot.removeGreenAmount == nil) // Legacy service route must not swallow the new settings.
+    #expect(replay.latestJob?.status == .succeeded)
+    #expect(replay.previewURL?.pathExtension == "tiff")
+}
+
+@Test @MainActor func continuumToneHistoryKeepsParametersAndRejectsInvalidReplay() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackContinuumHistory-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let input = directory.appendingPathComponent("display.png")
+    let context = try #require(CGContext(data: nil, width: 16, height: 8, bitsPerComponent: 8,
+        bytesPerRow: 64, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+    context.setFillColor(CGColor(red: 0.3, green: 0.4, blue: 0.3, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: 16, height: 8))
+    let image = try #require(context.makeImage())
+    let dest = try #require(CGImageDestinationCreateWithURL(input as CFURL, "public.png" as CFString, 1, nil))
+    CGImageDestinationAddImage(dest, image, nil); #expect(CGImageDestinationFinalize(dest))
+    var project = PhotonStackProject(name: "Continuum history")
+    project.addAssets(from: [input])
+    project.workspaceState = ProjectWorkspaceState(selectedAssetID: project.assets.first?.id, canvasMode: .sourcePreview)
+    let model = PhotonStackWorkspaceModel(project: project, processingService: RecordingProcessingService(),
+        previewDirectory: directory.appendingPathComponent("previews"))
+    await model.continuumTonePreview(settings: ContinuumToneSettings())
+    #expect(model.latestJob?.status == .succeeded, Comment(rawValue: model.errorMessage ?? "Continuum preview failed"))
+    let operation = try #require(model.project.editGraph.operations.last)
+    #expect(operation.kind == .localContrast)
+    #expect(operation.parameters["mode"] == "continuum-v1")
+    #expect(operation.parameters["points"] == ContinuumToneSettings.defaultCurve)
+    #expect(operation.parameters["input"] == input.path)
+    #expect(operation.parameters["output"]?.hasSuffix(".tiff") == true)
+    #expect(!model.updateEditOperationParameter(operation.id, key: "radius", value: "3"))
+    #expect(!model.updateEditOperationParameter(operation.id, key: "points", value: "0:0,0.5:0.8,0.8:0.7,1:1"))
+    #expect(!model.updateEditOperationParameter(operation.id, key: "amount", value: "nan"))
+    #expect(model.updateEditOperationParameter(operation.id, key: "amount", value: "0.8"))
+    model.undoEditGraphChange()
+    #expect(model.project.editGraph.operations.last?.parameters["amount"] == "0.95")
+    model.redoEditGraphChange()
+    #expect(model.project.editGraph.operations.last?.parameters["amount"] == "0.8")
+    let saved = try JSONDecoder().decode(PhotonStackProject.self, from: JSONEncoder().encode(model.project))
+    let replayService = RecordingProcessingService()
+    let replay = PhotonStackWorkspaceModel(project: saved, processingService: replayService,
+        previewDirectory: directory.appendingPathComponent("replay"))
+    replay.startReplayEditGraph(); try await waitForStartedProcessingCompletion(in: replay)
+    let snapshot = await replayService.snapshot()
+    #expect(snapshot.cliArguments.first == "local-contrast")
+    #expect(snapshot.cliArguments.contains("--continuum-curve"))
+    #expect(snapshot.cliArguments.contains(ContinuumToneSettings.defaultCurve))
+    #expect(snapshot.cliArguments.contains("0.8"))
+    #expect(replay.previewURL?.pathExtension == "tiff")
+    #expect(replay.latestJob?.status == .succeeded)
+    var broken = saved
+    broken.editGraph.operations[broken.editGraph.operations.count-1].parameters.removeValue(forKey: "points")
+    let brokenService = RecordingProcessingService()
+    let invalid = PhotonStackWorkspaceModel(project: broken, processingService: brokenService,
+        previewDirectory: directory.appendingPathComponent("invalid"))
+    invalid.startReplayEditGraph(); try await waitForStartedProcessingCompletion(in: invalid)
+    #expect(invalid.latestJob?.status == .failed)
+    #expect((await brokenService.snapshot()).cliArguments.isEmpty)
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_CONTINUUM_INPUT"] != nil))
+@MainActor func continuumToneRealM31ProjectReplayAndExport() async throws {
+    let env = ProcessInfo.processInfo.environment
+    let input = URL(fileURLWithPath: try #require(env["PHOTONSTACK_CONTINUUM_INPUT"]))
+    let expectedStage = URL(fileURLWithPath: try #require(env["PHOTONSTACK_CONTINUUM_STAGE"]))
+    let expectedFinal = URL(fileURLWithPath: try #require(env["PHOTONSTACK_CONTINUUM_FINAL"]))
+    let executable = URL(fileURLWithPath: try #require(env["PHOTONSTACK_TEST_CLI"]))
+    let base = URL(fileURLWithPath: try #require(env["PHOTONSTACK_M31_TEST_OUTPUT"]))
+    let directory = base.appendingPathComponent("m31-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    var project = PhotonStackProject(name: "M31 Continuum Review")
+    project.addAssets(from: [input])
+    project.workspaceState = ProjectWorkspaceState(selectedAssetID: project.assets.first?.id, canvasMode: .sourcePreview)
+    let model = PhotonStackWorkspaceModel(project: project, autosaveEnabled: false,
+        processingService: CLIProcessingService(executableURL: executable),
+        settingsRepository: AppSettingsRepository(settingsURL: directory.appendingPathComponent("preview-settings.json")),
+        previewDirectory: directory.appendingPathComponent("previews"))
+    await model.continuumTonePreview(settings: ContinuumToneSettings())
+    #expect(model.latestJob?.status == .succeeded, Comment(rawValue: model.errorMessage ?? "Continuum preview failed"))
+    let stage = try #require(model.previewURL)
+    #expect(try Data(contentsOf: stage) == Data(contentsOf: expectedStage))
+    await model.greenCastPreview(settings: GreenCastSettings())
+    #expect(model.latestJob?.status == .succeeded)
+    let preview = try #require(model.previewURL)
+    let referenceData = try Data(contentsOf: expectedFinal)
+    #expect(try Data(contentsOf: preview) == referenceData)
+    let projectDirectory = directory.appendingPathComponent("M31 Continuum Review")
+    await model.saveProject(to: projectDirectory)
+    #expect(model.latestJob?.status == .succeeded)
+    let replay = PhotonStackWorkspaceModel(autosaveEnabled: false,
+        processingService: CLIProcessingService(executableURL: executable),
+        settingsRepository: AppSettingsRepository(settingsURL: directory.appendingPathComponent("replay-settings.json")),
+        previewDirectory: directory.appendingPathComponent("replay"))
+    await replay.loadProject(from: projectDirectory)
+    #expect(replay.latestJob?.status == .succeeded)
+    #expect(replay.project.editGraph.operations.contains { $0.parameters["mode"] == "continuum-v1" && $0.parameters["points"] == ContinuumToneSettings.defaultCurve })
+    let nextCount = replay.jobs.count + 1
+    replay.startReplayEditGraph()
+    try await waitForStartedProcessingCompletion(in: replay, minimumJobCount: nextCount, timeoutNanoseconds: 60_000_000_000)
+    #expect(replay.latestJob?.status == .succeeded)
+    let replayed = try #require(replay.previewURL)
+    #expect(try Data(contentsOf: replayed) == referenceData)
+    replay.setExportBitDepth(.sixteen)
+    let exported = directory.appendingPathComponent("export.tiff")
+    await replay.exportCurrentImage(to: exported)
+    #expect(replay.latestJob?.status == .succeeded)
+    #expect(try Data(contentsOf: exported) == referenceData)
+    let report = ["input":input.path,"stage":stage.path,"reference":expectedFinal.path,"preview":preview.path,
+                  "replay":replayed.path,"export":exported.path,"project":projectDirectory.path]
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted,.sortedKeys]
+    try encoder.encode(report).write(to: directory.appendingPathComponent("result.json"))
+    print("M31 continuum integration artifacts: \(directory.path)")
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_M31_DISPLAY"] != nil))
+@MainActor func greenCastRealM31PreviewProjectReplayAndExport() async throws {
+    let env = ProcessInfo.processInfo.environment
+    let input = URL(fileURLWithPath: try #require(env["PHOTONSTACK_M31_DISPLAY"]))
+    let expected = URL(fileURLWithPath: try #require(env["PHOTONSTACK_M31_GREEN_REFERENCE"]))
+    let executable = URL(fileURLWithPath: try #require(env["PHOTONSTACK_TEST_CLI"]))
+    let base = URL(fileURLWithPath: try #require(env["PHOTONSTACK_M31_TEST_OUTPUT"]))
+    let directory = base.appendingPathComponent("m31-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    var project = PhotonStackProject(name: "M31 Color Integration Review")
+    project.addAssets(from: [input])
+    project.workspaceState = ProjectWorkspaceState(selectedAssetID: project.assets.first?.id, canvasMode: .sourcePreview)
+    let model = PhotonStackWorkspaceModel(project: project, autosaveEnabled: false,
+        processingService: CLIProcessingService(executableURL: executable),
+        settingsRepository: AppSettingsRepository(settingsURL: directory.appendingPathComponent("preview-settings.json")),
+        previewDirectory: directory.appendingPathComponent("previews"))
+    await model.greenCastPreview(settings: GreenCastSettings())
+    #expect(model.latestJob?.status == .succeeded)
+    let preview = try #require(model.previewURL)
+    let referenceData = try Data(contentsOf: expected)
+    #expect(try Data(contentsOf: preview) == referenceData)
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    let projectDirectory = directory.appendingPathComponent("M31 Color Review")
+    await model.saveProject(to: projectDirectory)
+    #expect(model.latestJob?.status == .succeeded)
+    let replay = PhotonStackWorkspaceModel(autosaveEnabled: false,
+        processingService: CLIProcessingService(executableURL: executable),
+        settingsRepository: AppSettingsRepository(settingsURL: directory.appendingPathComponent("replay-settings.json")),
+        previewDirectory: directory.appendingPathComponent("replay"))
+    await replay.loadProject(from: projectDirectory)
+    #expect(replay.latestJob?.status == .succeeded)
+    #expect(replay.project.editGraph.operations.last?.parameters["preserveLightness"] == "true")
+    let nextJobCount = replay.jobs.count + 1
+    replay.startReplayEditGraph()
+    try await waitForStartedProcessingCompletion(in: replay, minimumJobCount: nextJobCount, timeoutNanoseconds: 60_000_000_000)
+    #expect(replay.latestJob?.status == .succeeded)
+    let replayed = try #require(replay.previewURL)
+    #expect(try Data(contentsOf: replayed) == referenceData)
+    replay.setExportBitDepth(.sixteen)
+    let exported = directory.appendingPathComponent("export.tiff")
+    await replay.exportCurrentImage(to: exported)
+    #expect(replay.latestJob?.status == .succeeded)
+    #expect(FileManager.default.fileExists(atPath: exported.path))
+    let report = ["input": input.path, "reference": expected.path, "preview": preview.path,
+                  "replay": replayed.path, "export": exported.path, "project": projectDirectory.path]
+    try encoder.encode(report).write(to: directory.appendingPathComponent("result.json"))
+    print("M31 color integration artifacts: \(directory.path)")
+}
+
 @Test @MainActor func sourcePreviewEditCreatesDedicatedParentForDuplicateInputLayers() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("PhotonStackDuplicateEditParents-\(UUID().uuidString)", isDirectory: true)
@@ -13999,6 +14248,11 @@ private actor RecordingProcessingService: ProcessingService {
 
     func runCLI(arguments: [String]) async throws -> ProcessingCommandResult {
         lastCLIArguments = arguments
+        if (arguments.first == "develop" || arguments.first == "local-contrast" || Array(arguments.prefix(2)) == ["color", "remove-green"]), let i = arguments.firstIndex(of: "--input"),
+           let o = arguments.firstIndex(of: "--output"), i + 1 < arguments.count, o + 1 < arguments.count {
+            materializeCopyIfPossible(input: URL(fileURLWithPath: arguments[i + 1]),
+                                      output: URL(fileURLWithPath: arguments[o + 1]))
+        }
         return success("manual cli", output: #"{"type":"complete","command":"manual cli"}"#)
     }
 
@@ -14099,4 +14353,103 @@ private actor RecordingProcessingService: ProcessingService {
         var drizzlePixfrac: Double?
         var drizzleAlignment: AlignmentMethod?
     }
+}
+
+@Test @MainActor func displayGridHistoryKeepsAmountAndRejectsInvalidReplay() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackGridHistory-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let input = directory.appendingPathComponent("display.png")
+    let context = try #require(CGContext(data: nil, width: 16, height: 8, bitsPerComponent: 8,
+        bytesPerRow: 64, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+    context.setFillColor(CGColor(red: 0.3, green: 0.4, blue: 0.3, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: 16, height: 8))
+    let image = try #require(context.makeImage())
+    let dest = try #require(CGImageDestinationCreateWithURL(input as CFURL, "public.png" as CFString, 1, nil))
+    CGImageDestinationAddImage(dest, image, nil); #expect(CGImageDestinationFinalize(dest))
+    var project = PhotonStackProject(name: "Grid history")
+    project.addAssets(from: [input])
+    project.workspaceState = ProjectWorkspaceState(selectedAssetID: project.assets.first?.id, canvasMode: .sourcePreview)
+    let model = PhotonStackWorkspaceModel(project: project, processingService: RecordingProcessingService(),
+        previewDirectory: directory.appendingPathComponent("previews"))
+    await model.displayGridPreview(settings: DisplayGridSettings())
+    #expect(model.latestJob?.status == .succeeded, Comment(rawValue: model.errorMessage ?? "Grid preview failed"))
+    let operation = try #require(model.project.editGraph.operations.last)
+    #expect(operation.kind == .denoise)
+    #expect(operation.parameters["mode"] == "display-grid-v1")
+    #expect(operation.parameters["input"] == input.path)
+    #expect(operation.parameters["output"]?.hasSuffix(".tiff") == true)
+    #expect(!model.updateEditOperationParameter(operation.id, key: "amount", value: "1.01"))
+    #expect(!model.updateEditOperationParameter(operation.id, key: "amount", value: "nan"))
+    #expect(model.updateEditOperationParameter(operation.id, key: "amount", value: "0.8"))
+    model.undoEditGraphChange()
+    #expect(model.project.editGraph.operations.last?.parameters["amount"] == "1.0")
+    model.redoEditGraphChange()
+    #expect(model.project.editGraph.operations.last?.parameters["amount"] == "0.8")
+    let saved = try JSONDecoder().decode(PhotonStackProject.self, from: JSONEncoder().encode(model.project))
+    let replayService = RecordingProcessingService()
+    let replay = PhotonStackWorkspaceModel(project: saved, processingService: replayService,
+        previewDirectory: directory.appendingPathComponent("replay"))
+    replay.startReplayEditGraph(); try await waitForStartedProcessingCompletion(in: replay)
+    let snapshot = await replayService.snapshot()
+    #expect(snapshot.cliArguments.first == "suppress-grid")
+    #expect(snapshot.cliArguments.contains("--amount"))
+    #expect(snapshot.cliArguments.contains("0.8"))
+    #expect(replay.previewURL?.pathExtension == "tiff")
+    #expect(replay.latestJob?.status == .succeeded)
+    var broken = saved
+    broken.editGraph.operations[broken.editGraph.operations.count-1].parameters.removeValue(forKey: "amount")
+    let brokenService = RecordingProcessingService()
+    let invalid = PhotonStackWorkspaceModel(project: broken, processingService: brokenService,
+        previewDirectory: directory.appendingPathComponent("invalid"))
+    invalid.startReplayEditGraph(); try await waitForStartedProcessingCompletion(in: invalid)
+    #expect(invalid.latestJob?.status == .failed)
+    #expect((await brokenService.snapshot()).cliArguments.isEmpty)
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_GRID_INPUT"] != nil))
+@MainActor func displayGridRealM31ProjectReplayAndExport() async throws {
+    let env = ProcessInfo.processInfo.environment
+    let input = URL(fileURLWithPath: try #require(env["PHOTONSTACK_GRID_INPUT"]))
+    let expected = URL(fileURLWithPath: try #require(env["PHOTONSTACK_GRID_EXPECTED"]))
+    let executable = URL(fileURLWithPath: try #require(env["PHOTONSTACK_TEST_CLI"]))
+    let directory = URL(fileURLWithPath: try #require(env["PHOTONSTACK_GRID_OUTPUT"]))
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    var project = PhotonStackProject(name: "M31 Grid Review")
+    project.addAssets(from: [input])
+    project.workspaceState = ProjectWorkspaceState(selectedAssetID: project.assets.first?.id, canvasMode: .sourcePreview)
+    let model = PhotonStackWorkspaceModel(project: project, autosaveEnabled: false,
+        processingService: CLIProcessingService(executableURL: executable),
+        settingsRepository: AppSettingsRepository(settingsURL: directory.appendingPathComponent("preview-settings.json")),
+        previewDirectory: directory.appendingPathComponent("previews"))
+    await model.displayGridPreview(settings: DisplayGridSettings())
+    #expect(model.latestJob?.status == .succeeded, Comment(rawValue: model.errorMessage ?? "Grid preview failed"))
+    let preview = try #require(model.previewURL)
+    let referenceData = try Data(contentsOf: expected)
+    #expect(try Data(contentsOf: preview) == referenceData)
+    let projectDirectory = directory.appendingPathComponent("M31 Grid Review")
+    await model.saveProject(to: projectDirectory)
+    #expect(model.latestJob?.status == .succeeded)
+    let replay = PhotonStackWorkspaceModel(autosaveEnabled: false,
+        processingService: CLIProcessingService(executableURL: executable),
+        settingsRepository: AppSettingsRepository(settingsURL: directory.appendingPathComponent("replay-settings.json")),
+        previewDirectory: directory.appendingPathComponent("replay"))
+    await replay.loadProject(from: projectDirectory)
+    #expect(replay.latestJob?.status == .succeeded)
+    #expect(replay.project.editGraph.operations.last?.parameters["mode"] == "display-grid-v1")
+    let nextCount = replay.jobs.count + 1
+    replay.startReplayEditGraph()
+    try await waitForStartedProcessingCompletion(in: replay, minimumJobCount: nextCount, timeoutNanoseconds: 60_000_000_000)
+    #expect(replay.latestJob?.status == .succeeded)
+    let replayed = try #require(replay.previewURL)
+    #expect(try Data(contentsOf: replayed) == referenceData)
+    replay.setExportBitDepth(.sixteen)
+    let exported = directory.appendingPathComponent("export.tiff")
+    await replay.exportCurrentImage(to: exported)
+    #expect(replay.latestJob?.status == .succeeded)
+    #expect(try Data(contentsOf: exported) == referenceData)
+    let report = ["input":input.path,"reference":expected.path,"preview":preview.path,
+                  "replay":replayed.path,"export":exported.path,"project":projectDirectory.path]
+    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted,.sortedKeys]
+    try encoder.encode(report).write(to: directory.appendingPathComponent("result.json"))
 }

@@ -44,6 +44,7 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
     public var batchOutputFormat: BatchOutputFormat
     public var batchMaxConcurrentTasks: Int
     public var workspaceState: ProjectWorkspaceState?
+    public var deepSkySettings: DeepSkySettings?
     public var createdAt: Date
     public var updatedAt: Date
 
@@ -95,6 +96,7 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
         case batchOutputFormat
         case batchMaxConcurrentTasks
         case workspaceState
+        case deepSkySettings
         case createdAt
         case updatedAt
     }
@@ -114,6 +116,7 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
         batchOutputFormat = try container.decodeIfPresent(BatchOutputFormat.self, forKey: .batchOutputFormat) ?? .png
         batchMaxConcurrentTasks = max(1, min(try container.decodeIfPresent(Int.self, forKey: .batchMaxConcurrentTasks) ?? 1, 4))
         workspaceState = try container.decodeIfPresent(ProjectWorkspaceState.self, forKey: .workspaceState)
+        deepSkySettings = try container.decodeIfPresent(DeepSkySettings.self, forKey: .deepSkySettings)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
     }
@@ -500,6 +503,7 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
         assets[assetIndex].originalURL = replacementURL
         assets[assetIndex].kind = AssetKind.detect(from: replacementURL)
         assets[assetIndex].metadata = nil
+        deepSkySettings?.relink(oldURL: oldURL, newURL: replacementURL)
         let replacementKind = assets[assetIndex].kind
 
         for index in layers.indices {
@@ -608,7 +612,11 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
         replacementPath: String
     ) -> [String: String] {
         values.mapValues { value in
-            storedPath(value, references: oldPath) ? replacementPath : value
+            if storedPath(value, references: oldPath) { return replacementPath }
+            var recipe = DeepSkySettings.replacingPath(inRecipe: value, oldPath: oldPath, newPath: replacementPath)
+            recipe = DeepSkySettings.replacingPath(inRecipe: recipe,
+                oldPath: assetIdentityPath(for: URL(fileURLWithPath: oldPath)), newPath: replacementPath)
+            return recipe
         }
     }
 

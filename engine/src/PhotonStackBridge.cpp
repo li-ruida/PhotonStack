@@ -171,6 +171,7 @@ PhotonStackImageReadBackend bridgeImageReadBackend(photonstack::ImageReadBackend
 
 photonstack::ImageReadOptions bridgeCurvePreviewReadOptions(const PhotonStackCurvePreviewRequest& request) {
     photonstack::ImageReadOptions options;
+    options.fits.debayer = true;
     options.raw.whiteBalanceMode = bridgeRawWhiteBalanceMode(request.rawWhiteBalanceMode);
     options.raw.manualWhiteBalanceTemperature = request.rawManualWhiteBalanceTemperature;
     options.raw.manualWhiteBalanceTint = request.rawManualWhiteBalanceTint;
@@ -332,6 +333,7 @@ std::shared_ptr<const CurvePreviewDecodedSource> loadCurvePreviewDecodedSource(
     if (key.needsScientificSource) {
         photonstack::ImageReadOptions scientificOptions;
         scientificOptions.fits.mode = photonstack::FitsDecodeMode::Scientific;
+        scientificOptions.fits.debayer = true;
         auto scientificRead = codec.read(inputPath, scientificOptions);
         if (!scientificRead.ok) {
             errorMessage = scientificRead.message.empty() ? scientificRead.errorCode : scientificRead.message;

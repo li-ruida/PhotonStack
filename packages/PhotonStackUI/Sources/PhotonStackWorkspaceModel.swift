@@ -553,7 +553,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         let progressObserver = NotificationCenter.default.addObserver(
             forName: .photonStackProcessingProgress,
             object: nil,
-            queue: .main
+            // Pipe readers must not wait for SwiftUI layout on the main queue.
+            // The bounded progress stream hops to the main actor below.
+            queue: nil
         ) { [weak self] notification in
             guard let event = notification.object as? ProcessingProgressEvent else {
                 return
@@ -1640,10 +1642,6 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
     public func startPreviewLayerStack() {
         launch { await self.previewLayerStack() }
-    }
-
-    public func startRunStackWorkflow() {
-        launch { await self.runStackWorkflow() }
     }
 
     public func startRunConsoleCommand(_ text: String) {
@@ -3812,6 +3810,267 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         )
     }
 
+    public func startAstroDevelop(settings: AstroDevelopSettings) {
+        launch { await self.astroDevelopPreview(settings: settings) }
+    }
+
+    @Published public private(set) var deepSkySchema: DeepSkySchema?
+
+    public var deepSkySettings: DeepSkySettings {
+        var settings = project.deepSkySettings ?? DeepSkySettings()
+        for (key, assets) in [("calibration.darks", darkAssets), ("calibration.biases", biasAssets), ("calibration.flats", flatAssets)] {
+            if settings.values[key] == nil, !assets.isEmpty {
+                settings.values[key] = assets.map { asset in
+                    "\"" + PhotonStackProject.assetIdentityPath(for: asset.originalURL)
+                        .replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+                }.joined(separator: " ")
+            }
+        }
+        return settings
+    }
+
+    public func loadDeepSkySchema() async {
+        guard deepSkySchema == nil else { return }
+        do { deepSkySchema = try await processingService.deepSkySchema() }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    public func setDeepSkyValue(_ value: String, for key: String) {
+        guard !isProcessing else { return }
+        var settings = deepSkySettings
+        settings.values[key] = value
+        project.deepSkySettings = settings
+        project.updatedAt = Date()
+        triggerAutosave()
+    }
+
+    public func setDeepSkyOverride(_ value: String, path: String) {
+        updateDeepSkyOverrides([path: value])
+    }
+
+    public func updateDeepSkyOverrides(_ changes: [String: String]) {
+        guard !isProcessing else { return }
+        var settings = deepSkySettings
+        let paths = Set(lightAssets.map { PhotonStackProject.assetIdentityPath(for: $0.originalURL) })
+        let unusable = Set((settings.lastReport?.frames ?? []).filter { !$0.usable }.map(\.input))
+        for (path, value) in changes where paths.contains(path) && ["auto", "keep", "reject"].contains(value) {
+            guard value != "keep" || !unusable.contains(path) else { continue }
+            if value == "auto" { settings.overrides.removeValue(forKey: path) }
+            else { settings.overrides[path] = value }
+        }
+        project.deepSkySettings = settings
+        project.updatedAt = Date()
+        triggerAutosave()
+    }
+
+    var deepSkyReviewDecodeKey: String {
+        "\(deepSkySettings.values["decode.debayer"] ?? "on")|\(deepSkySettings.values["decode.demosaic"] ?? "malvar")"
+    }
+
+    /// Independent review preview. Never replaces the editor's stack or adds history.
+    func makeDeepSkyReviewPreview(input: URL, output: URL) async throws {
+        let demosaic = deepSkySettings.values["decode.demosaic"] ?? "malvar"
+        let debayer = deepSkySettings.values["decode.debayer"] ?? "on"
+        _ = try await processingService.runCLI(arguments: ["review-preview", "--input", input.path,
+            "--output", output.path, "--fits-debayer", debayer, "--fits-demosaic", demosaic])
+        try Task.checkCancellation()
+    }
+
+    public func resetDeepSkySettings() {
+        guard !isProcessing else { return }
+        var settings = deepSkySettings
+        settings.values = [:]
+        project.deepSkySettings = settings
+        project.updatedAt = Date()
+        triggerAutosave()
+    }
+
+    public func deepSkyRecipeText() throws -> String {
+        guard let schema = deepSkySchema else { throw DeepSkyRecipeError.unsupportedVersion }
+        return try deepSkySettings.recipe(schema: schema, inputs: lightAssets.map(\.originalURL))
+    }
+
+    public func exportDeepSkyRecipe(to url: URL) {
+        guard !isProcessing else { return }
+        do { try deepSkyRecipeText().write(to: url, atomically: true, encoding: .utf8) }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    public func importDeepSkyRecipe(from url: URL) async {
+        guard !isProcessing else { return }
+        do {
+            let parsed = try await processingService.inspectDeepSkyRecipe(url)
+            guard parsed.version == 1 else { throw DeepSkyRecipeError.unsupportedVersion }
+            var settings = DeepSkySettings()
+            settings.values = parsed.values
+            let overrides = (parsed.values["selection.overrides"] ?? "").split(separator: ",").map(String.init)
+            if !overrides.isEmpty {
+                guard overrides.count == parsed.inputs.count else { throw DeepSkyRecipeError.invalidReport }
+                for (path, override) in zip(parsed.inputs, overrides) {
+                    settings.overrides[PhotonStackProject.assetIdentityPath(for: URL(fileURLWithPath: path))] = override
+                }
+            }
+            // An imported recipe describes its own exact input sequence. Avoid
+            // silently mixing those inputs with a different open project's lights.
+            let current = lightAssets.map { PhotonStackProject.assetIdentityPath(for: $0.originalURL) }
+            let imported = parsed.inputs.map { PhotonStackProject.assetIdentityPath(for: URL(fileURLWithPath: $0)) }
+            if !imported.isEmpty, current != imported {
+                guard current.isEmpty else {
+                    throw EditGraphReplayError(message: "配方中的亮场顺序与当前项目不同。请在空项目中导入，以保留准确的参考帧和权重对应关系。")
+                }
+                project.addAssets(from: parsed.inputs.map { URL(fileURLWithPath: $0) }, role: .light)
+            }
+            if current == imported { settings.lastReport = deepSkySettings.lastReport }
+            project.deepSkySettings = settings
+            project.updatedAt = Date()
+            triggerAutosave()
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    public var latestDeepSkyResultURL: URL? {
+        guard let operation = project.editGraph.operations.last(where: {
+            $0.isEnabled && $0.parameters["mode"] == "deepSkyRecipe"
+        }), let path = operation.parameters["output"], !path.isEmpty,
+              FileManager.default.fileExists(atPath: path) else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    public func showLatestDeepSkyResult() {
+        guard canModifyWorkspaceProducts, let url = latestDeepSkyResultURL else { return }
+        activeLayerID = nil
+        setPreview(url, canvasMode: .sourcePreview)
+        triggerAutosave()
+    }
+
+    public var canRefinishDeepSkyMaster: Bool {
+        guard canModifyWorkspaceProducts, let previous = deepSkySettings.lastReport,
+              previous.success, !previous.analysisOnly, !previous.master.isEmpty,
+              FileManager.default.fileExists(atPath: previous.master) else { return false }
+        return canReuseDeepSkyNoise(previous) && DeepSkyReview.sameStackRecipe(try? deepSkyRecipeText(), previous.recipe)
+    }
+
+    private func canReuseDeepSkyNoise(_ previous: DeepSkyReport) -> Bool {
+        deepSkySettings.values["denoise.noise-model"] != "independent-luminance" ||
+            (previous.noiseReferencePaths.count == 3 && previous.noiseReferencePaths.allSatisfy { FileManager.default.fileExists(atPath: $0) })
+    }
+
+    public func startRefinishDeepSkyMaster() {
+        launch { await self.refinishDeepSkyMaster() }
+    }
+
+    public func refinishDeepSkyMaster() async {
+        // launch() marks a foreground task pending, so test recipe validity here
+        // independently of the UI's idle-only availability check.
+        guard let previous = deepSkySettings.lastReport, previous.success, !previous.analysisOnly,
+              canReuseDeepSkyNoise(previous),
+              DeepSkyReview.sameStackRecipe(try? deepSkyRecipeText(), previous.recipe),
+              FileManager.default.fileExists(atPath: previous.master) else { return }
+        await runJob(title: "Deep Sky Background & Denoise", kind: .stack) {
+            let root = self.currentProjectDirectory?.appendingPathComponent("processing", isDirectory: true) ?? self.previewDirectory
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let directory = root.appendingPathComponent("deep-sky-finish-\(UUID().uuidString)")
+            let recipeURL = root.appendingPathComponent("recipe-\(UUID().uuidString).txt")
+            let recipe = try self.deepSkyRecipeText()
+            try recipe.write(to: recipeURL, atomically: true, encoding: .utf8)
+            defer { try? FileManager.default.removeItem(at: recipeURL) }
+            let report = try await self.processingService.finishDeepSky(recipe: recipeURL,
+                master: URL(fileURLWithPath: previous.master), outputDirectory: directory, previous: previous)
+            try Task.checkCancellation()
+            var settings = self.deepSkySettings; settings.lastReport = report
+            self.project.deepSkySettings = settings
+            self.project.appendArtifact(ProcessingArtifact(kind: .stackMaster, name: "Deep Sky Reprocessed Background",
+                operationKind: .stack, outputDirectory: directory,
+                outputURLs: ([report.backgroundMaster] + report.noiseReferencePaths).map { URL(fileURLWithPath: $0) }, parameters: ["recipe": recipe],
+                metrics: ["frames": String(report.selectedCount)]))
+            let output = URL(fileURLWithPath: report.developed)
+            try await self.commitPreviewAfterHistogramRefresh(output)
+            // A replay may rebuild the full recipe if the cached result is gone.
+            // This keeps saved project export independent of a hidden temp master.
+            self.recordOperation(.stack, parameters: ["mode": "deepSkyRecipe", "recipe": report.recipe,
+                "report": directory.appendingPathComponent("app-report.json").path,
+                "sourceMaster": previous.master, "masterReused": "true"], outputURL: output, promoteToLayer: true)
+            self.project.updatedAt = Date(); self.triggerAutosave()
+            return "Updated background, denoising and development from \(previous.master)"
+        }
+    }
+
+    public func startDeepSkyWorkflow(analyzeOnly: Bool) {
+        launch { await self.runDeepSkyWorkflow(analyzeOnly: analyzeOnly) }
+    }
+
+    public func runDeepSkyWorkflow(analyzeOnly: Bool) async {
+        guard !rejectMissingAsset(in: lightAssets) else { return }
+        await runJob(title: analyzeOnly ? "Deep Sky Frame Assessment" : "Deep Sky Recipe", kind: .stack) {
+            if self.deepSkySchema == nil { self.deepSkySchema = try await self.processingService.deepSkySchema() }
+            let recipe = try self.deepSkyRecipeText()
+            let root = self.currentProjectDirectory?.appendingPathComponent("processing", isDirectory: true) ?? self.previewDirectory
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            let directory = root.appendingPathComponent("deep-sky-\(UUID().uuidString)", isDirectory: true)
+            let recipeURL = root.appendingPathComponent("recipe-\(UUID().uuidString).txt")
+            try recipe.write(to: recipeURL, atomically: true, encoding: .utf8)
+            defer { try? FileManager.default.removeItem(at: recipeURL) }
+            let report: DeepSkyReport
+            do {
+                report = try await self.processingService.deepSky(recipe: recipeURL, outputDirectory: directory, analyzeOnly: analyzeOnly)
+            } catch {
+                // Even selection safeguards return a reviewable report. Never
+                // interpret process failure as a successful stack.
+                if let data = try? Data(contentsOf: directory.appendingPathComponent("report.json")),
+                   let partial = try? JSONDecoder().decode(DeepSkyReport.self, from: data),
+                   (try? partial.validate()) != nil {
+                    var settings = self.deepSkySettings
+                    settings.lastReport = partial
+                    self.project.deepSkySettings = settings
+                    self.triggerAutosave()
+                }
+                throw error
+            }
+            try Task.checkCancellation()
+            var settings = self.deepSkySettings
+            settings.lastReport = report
+            self.project.deepSkySettings = settings
+            if !analyzeOnly {
+                let output = URL(fileURLWithPath: report.developed)
+                let masters = ([report.master, report.backgroundMaster, report.rejectionLow, report.rejectionHigh] + report.noiseReferencePaths)
+                    .filter { !$0.isEmpty }.map { URL(fileURLWithPath: $0) }
+                self.project.appendArtifact(ProcessingArtifact(
+                    kind: .stackMaster, name: "Deep Sky Linear Masters", operationKind: .stack,
+                    outputDirectory: directory, outputURLs: masters,
+                    parameters: ["recipe": report.recipe], metrics: ["frames": String(report.selectedCount)]))
+                try await self.commitPreviewAfterHistogramRefresh(output)
+                var recorded = ["mode": "deepSkyRecipe", "recipe": report.recipe,
+                    "report": directory.appendingPathComponent("app-report.json").path,
+                    "calibrationLightIDs": self.lightAssets.map(\.id.uuidString).joined(separator: ","),
+                    "calibrationDarkIDs": self.darkAssets.map(\.id.uuidString).joined(separator: ","),
+                    "calibrationBiasIDs": self.biasAssets.map(\.id.uuidString).joined(separator: ","),
+                    "calibrationFlatIDs": self.flatAssets.map(\.id.uuidString).joined(separator: ",")]
+                for (index, frame) in report.frames.enumerated() { recorded["inputPath.\(index)"] = frame.input }
+                self.recordOperation(.stack, parameters: recorded, outputURL: output, promoteToLayer: true)
+            }
+            self.project.updatedAt = Date()
+            self.triggerAutosave()
+            return "Deep sky: \(report.selectedCount)/\(report.inputCount) frames. Report: \(directory.appendingPathComponent("report.json").path)"
+        }
+    }
+
+    public func astroDevelopPreview(settings: AstroDevelopSettings) async {
+        guard let input = validatedCurrentInputURL() else { return }
+        let operationParameters = settings.operationParameters
+        let output = makeCachedPreviewOutput(prefix: "astro-develop-v1", input: input, parameters: operationParameters, extension: "tiff")
+        await runProcessingJob(title: "Deep Sky Development", kind: .stretch, outputURL: output) {
+            let result: ProcessingCommandResult
+            if let cached = self.cachedResultIfAvailable(output: output, command: "develop") {
+                result = cached
+            } else {
+                result = try await self.processingService.develop(input: input, output: output, settings: settings)
+            }
+            try Task.checkCancellation()
+            try await self.commitPreviewAfterHistogramRefresh(output)
+            self.recordOperation(.stretch, parameters: operationParameters, outputURL: output, promoteToLayer: true, sourceURL: input)
+            return result
+        }
+    }
+
     public func autoStretchPreview() async {
         guard let input = validatedCurrentInputURL() else {
             return
@@ -4576,6 +4835,91 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             try await self.commitPreviewAfterHistogramRefresh(output)
             self.recordOperation(.normalize, parameters: operationParameters, outputURL: output, promoteToLayer: true, sourceURL: input)
+            return result
+        }
+    }
+
+    public func startContinuumTonePreview(settings: ContinuumToneSettings) {
+        launch { await self.continuumTonePreview(settings: settings) }
+    }
+
+    public func continuumTonePreview(settings: ContinuumToneSettings) async {
+        guard let input = validatedCurrentInputURL() else { return }
+        guard settings.isValid else { errorMessage = ContinuumToneError.invalidSettings.localizedDescription; return }
+        guard AssetKind.detect(from: input) != .fits else {
+            errorMessage = ContinuumToneError.displayImageRequired.localizedDescription; return
+        }
+        let operationParameters = settings.operationParameters
+        let output = makeCachedPreviewOutput(prefix: "continuum-tone-v1", input: input,
+            parameters: operationParameters, extension: "tiff")
+        await runProcessingJob(title: "Diffuse Tone", kind: .localContrast, outputURL: output) {
+            let result: ProcessingCommandResult
+            if let cached = self.cachedResultIfAvailable(output: output, command: "local-contrast") {
+                result = cached
+            } else {
+                result = try await self.processingService.continuumTone(input: input, output: output, settings: settings)
+            }
+            try Task.checkCancellation()
+            try await self.commitPreviewAfterHistogramRefresh(output)
+            self.recordOperation(.localContrast, parameters: operationParameters, outputURL: output,
+                promoteToLayer: true, sourceURL: input)
+            return result
+        }
+    }
+
+    public func startDisplayGridPreview(settings: DisplayGridSettings) {
+        launch { await self.displayGridPreview(settings: settings) }
+    }
+
+    public func displayGridPreview(settings: DisplayGridSettings) async {
+        guard let input = validatedCurrentInputURL() else { return }
+        guard settings.isValid else { errorMessage = DisplayGridError.invalidSettings.localizedDescription; return }
+        guard DisplayGridSettings.supports(input) else {
+            errorMessage = DisplayGridError.displayImageRequired.localizedDescription; return
+        }
+        let operationParameters = settings.operationParameters
+        let output = makeCachedPreviewOutput(prefix: "display-grid-v1", input: input,
+            parameters: operationParameters, extension: "tiff")
+        await runProcessingJob(title: "Display Grid Reduction", kind: .denoise, outputURL: output) {
+            let result: ProcessingCommandResult
+            if let cached = self.cachedResultIfAvailable(output: output, command: "suppress-grid") {
+                result = cached
+            } else {
+                result = try await self.processingService.suppressDisplayGrid(input: input, output: output, settings: settings)
+            }
+            try Task.checkCancellation()
+            try await self.commitPreviewAfterHistogramRefresh(output)
+            self.recordOperation(.denoise, parameters: operationParameters, outputURL: output,
+                promoteToLayer: true, sourceURL: input)
+            return result
+        }
+    }
+
+    public func startGreenCastPreview(settings: GreenCastSettings) {
+        launch { await self.greenCastPreview(settings: settings) }
+    }
+
+    public func greenCastPreview(settings: GreenCastSettings) async {
+        guard let input = validatedCurrentInputURL() else { return }
+        var normalized = settings
+        normalized.amount = Self.normalizedFinite(settings.amount, in: 0...1, fallback: 0.65)
+        normalized.backgroundLimit = Self.normalizedFinite(settings.backgroundLimit, in: 0...1, fallback: 0.32)
+        normalized.greenThreshold = Self.normalizedFinite(settings.greenThreshold, in: 0...1, fallback: 0)
+        let appliedSettings = normalized
+        let operationParameters = appliedSettings.operationParameters
+        let output = makeCachedPreviewOutput(prefix: "green-cast-v1", input: input,
+            parameters: operationParameters, extension: "tiff")
+        await runProcessingJob(title: "Green Cast Adjustment", kind: .colorNeutralize, outputURL: output) {
+            let result: ProcessingCommandResult
+            if let cached = self.cachedResultIfAvailable(output: output, command: "color remove-green") {
+                result = cached
+            } else {
+                result = try await self.processingService.removeGreenCast(input: input, output: output, settings: appliedSettings)
+            }
+            try Task.checkCancellation()
+            try await self.commitPreviewAfterHistogramRefresh(output)
+            self.recordOperation(.colorNeutralize, parameters: operationParameters, outputURL: output,
+                promoteToLayer: true, sourceURL: input)
             return result
         }
     }
@@ -7282,6 +7626,12 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 "targetScale": .decimal(0.5...2),
             ]
         case .stretch:
+            if operation.parameters["mode"] == "astro-v1" {
+                return ["mode": .options(["astro-v1"]), "stellarBalance": .toggle,
+                        "toneCurve": .options(["rational", "asinh"]), "toneScale": .decimal(0...1_000_000_000), "whitePoint": .decimal(0...1_000_000_000),
+                        "brightness": .decimal(0.3...4), "background": .decimal(0.01...0.12), "starExposure": .decimal(0.1...1), "starPeakThreshold": .decimal(0...1),
+                        "saturation": .decimal(0...1.5), "redGain": .decimal(0.6...1.4), "blueGain": .decimal(0.6...1.4)]
+            }
             return ["targetBackground": .decimal(0.05...0.65)]
         case .curves:
             return [
@@ -7293,11 +7643,18 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 "points": .curvePoints,
             ]
         case .localContrast:
+            if operation.parameters["mode"] == "continuum-v1" {
+                return ["amount": .decimal(0...2), "fineRadius": .integer(1...63), "radius": .integer(2...64),
+                        "starChroma": .decimal(0...1), "points": .curvePoints]
+            }
             return [
                 "amount": .decimal(0...1),
                 "radius": .integer(1...64),
             ]
         case .denoise:
+            if operation.parameters["mode"] == "display-grid-v1" {
+                return ["amount": .decimal(0...1)]
+            }
             return [
                 "amount": .decimal(0...1),
                 "chromaAmount": .decimal(0...1),
@@ -7316,6 +7673,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             ]
         case .colorNeutralize:
             if operation.parameters["mode"] == "removeGreen" {
+                if operation.parameters["greenMethod"] != nil {
+                    return ["amount": .decimal(0...1), "backgroundLimit": .decimal(0...1),
+                            "greenMethod": .options(GreenCastSettings.Method.allCases.map(\.rawValue)),
+                            "greenThreshold": .decimal(0...1), "preserveLightness": .toggle]
+                }
                 return [
                     "amount": .decimal(0...1),
                     "backgroundLimit": .decimal(0...1),
@@ -7386,6 +7748,13 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         for kind: ProcessingOperationKind
     ) -> Bool {
         switch kind {
+        case .denoise:
+            return parameters["mode"] == nil || DisplayGridSettings(operationParameters: parameters) != nil
+        case .localContrast:
+            if parameters["mode"] != nil {
+                return ContinuumToneSettings(operationParameters: parameters) != nil
+            }
+            return true
         case .starMask:
             guard let radiusValue = parameters["radius"],
                   let largeRadiusValue = parameters["largeRadius"],
@@ -7424,6 +7793,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         switch operation.kind {
         case .register:
             return ["batch": .toggle]
+        case .denoise:
+            return operation.parameters["mode"] == nil ? [:] : ["mode": .options(["display-grid-v1"])]
+        case .localContrast:
+            return operation.parameters["mode"] == nil ? [:] : ["mode": .options(["continuum-v1"])]
         case .stack:
             return [
                 "calibrationApplied": .toggle,
@@ -8488,6 +8861,14 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             }
             return output
         case .stack:
+            if operation.parameters["mode"] == "deepSkyRecipe", let recipe = operation.parameters["recipe"] {
+                let directory = trackReplayTemporaryDirectory(previewDirectory.appendingPathComponent("replay-deep-sky-\(UUID().uuidString)"))
+                let recipeURL = previewDirectory.appendingPathComponent("recipe-\(UUID().uuidString).txt")
+                try recipe.write(to: recipeURL, atomically: true, encoding: .utf8)
+                defer { try? FileManager.default.removeItem(at: recipeURL) }
+                let report = try await processingService.deepSky(recipe: recipeURL, outputDirectory: directory, analyzeOnly: false)
+                return URL(fileURLWithPath: report.developed)
+            }
             return try await replayStackMacro(operation, mode: mode)
         case .drizzle:
             return try await replayDrizzleMacro(operation, mode: mode)
@@ -8610,7 +8991,14 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             )
             return output
         case .stretch:
-            let output = makeReplayOutput(prefix: "replay-stretch", mode: mode)
+            let output = operation.parameters["mode"] == "astro-v1"
+                ? makePreviewOutput(prefix: "replay-develop", extension: "tiff")
+                : makeReplayOutput(prefix: "replay-stretch", mode: mode)
+            if operation.parameters["mode"] == "astro-v1" {
+                _ = try await processingService.develop(input: input, output: output,
+                    settings: AstroDevelopSettings(operationParameters: operation.parameters))
+                return output
+            }
             let targetBackground = doubleParameter("targetBackground", in: operation, defaultValue: parameters.stretchTargetBackground)
             _ = try await processingService.autoStretch(input: input, output: output, targetBackground: targetBackground)
             return output
@@ -8642,12 +9030,28 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             }
             return output
         case .localContrast:
+            if operation.parameters["mode"] == "continuum-v1" {
+                guard let settings = ContinuumToneSettings(operationParameters: operation.parameters) else {
+                    throw ContinuumToneError.invalidSettings
+                }
+                let output = makePreviewOutput(prefix: "replay-continuum-tone", extension: "tiff")
+                _ = try await processingService.continuumTone(input: input, output: output, settings: settings)
+                return output
+            }
             let output = makeReplayOutput(prefix: "replay-contrast", mode: mode)
             let amount = doubleParameter("amount", in: operation, defaultValue: parameters.localContrastAmount)
             let radius = intParameter("radius", in: operation, defaultValue: parameters.localContrastRadius)
             _ = try await processingService.localContrast(input: input, output: output, amount: amount, radius: radius)
             return output
         case .denoise:
+            if operation.parameters["mode"] != nil {
+                guard let settings = DisplayGridSettings(operationParameters: operation.parameters) else {
+                    throw DisplayGridError.invalidSettings
+                }
+                let output = makePreviewOutput(prefix: "replay-display-grid", extension: "tiff")
+                _ = try await processingService.suppressDisplayGrid(input: input, output: output, settings: settings)
+                return output
+            }
             let output = makeReplayOutput(prefix: "replay-denoise", mode: mode)
             let amount = doubleParameter("amount", in: operation, defaultValue: parameters.denoiseAmount)
             let chromaAmount = doubleParameter("chromaAmount", in: operation, defaultValue: parameters.denoiseChromaAmount)
@@ -8675,6 +9079,13 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             return output
         case .colorNeutralize:
             if operation.parameters["mode"] == "removeGreen" {
+                if operation.parameters["greenMethod"] != nil {
+                    // Display styling stays TIFF during full-resolution export replay too.
+                    let output = makePreviewOutput(prefix: "replay-green-cast", extension: "tiff")
+                    _ = try await processingService.removeGreenCast(input: input, output: output,
+                        settings: GreenCastSettings(operationParameters: operation.parameters))
+                    return output
+                }
                 let output = makeReplayOutput(prefix: "replay-remove-green", mode: mode)
                 _ = try await processingService.removeGreenCast(
                     input: input,
@@ -14898,6 +15309,24 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     private func processingProgressDetail(for event: ProcessingProgressEvent) -> String {
+        if event.command == "deep-sky" {
+            if event.stage == "stack-combine", let detail = DeepSkyProcessingPresentation.combinationDetail(
+                step: event.step, total: event.total, overall: event.progress, chinese: language == .simplifiedChinese) {
+                return detail
+            }
+            let labels = ["calibrate": "校准", "measure": "测量原片", "align": "星点对齐", "assess": "分析筛片",
+                          "sensor-pattern-estimate": "估计传感器固定纹理", "sensor-pattern-apply": "校正原片并对齐",
+                          "stack": "准备合成缓存", "stack-combine": "像素合成与剔除", "crop": "覆盖率裁边", "background": "背景校正",
+                          "align-color-channels": "校正通道彩边", "multiscale-denoise": "多尺度降噪",
+                          "background-denoise": "背景纹理降噪",
+                          "denoise": "结构保护降噪", "develop": "色彩显影", "complete": "完成"]
+            let stage = language == .simplifiedChinese ? (labels[event.stage] ?? event.stage) : event.stage
+            let percent = Int((min(max(event.progress, 0), 1) * 100).rounded())
+            if let step = event.step, let total = event.total, step > 0, total > 0 {
+                return "\(stage) \(step)/\(total) · \(percent)%"
+            }
+            return "\(stage) · \(percent)%"
+        }
         if let step = event.step, let total = event.total {
             return "\(event.command) \(event.stage) \(step)/\(total)"
         }

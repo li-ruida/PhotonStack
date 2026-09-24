@@ -9,6 +9,7 @@ This folder contains the public documentation for PhotonStack.
 - [`cli.md`](cli.md): CLI scope and design notes
 - [`image-pipeline.md`](image-pipeline.md): processing pipeline overview
 - [`architecture.md`](architecture.md): repository architecture and shared-engine structure
+- [`development-artifacts.md`](development-artifacts.md): source layout, local results, experiment archives, and cleanup rules
 - [`compliance/third-party-dependencies.md`](compliance/third-party-dependencies.md): tracked runtime and build dependencies
 
 ## Suggested Reading Order

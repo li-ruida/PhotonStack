@@ -4,6 +4,9 @@
 **/build/
 **/.build/
 
+# Retained local images, project assets, archives and cleanup manifests
+/artifacts/
+
 # Local astrophotography processing runs
 PhotonStack-DesktopProcessor/
 PhotonStack-AstroRun-*/

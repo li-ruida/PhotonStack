@@ -24,6 +24,11 @@ struct StarDetectionOptions {
     float minPeak = 0.05F;
     std::uint32_t border = 1;
     std::size_t maxStars = 1000;
+    // Median/MAD sky statistics keep isolated bright trails or hot pixels from
+    // raising the detection threshold across an otherwise usable exposure.
+    bool robustStatistics = false;
+    // Count all separated detections while retaining only the brightest maxStars.
+    bool countAllDetections = false;
 };
 
 struct StarDetectionResult {
@@ -31,6 +36,8 @@ struct StarDetectionResult {
     std::vector<Star> stars;
     std::string errorCode;
     std::string message;
+    // Complete only when countAllDetections is enabled; otherwise stars.size().
+    std::size_t detectedCount = 0;
 };
 
 class StarDetector {

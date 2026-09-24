@@ -346,7 +346,24 @@ BackgroundExtractionResult BackgroundExtractor::extractGrid(const ImageBuffer& i
         return backgroundError("ArgumentInvalid", "Background grid dimensions cannot exceed the image dimensions");
     }
 
+    for (const auto& e : options.exclusions)
+        if (!std::isfinite(e.x) || !std::isfinite(e.y) || !std::isfinite(e.major) || !std::isfinite(e.minor) ||
+            !std::isfinite(e.angleDegrees) || e.major <= 0 || e.minor <= 0)
+            return backgroundError("ArgumentInvalid", "Invalid background exclusion ellipse");
+    const auto sampleAllowed = [&](std::uint32_t x, std::uint32_t y) {
+        for (const auto& e : options.exclusions) {
+            const double angle=e.angleDegrees*3.141592653589793/180;
+            const double dx=double(x)-e.x, dy=double(y)-e.y;
+            const double u=(dx*std::cos(angle)+dy*std::sin(angle))/e.major;
+            const double v=(-dx*std::sin(angle)+dy*std::cos(angle))/e.minor;
+            if(u*u+v*v<=1) return false;
+        }
+        return true;
+    };
     const auto gridSize = static_cast<std::size_t>(options.columns) * options.rows;
+    // Explicit exclusions remove measurements regardless of the quantile used
+    // for bright-target protection. Their holes need the same sky-only fill.
+    const bool fillUnsampled = options.protectBrightTargets || !options.exclusions.empty();
     const auto colorChannels = colorChannelCount(image);
     std::vector<WeightedSample> validLuminance;
     validLuminance.reserve(image.pixelCount());
@@ -391,7 +408,7 @@ BackgroundExtractionResult BackgroundExtractor::extractGrid(const ImageBuffer& i
             for (std::uint32_t y = y0; y < y1; ++y) {
                 for (std::uint32_t x = x0; x < x1; ++x) {
                     const auto pixel = static_cast<std::size_t>(y) * image.width + x;
-                    if (pixelIsValid(image, pixel)) {
+                    if (pixelIsValid(image, pixel) && sampleAllowed(x, y)) {
                         const float luminance = luminanceAt(image, pixel);
                         if (std::isfinite(luminance)) {
                             samples.push_back({luminance, pixelCoverage(image, pixel)});
@@ -400,9 +417,18 @@ BackgroundExtractionResult BackgroundExtractor::extractGrid(const ImageBuffer& i
                 }
             }
             const auto cellIndex = static_cast<std::size_t>(gy) * options.columns + gx;
+            // A large target can leave only a few pixels at a cell's corner.
+            // Their quantile is not a background estimate for the whole cell:
+            // a single stellar wing could otherwise subtract a dark hole from
+            // the protected target and its neighbors. Require at least a
+            // quarter of the cell when explicit exclusions constrain sampling.
+            const auto cellArea = static_cast<std::size_t>(x1 - x0) * (y1 - y0);
+            if (!options.exclusions.empty() && samples.size() < (cellArea + 3) / 4) {
+                samples.clear();
+            }
             const auto cellBackground = gridBackgroundSample(samples, options.protectBrightTargets);
             if (!cellBackground.has_value()) {
-                if (!options.protectBrightTargets) {
+                if (!fillUnsampled) {
                     grid[cellIndex] = fallbackBackground;
                 }
                 for (std::uint16_t channel = 0; channel < colorChannels; ++channel) {
@@ -420,7 +446,7 @@ BackgroundExtractionResult BackgroundExtractor::extractGrid(const ImageBuffer& i
                 for (std::uint32_t y = y0; y < y1; ++y) {
                     for (std::uint32_t x = x0; x < x1; ++x) {
                         const auto pixel = static_cast<std::size_t>(y) * image.width + x;
-                        if (pixelIsValid(image, pixel)) {
+                        if (pixelIsValid(image, pixel) && sampleAllowed(x, y)) {
                             samples.push_back({image.pixels[pixel * image.channels + channel],
                                                pixelCoverage(image, pixel)});
                         }
@@ -434,6 +460,8 @@ BackgroundExtractionResult BackgroundExtractor::extractGrid(const ImageBuffer& i
     }
 
     const auto sampledGridCells = static_cast<std::uint32_t>(std::count(sampledCells.begin(), sampledCells.end(), 1));
+    if (sampledGridCells == 0)
+        return backgroundError("BackgroundSamplesInsufficient", "No sky samples remain outside the exclusions");
     const auto filledGridCells = static_cast<std::uint32_t>(gridSize) - sampledGridCells;
     float targetChannelBackgrounds[3] = {
         fallbackChannelBackgrounds[0],
@@ -441,7 +469,7 @@ BackgroundExtractionResult BackgroundExtractor::extractGrid(const ImageBuffer& i
         fallbackChannelBackgrounds[2],
     };
     float globalBackground = fallbackBackground;
-    if (options.protectBrightTargets) {
+    if (fillUnsampled) {
         std::vector<float> sampledGrid;
         sampledGrid.reserve(sampledGridCells);
         for (std::size_t cell = 0; cell < gridSize; ++cell) {
@@ -489,13 +517,13 @@ BackgroundExtractionResult BackgroundExtractor::extractGrid(const ImageBuffer& i
         const float fy =
             (static_cast<float>(y) + 0.5F) * static_cast<float>(options.rows) / static_cast<float>(image.height) - 0.5F;
         const auto x0 =
-            static_cast<std::uint32_t>(std::floor(std::clamp(fx, 0.0F, static_cast<float>(options.columns - 1))));
+            static_cast<std::uint32_t>(std::floor(std::clamp(fx, 0.0F, static_cast<float>(options.columns - (options.extrapolateEdges && options.columns>1 ? 2 : 1)))));
         const auto y0 =
-            static_cast<std::uint32_t>(std::floor(std::clamp(fy, 0.0F, static_cast<float>(options.rows - 1))));
+            static_cast<std::uint32_t>(std::floor(std::clamp(fy, 0.0F, static_cast<float>(options.rows - (options.extrapolateEdges && options.rows>1 ? 2 : 1)))));
         const auto x1 = std::min(x0 + 1, options.columns - 1);
         const auto y1 = std::min(y0 + 1, options.rows - 1);
-        const float tx = std::clamp(fx - static_cast<float>(x0), 0.0F, 1.0F);
-        const float ty = std::clamp(fy - static_cast<float>(y0), 0.0F, 1.0F);
+        const float tx = std::clamp(fx - static_cast<float>(x0), options.extrapolateEdges ? -.5F : 0.F, options.extrapolateEdges ? 1.5F : 1.F);
+        const float ty = std::clamp(fy - static_cast<float>(y0), options.extrapolateEdges ? -.5F : 0.F, options.extrapolateEdges ? 1.5F : 1.F);
         const auto index = [&](std::uint32_t gx, std::uint32_t gy, std::uint16_t sampleChannel) {
             const auto cell = static_cast<std::size_t>(gy) * options.columns + gx;
             return values.size() == gridSize ? cell : cell * colorChannels + sampleChannel;

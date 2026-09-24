@@ -10,8 +10,13 @@ private struct AtomicOutputTransaction: Sendable {
     let temporaryURL: URL
     let processArguments: [String]
     let isDirectory: Bool
+    let requiresNewDestination: Bool
 
     init?(arguments: [String], workingDirectory: URL) {
+        // The shared workflow owns a new directory and stores absolute paths in
+        // its durable report. Moving a staging directory would invalidate that
+        // report and discard the reviewable failure diagnostics.
+        if arguments.first == "deep-sky" { return nil }
         let outputIndex: Int
         let isDirectory: Bool
         if let index = arguments.firstIndex(of: "--output"),
@@ -44,6 +49,7 @@ private struct AtomicOutputTransaction: Sendable {
         self.temporaryURL = temporaryURL
         self.processArguments = processArguments
         self.isDirectory = isDirectory
+        self.requiresNewDestination = arguments.first == "frequency-stack" || arguments.first == "suppress-grid"
     }
 
     func commit() throws {
@@ -71,6 +77,11 @@ private struct AtomicOutputTransaction: Sendable {
                 guard let temporaryPath, let destinationPath else {
                     errno = EINVAL
                     return Int32(-1)
+                }
+                // Preserve commands' explicit new-output contract after
+                // staging, including files created while the CLI was running.
+                if requiresNewDestination {
+                    return Darwin.renamex_np(temporaryPath, destinationPath, UInt32(RENAME_EXCL))
                 }
                 return Darwin.rename(temporaryPath, destinationPath)
             }
@@ -180,6 +191,8 @@ private final class ProcessOutputAccumulator: @unchecked Sendable {
     private var stdout = ""
     private var stderr = Data()
     private var stdoutRemainder = Data()
+    private var pendingProgress: ProcessingProgressEvent?
+    private var lastProgressEmission: ContinuousClock.Instant?
 
     init(jobID: UUID?, progressScope: ProcessingProgressScope?) {
         self.jobID = jobID
@@ -207,6 +220,7 @@ private final class ProcessOutputAccumulator: @unchecked Sendable {
             appendStdoutLine(String(decoding: stdoutRemainder, as: UTF8.self))
             stdoutRemainder.removeAll(keepingCapacity: false)
         }
+        flushProgress()
         lock.unlock()
     }
 
@@ -229,11 +243,24 @@ private final class ProcessOutputAccumulator: @unchecked Sendable {
 
     private func appendStdoutLine(_ line: String) {
         if let event = Self.progressEvent(from: line, jobID: jobID, progressScope: progressScope) {
-            NotificationCenter.default.post(name: .photonStackProcessingProgress, object: event)
+            // Large stacks emit row-level progress much faster than the UI can
+            // redraw. Keep the newest event, with a guaranteed final flush at EOF.
+            pendingProgress = event
+            let now = ContinuousClock.now
+            if lastProgressEmission.map({ $0.duration(to: now) >= .milliseconds(200) }) ?? true {
+                flushProgress()
+            }
         } else {
             stdout += line
             stdout += "\n"
         }
+    }
+
+    private func flushProgress() {
+        guard let event = pendingProgress else { return }
+        pendingProgress = nil
+        lastProgressEmission = .now
+        NotificationCenter.default.post(name: .photonStackProcessingProgress, object: event)
     }
 
     private static func progressEvent(
@@ -1111,6 +1138,9 @@ public final class CLIProcessingService: ProcessingService {
     }
 
     private static func expectedOutput(in arguments: [String]) -> (path: String, isDirectory: Bool)? {
+        // Assessment-only runs intentionally contain no image. The typed shared
+        // workflow service validates the report and any required image outputs.
+        if arguments.first == "deep-sky" { return nil }
         if let index = arguments.firstIndex(of: "--output"), arguments.indices.contains(index + 1) {
             return (arguments[index + 1], false)
         }

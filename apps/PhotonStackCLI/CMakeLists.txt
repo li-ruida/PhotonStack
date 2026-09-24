@@ -1,5 +1,7 @@
 add_executable(photonstack
   main.cpp
+  FrequencyStackCommand.cpp
+  DeepSkyCommand.cpp
 )
 
 target_link_libraries(photonstack
@@ -14,4 +16,3 @@ if(MSVC)
 else()
   target_compile_options(photonstack PRIVATE -Wall -Wextra -Wpedantic)
 endif()
-

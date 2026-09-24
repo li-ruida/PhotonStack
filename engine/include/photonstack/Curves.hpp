@@ -27,6 +27,9 @@ struct CurvesOptions {
     };
     CurveChannel channel = CurveChannel::RGB;
     bool preserveAlpha = true;
+    // Opt-in bounded display transfer for Luminance: map Y exactly, scaling
+    // RGB differences from Y together to fit the gamut instead of clipping.
+    bool preserveLuminanceGamut = false;
 };
 
 struct CurvesResult {

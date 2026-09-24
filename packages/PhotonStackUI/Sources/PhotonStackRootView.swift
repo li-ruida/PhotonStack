@@ -24,6 +24,7 @@ private func presentRelinkPanel(for asset: PhotonStackAsset, model: PhotonStackW
 
 public extension Notification.Name {
     static let photonStackImportAssetURLs = Notification.Name("dev.photonstack.importAssetURLs")
+    static let photonStackOpenDeepSky = Notification.Name("dev.photonstack.openDeepSky")
     static let photonStackRunBatchRegistration = Notification.Name("dev.photonstack.runBatchRegistration")
     static let photonStackExportProductManifest = Notification.Name("dev.photonstack.exportProductManifest")
     static let photonStackPreviewLayerStack = Notification.Name("dev.photonstack.previewLayerStack")
@@ -56,9 +57,12 @@ public enum PhotonStackApplicationActivity {
 
     public static func waitForPendingSettingsPersistence() async {
         while pendingSettingsPersistence.isEmpty == false {
-            let tasks = Array(pendingSettingsPersistence.values)
-            for task in tasks {
+            let tasks = pendingSettingsPersistence
+            for (id, task) in tasks {
                 await task.value
+                // An already-completed task need not suspend. Drain it here
+                // instead of starving the separate MainActor cleanup task.
+                pendingSettingsPersistence.removeValue(forKey: id)
             }
         }
     }
@@ -215,6 +219,7 @@ public struct PhotonStackRootView: View {
     private let applicationCommandState: PhotonStackApplicationCommandState
     @State private var isImporting = false
     @State private var isCreatingProject = false
+    @State private var isDeepSkyPresented = false
     @State private var newProjectName = ""
     @State private var newProjectTemplate: ProjectTemplate = .deepSky
     @State private var pendingProductManifestExport = false
@@ -228,7 +233,7 @@ public struct PhotonStackRootView: View {
         self.applicationCommandState = applicationCommandState
     }
 
-    public var body: some View {
+    private var workspaceLayout: some View {
         NavigationSplitView {
             AssetSidebar(
                 model: model,
@@ -301,6 +306,10 @@ public struct PhotonStackRootView: View {
                 .disabled(model.hasActiveProcessing)
             }
         }
+    }
+
+    private var workspaceSheets: some View {
+        workspaceLayout
         .fileImporter(
             isPresented: $isImporting,
             allowedContentTypes: [.item],
@@ -309,6 +318,11 @@ public struct PhotonStackRootView: View {
             if case let .success(urls) = result {
                 model.importAssets(from: urls)
             }
+        }
+        .sheet(isPresented: $isDeepSkyPresented) {
+            DeepSkyRecipeSheet(model: model, presented: $isDeepSkyPresented, onImport: {
+                startImportFolder()
+            })
         }
         .sheet(isPresented: $isCreatingProject) {
             NewProjectSheet(
@@ -326,6 +340,10 @@ public struct PhotonStackRootView: View {
                 }
             )
         }
+    }
+
+    private var workspaceDialogs: some View {
+        workspaceSheets
         .confirmationDialog(
             model.localized(
                 model.assetsPendingRemoval.count > 1
@@ -409,6 +427,10 @@ public struct PhotonStackRootView: View {
                 onCancel: { cancelPendingProcessingInterruption($0) }
             )
         )
+    }
+
+    public var body: some View {
+        workspaceDialogs
         .task {
             await model.loadUserSettings()
             let pendingURLs = PhotonStackApplicationActivity.drainPendingExternalFileImports()
@@ -436,6 +458,9 @@ public struct PhotonStackRootView: View {
                 return
             }
             model.importAssets(from: pendingURLs)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .photonStackOpenDeepSky)) { _ in
+            isDeepSkyPresented = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .photonStackRunBatchRegistration)) { _ in
             guard model.applicationCommandSnapshot.canRunBatchRegistration,
@@ -972,30 +997,37 @@ private struct ActionBar: View {
             model.editGraphNeedsReplay == false
 
         HStack(spacing: 8) {
+            DeepSkyControl(model: model, context: "toolbar")
+                .buttonStyle(.borderedProminent)
+                .labelStyle(.titleAndIcon)
+
+            AstroDevelopControl(model: model)
+                .labelStyle(.titleAndIcon)
+                .disabled(canAdjustCurrentInput == false)
+
+            ResultComparisonControl(model: model)
+                .labelStyle(.titleAndIcon)
+
             Button {
                 model.startInspectSelectedAsset()
             } label: {
                 Label(model.localized(.inspectAction), systemImage: "info.circle")
             }
             .disabled(canInspectAsset == false)
+            .help(model.localized(.inspectAction))
 
             Button {
                 model.startBuildPreview()
             } label: {
-                Label(model.localized(.previewAction), systemImage: "photo")
+                Label(model.localized(.sourcePreviewAction), systemImage: "photo")
             }
             .accessibilityLabel(
-                "\(model.localized(.previewAction)): \(model.selectedAsset?.displayName ?? model.localized(.previewAction))"
+                "\(model.localized(.sourcePreviewAction)): \(model.selectedAsset?.displayName ?? model.localized(.sourcePreviewAction))"
             )
             .disabled(canInspectAsset == false)
+            .help(model.localized(.sourcePreviewAction))
 
             Menu {
-                Button {
-                    model.startAutoStretchPreview()
-                } label: {
-                    Label(model.localized(.stretchAction), systemImage: "camera.aperture")
-                }
-
                 Button {
                     model.startLocalContrastPreview()
                 } label: {
@@ -1030,6 +1062,7 @@ private struct ActionBar: View {
             } label: {
                 Label(model.localized(.inspectorAdjustmentsGroup), systemImage: "slider.horizontal.3")
             }
+            .help(model.localized(.inspectorAdjustmentsGroup))
             .disabled(canAdjustCurrentInput == false)
 
             Spacer()
@@ -1078,6 +1111,7 @@ private struct ActionBar: View {
                 #endif
             }
         }
+        .labelStyle(.iconOnly)
         .buttonStyle(.bordered)
         .controlSize(.regular)
         .padding(12)
@@ -1087,101 +1121,114 @@ private struct ActionBar: View {
 
 private struct InspectorPanel: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
+    @State private var page: WorkspaceInspectorPage = .processing
     @State private var expandedGroups: Set<InspectorToolGroup> = Set(InspectorToolGroup.defaultExpanded)
     private let groupAnimation = Animation.interactiveSpring(response: 0.28, dampingFraction: 0.9, blendDuration: 0.08)
 
     var body: some View {
         VStack(spacing: 0) {
+            Picker(model.language == .simplifiedChinese ? "检查器" : "Inspector", selection: $page) {
+                ForEach(WorkspaceInspectorPage.allCases, id: \.self) { page in
+                    Text(page.title(chinese: model.language == .simplifiedChinese)).tag(page)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityIdentifier("workspace.inspector.pages")
+            .padding(12)
+            Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    InspectorToolbarHeader(
-                        model: model,
-                        onExpandAll: {
-                            withAnimation(groupAnimation) {
-                                expandedGroups = Set(InspectorToolGroup.allCases)
-                            }
-                        },
-                        onCollapseAll: {
-                            withAnimation(groupAnimation) {
-                                expandedGroups.removeAll()
-                            }
+                    if page == .assets {
+                        InspectorToolGroupView(
+                            model: model,
+                            group: .asset,
+                            summary: summary(for: .asset),
+                            isExpanded: binding(for: .asset)
+                        ) {
+                            SelectedAssetSection(model: model)
                         }
-                    )
 
-                    InspectorToolGroupView(
-                        model: model,
-                        group: .asset,
-                        summary: summary(for: .asset),
-                        isExpanded: binding(for: .asset)
-                    ) {
-                        SelectedAssetSection(model: model)
+                        InspectorToolGroupView(
+                            model: model,
+                            group: .photoInfo,
+                            summary: summary(for: .photoInfo),
+                            isExpanded: binding(for: .photoInfo)
+                        ) {
+                            PhotoInfoSection(model: model)
+                        }
+
                     }
 
-                    InspectorToolGroupView(
-                        model: model,
-                        group: .photoInfo,
-                        summary: summary(for: .photoInfo),
-                        isExpanded: binding(for: .photoInfo)
-                    ) {
-                        PhotoInfoSection(model: model)
+                    if page == .processing {
+                        InspectorToolGroupView(
+                            model: model,
+                            group: .workflow,
+                            summary: summary(for: .workflow),
+                            isExpanded: binding(for: .workflow)
+                        ) {
+                            DeepSkyWorkflowOverview(model: model)
+                        }
+
+                        InspectorToolGroupView(
+                            model: model,
+                            group: .adjustments,
+                            summary: summary(for: .adjustments),
+                            isExpanded: binding(for: .adjustments)
+                        ) {
+                            AdjustmentsInspectorSection(model: model, parameters: processingParametersBinding)
+                        }
+
                     }
 
-                    InspectorToolGroupView(
-                        model: model,
-                        group: .workflow,
-                        summary: summary(for: .workflow),
-                        isExpanded: binding(for: .workflow)
-                    ) {
-                        WorkflowSection(model: model, parameters: processingParametersBinding)
-                        RegistrationSection(model: model)
-                        MosaicSection(model: model, parameters: processingParametersBinding)
+                    if page == .tools {
+                        DisclosureGroup(model.localized(.registrationSection)) {
+                            RegistrationSection(model: model)
+                        }
+                        DisclosureGroup(model.language == .simplifiedChinese ? "拼接" : "Mosaic") {
+                            MosaicSection(model: model, parameters: processingParametersBinding)
+                        }
+
+                        InspectorToolGroupView(
+                            model: model,
+                            group: .workspace,
+                            summary: summary(for: .workspace),
+                            isExpanded: binding(for: .workspace)
+                        ) {
+                            ProcessingWorkspaceSection(model: model)
+                        }
+
+                        InspectorToolGroupView(
+                            model: model,
+                            group: .batch,
+                            summary: summary(for: .batch),
+                            isExpanded: binding(for: .batch)
+                        ) {
+                            BatchQueueSection(model: model)
+                        }
+
                     }
 
-                    InspectorToolGroupView(
-                        model: model,
-                        group: .adjustments,
-                        summary: summary(for: .adjustments),
-                        isExpanded: binding(for: .adjustments)
-                    ) {
-                        AdjustmentsInspectorSection(model: model, parameters: processingParametersBinding)
-                    }
+                    if page == .project {
+                        InspectorToolGroupView(
+                            model: model,
+                            group: .history,
+                            summary: summary(for: .history),
+                            isExpanded: binding(for: .history)
+                        ) {
+                            EditGraphSection(model: model)
+                            JobsSection(jobs: model.jobs, model: model)
+                        }
 
-                    InspectorToolGroupView(
-                        model: model,
-                        group: .workspace,
-                        summary: summary(for: .workspace),
-                        isExpanded: binding(for: .workspace)
-                    ) {
-                        ProcessingWorkspaceSection(model: model)
-                    }
-
-                    InspectorToolGroupView(
-                        model: model,
-                        group: .batch,
-                        summary: summary(for: .batch),
-                        isExpanded: binding(for: .batch)
-                    ) {
-                        BatchQueueSection(model: model)
-                    }
-
-                    InspectorToolGroupView(
-                        model: model,
-                        group: .history,
-                        summary: summary(for: .history),
-                        isExpanded: binding(for: .history)
-                    ) {
-                        EditGraphSection(model: model)
-                        JobsSection(jobs: model.jobs, model: model)
-                    }
-
-                    InspectorToolGroupView(
-                        model: model,
-                        group: .project,
-                        summary: summary(for: .project),
-                        isExpanded: binding(for: .project)
-                    ) {
-                        LanguageSection(model: model)
-                        ProjectSection(model: model)
+                        InspectorToolGroupView(
+                            model: model,
+                            group: .project,
+                            summary: summary(for: .project),
+                            isExpanded: binding(for: .project)
+                        ) {
+                            LanguageSection(model: model)
+                            ProjectSection(model: model)
+                        }
                     }
                 }
                 .padding(16)
@@ -1283,7 +1330,7 @@ private enum InspectorToolGroup: String, CaseIterable, Hashable {
     case history
 
     static var defaultExpanded: [InspectorToolGroup] {
-        [.asset, .workflow, .adjustments]
+        [.asset, .workflow, .adjustments, .history]
     }
 
     var titleKey: LocalizedTextKey {
@@ -1347,34 +1394,6 @@ private enum InspectorToolGroup: String, CaseIterable, Hashable {
         case .history:
             return .inspectorHistoryGroupIntro
         }
-    }
-}
-
-private struct InspectorToolbarHeader: View {
-    @ObservedObject var model: PhotonStackWorkspaceModel
-    let onExpandAll: () -> Void
-    let onCollapseAll: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Label(model.localized(.toolsPanel), systemImage: "sidebar.right")
-                .font(.headline)
-
-            Spacer()
-
-            Button(action: onExpandAll) {
-                Label(model.localized(.expandAllTools), systemImage: "rectangle.expand.vertical")
-                    .labelStyle(.iconOnly)
-            }
-            .help(model.localized(.expandAllTools))
-
-            Button(action: onCollapseAll) {
-                Label(model.localized(.collapseAllTools), systemImage: "rectangle.compress.vertical")
-                    .labelStyle(.iconOnly)
-            }
-            .help(model.localized(.collapseAllTools))
-        }
-        .buttonStyle(.borderless)
     }
 }
 
@@ -2037,86 +2056,6 @@ private struct ProjectSection: View {
     }
 }
 
-private struct WorkflowSection: View {
-    @ObservedObject var model: PhotonStackWorkspaceModel
-    @Binding var parameters: ProcessingParameters
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(model.localized(.workflowSection))
-                .font(.headline)
-
-            HStack {
-                FrameCountBadge(title: model.roleName(.light), count: model.lightAssets.count)
-                FrameCountBadge(title: model.roleName(.dark), count: model.darkAssets.count)
-            }
-            HStack {
-                FrameCountBadge(title: model.roleName(.bias), count: model.biasAssets.count)
-                FrameCountBadge(title: model.roleName(.flat), count: model.flatAssets.count)
-            }
-
-            Picker(model.localized(.masterLabel), selection: $parameters.workflowMasterMethod) {
-                Text(model.stackMethodName(.median)).tag(StackMethod.median)
-                Text(model.stackMethodName(.average)).tag(StackMethod.average)
-            }
-            .pickerStyle(.menu)
-
-            if model.darkAssets.isEmpty == false && model.biasAssets.isEmpty == false {
-                Picker(model.localized(.darkBiasStateLabel), selection: $parameters.workflowDarkBiasState) {
-                    ForEach(CalibrationBiasState.allCases) { state in
-                        Text(model.calibrationBiasStateName(state)).tag(state)
-                    }
-                }
-                .pickerStyle(.menu)
-                .help(model.localized(.calibrationBiasStateHelp))
-            }
-
-            if model.flatAssets.isEmpty == false {
-                Picker(model.localized(.flatBiasStateLabel), selection: $parameters.workflowFlatBiasState) {
-                    ForEach(CalibrationBiasState.allCases) { state in
-                        Text(model.calibrationBiasStateName(state)).tag(state)
-                    }
-                }
-                .pickerStyle(.menu)
-                .help(model.localized(.calibrationBiasStateHelp))
-            }
-
-            if let warning = model.calibrationConfigurationWarning {
-                Label(warning, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-
-            Picker(model.localized(.stackLabel), selection: $parameters.workflowStackMethod) {
-                ForEach(StackMethod.allCases, id: \.self) { method in
-                    Text(model.stackMethodName(method)).tag(method)
-                }
-            }
-            .pickerStyle(.menu)
-
-            Picker(model.localized(.alignLabel), selection: $parameters.workflowAlignment) {
-                ForEach(AlignmentMethod.allCases, id: \.self) { method in
-                    Text(model.alignmentMethodName(method)).tag(method)
-                }
-            }
-            .pickerStyle(.menu)
-
-            Toggle(model.localized(.restoreMeteorsAfterStack), isOn: $parameters.workflowRestoreMeteors)
-                .toggleStyle(.checkbox)
-
-            Button {
-                model.startRunStackWorkflow()
-            } label: {
-                Label(model.localized(.runStackWorkflow), systemImage: "play.circle")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(model.canRunStackWorkflow == false || model.isProcessing)
-        }
-        .disabled(model.canModifyProcessingConfiguration == false)
-    }
-}
-
 private struct RegistrationSection: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     @State private var referenceID: PhotonStackAsset.ID?
@@ -2349,25 +2288,6 @@ private struct BatchRegistrationFrameSelection: View {
     }
 }
 
-private struct FrameCountBadge: View {
-    let title: String
-    let count: Int
-
-    var body: some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text("\(count)")
-                .font(.system(.caption, design: .monospaced))
-                .foregroundStyle(.secondary)
-        }
-        .font(.caption)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-    }
-}
-
 private struct AdjustmentsInspectorSection: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     @Binding var parameters: ProcessingParameters
@@ -2380,6 +2300,17 @@ private struct AdjustmentsInspectorSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            DisclosureGroup(model.language == .simplifiedChinese ? "色彩与显示修整" : "Color and display finishing") {
+                VStack(alignment: .leading, spacing: 8) {
+                    GreenCastControl(model: model)
+                    ContinuumToneControl(model: model)
+                    DisplayGridControl(model: model)
+                }
+                .labelStyle(.titleAndIcon)
+                .disabled(!model.canProcessCurrentInput || model.isProcessing || model.editGraphNeedsReplay)
+                .padding(.vertical, 6)
+            }
+
             LazyVGrid(columns: columns, spacing: 6) {
                 ForEach(AdjustmentInspectorTab.allCases) { tab in
                     Button {
@@ -3074,12 +3005,6 @@ private struct ParametersSection: View {
                 .font(.headline)
 
             Stepper("\(model.localized(.previewWidth)) \(parameters.previewWidth) px", value: $parameters.previewWidth, in: 512...4096, step: 256)
-
-            ParameterSlider(
-                title: model.localized(.stretchParameter),
-                value: $parameters.stretchTargetBackground,
-                range: 0.05...0.65
-            )
 
             ParameterSlider(
                 title: model.localized(.starReduction),
@@ -5153,7 +5078,9 @@ private struct EditGraphSection: View {
                             .disabled(model.isProcessing)
 
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(operation.kind.rawValue)
+                                Text(operation.parameters["mode"] == "display-grid-v1"
+                                    ? (model.language == .simplifiedChinese ? "细纹抑制" : "Grid reduction")
+                                    : operation.kind.rawValue)
                                     .lineLimit(1)
                                 if let output = operation.parameters["output"] {
                                     Text(URL(fileURLWithPath: output).lastPathComponent)
@@ -5457,7 +5384,7 @@ private func hermiteInterpolate(
 private struct StatusConsole: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     @State private var commandInput = ""
-    @AppStorage("PhotonStackStatusConsole.isCollapsed") private var isCollapsed = false
+    @AppStorage("PhotonStackStatusConsole.isCollapsed") private var isCollapsed = true
     @AppStorage("PhotonStackStatusConsole.isExpanded") private var isExpanded = false
     #if os(macOS)
     @State private var detachedWindow: NSWindow?
@@ -5816,7 +5743,7 @@ private struct PhotonStackPreview: View {
                 fitToWindow: $fitToWindow,
                 showArtifactMarkedPreview: $showArtifactMarkedPreview,
                 hasArtifactMarkedPreview: model.artifactMarkedPreviewURL != nil,
-                hasImage: currentURL != nil
+                imageURL: currentURL
             )
 
             ZStack {
@@ -5861,7 +5788,7 @@ private struct PreviewZoomBar: View {
     @Binding var fitToWindow: Bool
     @Binding var showArtifactMarkedPreview: Bool
     let hasArtifactMarkedPreview: Bool
-    let hasImage: Bool
+    let imageURL: URL?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -5935,12 +5862,23 @@ private struct PreviewZoomBar: View {
             }
 
             Spacer()
+
+            if let imageURL {
+                Text(imageURL.lastPathComponent)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(imageURL.path)
+                    .accessibilityLabel("\(model.localized(.currentImageLabel)): \(imageURL.lastPathComponent)")
+                    .accessibilityIdentifier("workspace.current-image")
+            }
         }
         .buttonStyle(.bordered)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.bar)
-        .disabled(hasImage == false)
+        .disabled(imageURL == nil)
     }
 }
 

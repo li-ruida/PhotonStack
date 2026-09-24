@@ -20,6 +20,11 @@ struct GreenCastSuppressionOptions {
     float amount = 0.65F;
     float backgroundLimit = 0.32F;
     float greenExcessThreshold = 0.01F;
+    // Opt-in display styling; defaults retain the existing background weighting.
+    bool averageNeutral = false;
+    // Preserve linear-sRGB Y (and therefore CIE L*) with smooth gamut compression.
+    // Requires bounded sRGB display input, never an unbounded scientific frame.
+    bool preserveLightness = false;
 };
 
 struct ColorAdjustmentResult {

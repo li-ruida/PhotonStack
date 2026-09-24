@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
@@ -16,8 +17,11 @@
 #include <string>
 #include <type_traits>
 #include <vector>
+#include "FrequencyStackCommand.hpp"
+#include "DeepSkyCommand.hpp"
 
 #include "photonstack/ArtifactTrailRemover.hpp"
+#include "photonstack/AstroDevelop.hpp"
 #include "photonstack/BackgroundExtractor.hpp"
 #include "photonstack/Calibrator.hpp"
 #include "photonstack/CloudRemoval.hpp"
@@ -25,6 +29,7 @@
 #include "photonstack/ColorAdjuster.hpp"
 #include "photonstack/Curves.hpp"
 #include "photonstack/Deconvolution.hpp"
+#include "photonstack/DisplayGridReducer.hpp"
 #include "photonstack/DrizzleStacker.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/FrameNormalizer.hpp"
@@ -34,20 +39,25 @@
 #include "photonstack/ImageInspector.hpp"
 #include "photonstack/ImageResizer.hpp"
 #include "photonstack/LocalContrast.hpp"
+#include "photonstack/ReconstructionProtection.hpp"
+#include "photonstack/NonlocalDenoiser.hpp"
 #include "photonstack/MasterFrameBuilder.hpp"
 #include "photonstack/MeteorLayerComposer.hpp"
 #include "photonstack/MosaicBuilder.hpp"
 #include "photonstack/NoiseReducer.hpp"
 #include "photonstack/PhotonStackBridge.h"
+#include "photonstack/PsfHomogenizer.hpp"
 #include "photonstack/RawCodec.hpp"
 #include "photonstack/Registration.hpp"
 #include "photonstack/ScientificDisplayBridge.hpp"
 #include "photonstack/Sharpen.hpp"
 #include "photonstack/Stacker.hpp"
 #include "photonstack/StarDetector.hpp"
+#include "photonstack/StarColorCalibrator.hpp"
 #include "photonstack/StarMask.hpp"
 #include "photonstack/StarReducer.hpp"
 #include "photonstack/Stretch.hpp"
+#include "photonstack/ParallelRanges.hpp"
 #include "photonstack/Version.hpp"
 
 namespace {
@@ -206,10 +216,20 @@ void printUsage() {
     std::cout << "PhotonStack CLI\n\n"
               << "Usage:\n"
               << "  photonstack --version\n"
+              << "  photonstack review-preview --input <image> --output <new.tiff> [--fits-debayer on|off] [--fits-demosaic malvar|bilinear|menon]\n"
+              << "  photonstack deep-sky schema\n"
+              << "  photonstack deep-sky --recipe <recipe.txt> --output-dir <new-directory> [--analyze-only]\n"
+              << "  photonstack deep-sky --write-default-recipe <new-recipe.txt> [--input <directory>]\n"
+              << "  photonstack deep-sky --inspect-recipe <recipe.txt>\n"
+              << "  photonstack deep-sky --recipe <recipe.txt> --from-master <linear RGB FITS> --output-dir <new-directory>\n"
+              << "  photonstack color-calibrate --input <linear.fits> --reference <linear.fits> [--reference-flip-y on|off] [--input-saturation <value>] [--reference-saturation <value>]\n"
+              << "  photonstack develop --input <linear> --output <image> [--stellar-balance on|off] "
+                 "[--brightness 1] [--tone-scale 0] [--tone-curve rational|asinh] [--white-point 0] [--background 0.025] [--saturation 1] [--shadow-neutralization 0] [--star-exposure 1] [--star-peak-threshold 0] "
+                 "[--red-gain 1] [--green-gain 1] [--blue-gain 1]\n"
               << "  photonstack inspect <image>\n"
               << "  photonstack convert --input <image> --output <image> "
                  "[--bit-depth auto|8|16] [--color-space srgb|linear-srgb] [--quality 0.92] "
-                 "[--fits-values display|scientific] "
+                 "[--fits-values display|scientific] [--fits-debayer on|off] [--fits-demosaic bilinear|malvar|menon|ratio] [--fits-cfa-gains r,g,b] "
                  "[--raw-white-balance camera|auto|daylight|manual] [--raw-exposure-bias stops] "
                  "[--raw-temperature kelvin] [--raw-tint value] [--raw-black-value value] "
                  "[--raw-black-level camera|auto|manual] [--raw-demosaic fast|high] "
@@ -217,7 +237,7 @@ void printUsage() {
               << "  photonstack run <workflow-file>\n"
               << "  photonstack fits inspect <image>\n"
               << "  photonstack fits convert --input <fits> --output <image> "
-                 "[--fits-values display|scientific]\n"
+                 "[--fits-values display|scientific] [--fits-debayer on|off] [--fits-demosaic bilinear|malvar|menon|ratio] [--fits-cfa-gains r,g,b]\n"
               << "  photonstack raw inspect <raw>\n"
               << "  photonstack raw convert --input <raw> --output <image> "
                  "[--bit-depth auto|8|16] [--color-space srgb|linear-srgb] [--quality 0.92] "
@@ -243,7 +263,7 @@ void printUsage() {
                  "[--raw-temperature kelvin] [--raw-tint value] [--raw-black-value value] "
                  "[--raw-exposure-bias stops] [--raw-black-level camera|auto|manual] "
                  "[--raw-demosaic fast|high]\n"
-              << "  photonstack background --input <image> --output <image> [--model global|grid] "
+              << "  photonstack background --input <image> --output <image> [--model global|grid|polynomial] [--exclude-ellipse x,y,major,minor,angle] "
                  "[--mode subtract|divide] [--strength 1] [--preserve-brightness on|off] "
                  "[--protect-bright-targets on|off]\n"
               << "  photonstack clouds detect --input <image> [--grid-x 32] [--grid-y 20]\n"
@@ -259,16 +279,22 @@ void printUsage() {
               << "  photonstack stretch --input <image> --output <image> [--auto] [--black 0] [--mid 0.5] "
                  "[--white 1] [--arcsinh 0] [--target-background 0.25] [--shadows-sigma 2.8]\n"
               << "  photonstack curves --input <image> --output <image> [--points 0:0,0.5:0.6,1:1] "
-                 "[--channel rgb|red|green|blue|luminance]\n"
-              << "  photonstack local-contrast --input <image> --output <image> [--amount 0.25] [--radius 8]\n"
+                 "[--channel rgb|red|green|blue|luminance] [--preserve-gamut on|off]\n"
+              << "  photonstack local-contrast --input <image> --output <image> [--amount 0.25] [--radius 8] [--protect-structure on|off] [--fine-radius 6] [--star-chroma 1] [--continuum-curve 0:0,0.5:0.6,1:1]\n"
+              << "  photonstack protect-reconstruction --input <linear.fits> --reference <direct.fits> --mask <weights.fits> --output <protected.fits> [--background-sigma 8] [--amount 1]\n"
+              << "  photonstack frequency-stack --plan <prepared.psfreq> --output <linear.fits> [--threads 1]\n"
               << "  photonstack denoise --input <image> --output <image> [--amount 0.5] [--chroma-amount 0.5] "
                  "[--radius 1]\n"
               << "  photonstack sharpen --input <image> --output <image> [--amount 0.35] [--radius 1]\n"
+              << "  photonstack suppress-grid --input <display.tiff|png> --output <new.tiff|png> [--amount 1]\n"
+              << "  photonstack denoise-nonlocal --input <linear RGB FITS> --blend-map <FITS> --output <new FITS> --h <distance units> [--mode luminance|conservative-rgb] [--red-weight 0.2126] [--green-weight 0.7152] [--blue-weight 0.0722]\n"
+              << "  photonstack psf-match --input <linear.fits> --output <linear.fits> --cov-xx <px2> --cov-yy <px2> --cov-xy <px2> [--strength 0.7]\n"
               << "  photonstack deconvolve --input <image> --output <image> [--iterations 8] [--radius 2] [--sigma 1.2]\n"
               << "  photonstack color neutralize --input <image> --output <image> [--strength 1]\n"
               << "  photonstack color saturate --input <image> --output <image> [--amount 0.2]\n"
+              << "  photonstack color cool-continuum --input <display> --output <display> [--amount 0.06] [--radius 32] [--estimator source-excluded|opening]\n"
               << "  photonstack color remove-green --input <image> --output <image> [--amount 0.65] "
-                 "[--background-limit 0.32]\n"
+                 "[--background-limit 0.32] [--green-method background|average-neutral] [--preserve-lightness on|off]\n"
               << "  photonstack master --output <image> [--method median|average] "
                  "[--raw-white-balance camera|auto|daylight|manual] [--raw-exposure-bias stops] "
                  "[--raw-temperature kelvin] [--raw-tint value] [--raw-black-value value] "
@@ -284,7 +310,8 @@ void printUsage() {
                  "[--include-reference on|off] <image>...\n"
               << "  photonstack stack --input <directory> --output <image> "
                  "[--method average|weighted|median|sigma|winsorized|percentile] "
-                 "[--align translation|similarity|affine|distortion] [--minimum-matches 3]\n"
+                 "[--align translation|similarity|affine|distortion] [--minimum-matches 3] "
+                 "[--fits-debayer on|off] [--fits-demosaic bilinear|malvar|menon|ratio] [--fits-cfa-gains r,g,b] [--normalize-background on|off] [--interpolation bilinear|bicubic] [--frame-weights w1,w2,...] [--alignment-reference image] [--refine-centroids on|off]\n"
               << "  photonstack stack --output <image> [--method average|weighted|median|sigma|winsorized|percentile] "
                  "[--align translation|similarity|affine|distortion] [--minimum-matches 3] "
                  "<image>...\n"
@@ -440,7 +467,8 @@ int registerImage(const std::vector<std::string>& args) {
     }
 
     const photonstack::ImageCodec codec;
-    const auto readOptions = scientificFitsReadOptions();
+    auto readOptions = scientificFitsReadOptions();
+    readOptions.fits.debayer = true;
     const auto referenceRead = codec.read(*referencePath, readOptions);
     if (!referenceRead.ok) {
         printError(referenceRead.errorCode, referenceRead.message);
@@ -700,6 +728,7 @@ int extractBackground(const std::vector<std::string>& args) {
     std::optional<std::filesystem::path> outputPath;
     photonstack::BackgroundExtractionOptions options;
     photonstack::BackgroundGridOptions gridOptions;
+    photonstack::BackgroundPolynomialOptions polynomialOptions;
     std::string model = "global";
 
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -718,12 +747,12 @@ int extractBackground(const std::vector<std::string>& args) {
             outputPath = args[++i];
         } else if (arg == "--model") {
             if (i + 1 >= args.size()) {
-                printError("ArgumentMissing", "--model requires global or grid");
+                printError("ArgumentMissing", "--model requires global, grid or polynomial");
                 return 1;
             }
             model = args[++i];
-            if (model != "global" && model != "grid") {
-                printError("ArgumentInvalid", "--model must be global or grid");
+            if (model != "global" && model != "grid" && model != "polynomial") {
+                printError("ArgumentInvalid", "--model must be global, grid or polynomial");
                 return 1;
             }
         } else if (arg == "--mode") {
@@ -759,6 +788,21 @@ int extractBackground(const std::vector<std::string>& args) {
             if (!parseOnOff(args, i, "--protect-bright-targets", gridOptions.protectBrightTargets)) {
                 return 1;
             }
+        } else if (arg == "--exclude-ellipse") {
+            if (i + 1 >= args.size()) { printError("ArgumentMissing", "--exclude-ellipse requires x,y,major,minor,angle"); return 1; }
+            std::string value = args[++i];
+            std::vector<float> parts;
+            try {
+                std::size_t begin=0;
+                while (true) {
+                    auto comma=value.find(',',begin);
+                    parts.push_back(parseFiniteFloat(value.substr(begin,comma==std::string::npos?comma:comma-begin)));
+                    if(comma==std::string::npos) break;
+                    begin=comma+1;
+                }
+            } catch (...) { parts.clear(); }
+            if(parts.size()!=5 || parts[2]<=0 || parts[3]<=0) { printError("ArgumentInvalid", "--exclude-ellipse requires five finite values and positive semiaxes"); return 1; }
+            polynomialOptions.exclusions.push_back({parts[0],parts[1],parts[2],parts[3],parts[4]});
         } else if (arg == "--grid-x") {
             if (i + 1 >= args.size()) {
                 printError("ArgumentMissing", "--grid-x requires a positive integer");
@@ -766,6 +810,7 @@ int extractBackground(const std::vector<std::string>& args) {
             }
             try {
                 gridOptions.columns = parseUnsignedInteger<std::uint32_t>(args[++i]);
+                polynomialOptions.columns = gridOptions.columns;
             } catch (const std::exception&) {
                 printError("ArgumentInvalid", "--grid-x must be a positive integer");
                 return 1;
@@ -777,6 +822,7 @@ int extractBackground(const std::vector<std::string>& args) {
             }
             try {
                 gridOptions.rows = parseUnsignedInteger<std::uint32_t>(args[++i]);
+                polynomialOptions.rows = gridOptions.rows;
             } catch (const std::exception&) {
                 printError("ArgumentInvalid", "--grid-y must be a positive integer");
                 return 1;
@@ -796,6 +842,7 @@ int extractBackground(const std::vector<std::string>& args) {
         return 1;
     }
 
+    if (!polynomialOptions.exclusions.empty() && model != "polynomial") { printError("ArgumentInvalid", "Exclusion ellipses require the polynomial model"); return 1; }
     const bool scientificOutput = photonstack::isFitsPath(*outputPath);
     options.clampOutput = !scientificOutput;
     const photonstack::ImageCodec codec;
@@ -807,7 +854,8 @@ int extractBackground(const std::vector<std::string>& args) {
 
     const photonstack::BackgroundExtractor extractor;
     gridOptions.extraction = options;
-    const auto result = model == "grid" ? extractor.extractGrid(readResult.image, gridOptions)
+    polynomialOptions.extraction = options;
+    const auto result = model == "polynomial" ? extractor.extractPolynomial(readResult.image, polynomialOptions) : model == "grid" ? extractor.extractGrid(readResult.image, gridOptions)
                                         : extractor.extractGlobal(readResult.image, options);
     if (!result.ok) {
         printError(result.errorCode, result.message);
@@ -829,7 +877,7 @@ int extractBackground(const std::vector<std::string>& args) {
               << "  \"preserveBrightness\": " << (options.preserveBrightness ? "true" : "false") << ",\n"
               << "  \"protectBrightTargets\": " << (gridOptions.protectBrightTargets ? "true" : "false") << ",\n"
               << "  \"backgroundEstimator\": \""
-              << (model == "grid" ? (gridOptions.protectBrightTargets ? "lower-quartile" : "median") : "global-median")
+              << (model == "polynomial" ? "robust-quadratic" : model == "grid" ? (gridOptions.protectBrightTargets ? "lower-quartile" : "median") : "global-median")
               << "\",\n"
               << "  \"sampledGridCells\": " << result.sampledGridCells << ",\n"
               << "  \"filledGridCells\": " << result.filledGridCells << ",\n"
@@ -1141,6 +1189,286 @@ int normalizeImage(const std::vector<std::string>& args) {
     return 0;
 }
 
+bool parseCfaGains(const std::vector<std::string>& args, std::size_t& index, std::array<float, 3>& gains) {
+    if (index + 1 >= args.size()) { printError("ArgumentMissing", "--fits-cfa-gains requires r,g,b"); return false; }
+    const std::string value=args[++index];
+    std::vector<float> parts;
+    try {
+        std::size_t begin=0;
+        while (true) {
+            const auto comma=value.find(',',begin);
+            parts.push_back(parseFiniteFloat(value.substr(begin,comma==std::string::npos?comma:comma-begin)));
+            if(comma==std::string::npos) break;
+            begin=comma+1;
+        }
+    } catch (...) { parts.clear(); }
+    if(parts.size()!=3 || std::any_of(parts.begin(),parts.end(),[](float v){return v<=0 || v>20;})) {
+        printError("ArgumentInvalid", "--fits-cfa-gains requires three finite positive gains at most 20"); return false;
+    }
+    std::copy(parts.begin(),parts.end(),gains.begin());return true;
+}
+
+int calibrateStarColors(const std::vector<std::string>& args) {
+    std::optional<std::filesystem::path> inputPath, referencePath;
+    photonstack::StarColorCalibrationOptions options;
+    bool flipY = false;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const auto& arg = args[i];
+        if (arg == "--reference-flip-y") {
+            if (!parseOnOff(args, i, arg, flipY)) return 1;
+            continue;
+        }
+        if (i + 1 >= args.size()) { printError("ArgumentMissing", arg + " requires a value"); return 1; }
+        const auto value = args[++i];
+        if (arg == "--input") inputPath = value;
+        else if (arg == "--reference") referencePath = value;
+        else if (arg == "--input-saturation" || arg == "--reference-saturation") {
+            float limit;
+            try { limit = parseFiniteFloat(value); }
+            catch (...) { printError("ArgumentInvalid", arg + " requires a finite positive number"); return 1; }
+            if (!(limit > 0)) { printError("ArgumentInvalid", arg + " requires a finite positive number"); return 1; }
+            if (arg == "--input-saturation") options.inputSaturation = limit;
+            else options.referenceSaturation = limit;
+        } else { printError("ArgumentInvalid", "Unknown color-calibrate argument: " + arg); return 1; }
+    }
+    if (!inputPath || !referencePath || !photonstack::isFitsPath(*inputPath) || !photonstack::isFitsPath(*referencePath)) {
+        printError("ArgumentInvalid", "color-calibrate requires --input <linear RGB FITS> --reference <linear RGB FITS>");
+        return 1;
+    }
+    const photonstack::ImageCodec codec;
+    // FITS decoding expands a mono plane to RGBA, so inspect the source channel
+    // count before decoding; buffer.channels alone cannot identify CFA/mono data.
+    for (const auto& path : {*inputPath, *referencePath}) {
+        const auto info = photonstack::FitsCodec().inspect(path);
+        if (!info.ok) { printError(info.errorCode, info.message); return 1; }
+        if (info.metadata.channels < 3) {
+            printError("ImageBufferInvalid", "Color calibration requires linear RGB, not CFA or grayscale"); return 1;
+        }
+    }
+    const auto input = codec.read(*inputPath, scientificFitsReadOptions());
+    if (!input.ok) { printError(input.errorCode, input.message); return 1; }
+    auto reference = codec.read(*referencePath, scientificFitsReadOptions());
+    if (!reference.ok) { printError(reference.errorCode, reference.message); return 1; }
+    // FITS has no universal stretch-state marker: the caller must supply linear masters.
+    if (input.image.channels < 3 || reference.image.channels < 3 ||
+        input.image.colorEncoding != photonstack::ColorEncoding::Linear ||
+        reference.image.colorEncoding != photonstack::ColorEncoding::Linear) {
+        printError("ImageBufferInvalid", "Color calibration requires linear RGB, not CFA or grayscale"); return 1;
+    }
+    if (flipY) {
+        const auto stride = static_cast<std::size_t>(reference.image.width) * reference.image.channels;
+        for (std::size_t y = 0; y < reference.image.height / 2; ++y)
+            for (std::size_t x = 0; x < stride; ++x)
+                std::swap(reference.image.pixels[y * stride + x],
+                          reference.image.pixels[(reference.image.height - 1 - y) * stride + x]);
+    }
+    photonstack::RegistrationOptions registrationOptions;
+    registrationOptions.starDetection.minPeak = 0;
+    registrationOptions.starDetection.sigmaThreshold = 6;
+    registrationOptions.starDetection.maxStars = 2000;
+    registrationOptions.starDetection.border = 17;
+    registrationOptions.minimumMatches = 24;
+    registrationOptions.similarityFallbackToTranslation = false;
+    registrationOptions.refineSimilarityCentroids = true;
+    const auto registered = photonstack::Registration().estimateSimilarity(reference.image, input.image, registrationOptions);
+    if (!registered.ok) { printError(registered.errorCode, registered.message); return 1; }
+    if (!registered.usedCentroidRefinement) {
+        printError("ColorCalibrationRegistrationFailed", "Reference requires reliable native star centroid matches"); return 1;
+    }
+    std::vector<photonstack::StarColorPair> pairs;
+    const auto& a = registered.affine;
+    for (const auto& p : registered.centroidRefinementPairs) {
+        const double dx = a.a * p[2] + a.b * p[3] + a.dx - p[0];
+        const double dy = a.c * p[2] + a.d * p[3] + a.dy - p[1];
+        if (std::hypot(dx, dy) <= .75) pairs.push_back({p[2], p[3], p[0], p[1]});
+    }
+    const auto result = photonstack::StarColorCalibrator().estimate(input.image, reference.image, pairs, options);
+    if (!result.ok) { printError(result.errorCode, result.message); return 1; }
+    auto rgb = [](const auto& v) { std::cout << '[' << v[0] << ", " << v[1] << ", " << v[2] << ']'; };
+    std::cout << "{\n  \"type\": \"complete\",\n  \"command\": \"color-calibrate\",\n"
+              << "  \"method\": \"reference-relative-native-aperture\",\n"
+              << "  \"referenceFlipY\": " << (flipY ? "true" : "false") << ",\n"
+              << "  \"registrationRms\": " << registered.centroidRefinementRms << ",\n"
+              << "  \"matchedStars\": " << pairs.size() << ",\n"
+              << "  \"trainingStars\": " << result.trainingStars << ",\n"
+              << "  \"validationStars\": " << result.validationStars << ",\n"
+              << "  \"rejectedStars\": " << result.rejectedStars << ",\n  \"gains\": ";
+    rgb(result.gains);
+    std::cout << ",\n  \"validationMedianLogError\": "; rgb(result.validationMedianLogError);
+    std::cout << ",\n  \"validationP90AbsoluteLogError\": "; rgb(result.validationP90AbsoluteLogError);
+    std::cout << "\n}\n";
+    return 0;
+}
+
+int developImage(const std::vector<std::string>& args) {
+    std::optional<std::filesystem::path> inputPath, outputPath;
+    photonstack::AstroDevelopOptions options;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const auto& arg = args[i];
+        if (arg == "--stellar-balance") {
+            if (!parseOnOff(args, i, arg, options.stellarBalance))
+                return 1;
+            continue;
+        }
+        if (i + 1 >= args.size()) {
+            printError("ArgumentMissing", arg + " requires a value");
+            return 1;
+        }
+        const auto value = args[++i];
+        if (arg == "--input")
+            inputPath = value;
+        else if (arg == "--output")
+            outputPath = value;
+        else if (arg == "--tone-curve") {
+            if (value != "rational" && value != "asinh") {
+                printError("ArgumentInvalid", "--tone-curve requires rational or asinh");
+                return 1;
+            }
+            options.toneCurve = value == "asinh" ? photonstack::AstroToneCurve::Asinh : photonstack::AstroToneCurve::Rational;
+        } else {
+            float* target = nullptr;
+            if (arg == "--background")
+                target = &options.background;
+            else if (arg == "--brightness")
+                target = &options.brightness;
+            else if (arg == "--tone-scale")
+                target = &options.toneScale;
+            else if (arg == "--white-point")
+                target = &options.whitePoint;
+            else if (arg == "--star-exposure")
+                target = &options.starExposure;
+            else if (arg == "--star-peak-threshold")
+                target = &options.starPeakThreshold;
+            else if (arg == "--shadow-neutralization")
+                target = &options.shadowNeutralization;
+            else if (arg == "--saturation")
+                target = &options.saturation;
+            else if (arg == "--red-gain")
+                target = &options.gains[0];
+            else if (arg == "--green-gain")
+                target = &options.gains[1];
+            else if (arg == "--blue-gain")
+                target = &options.gains[2];
+            else {
+                printError("ArgumentInvalid", "Unknown develop argument: " + arg);
+                return 1;
+            }
+            try {
+                *target = parseFiniteFloat(value);
+            } catch (const std::exception&) {
+                printError("ArgumentInvalid", arg + " requires a finite number");
+                return 1;
+            }
+        }
+    }
+    if (!inputPath || !outputPath) {
+        printError("ArgumentMissing", "develop requires --input <linear image> --output <image>");
+        return 1;
+    }
+    const photonstack::ImageCodec codec;
+    auto readOptions = scientificFitsReadOptions();
+    readOptions.fits.debayer = true;
+    const auto input = codec.read(*inputPath, readOptions);
+    if (!input.ok) {
+        printError(input.errorCode, input.message);
+        return 1;
+    }
+    const auto result = photonstack::AstroDevelop().apply(input.image, options);
+    if (!result.ok) {
+        printError(result.errorCode, result.message);
+        return 1;
+    }
+    const auto written = codec.write(result.image, *outputPath);
+    if (!written.ok) {
+        printError(written.errorCode, written.message);
+        return 1;
+    }
+    std::cout << "{\n  \"type\": \"complete\",\n  \"command\": \"develop\",\n"
+              << "  \"balanceMethod\": \"" << (options.stellarBalance ? "statistical-stars" : "manual") << "\",\n"
+              << "  \"calibrationStars\": " << result.calibrationStars << ",\n"
+              << "  \"adjustedStars\": " << result.adjustedStars << ",\n"
+              << "  \"gains\": [" << result.gains[0] << ", " << result.gains[1] << ", " << result.gains[2] << "],\n"
+              << "  \"sky\": [" << result.sky[0] << ", " << result.sky[1] << ", " << result.sky[2] << "],\n"
+              << "  \"toneScale\": " << result.toneScale << ",\n"
+              << "  \"whitePoint\": " << result.whitePoint << ",\n"
+              << "  \"toneCurve\": \"" << (options.toneCurve == photonstack::AstroToneCurve::Asinh ? "asinh" : "rational") << "\",\n"
+              << "  \"output\": \"" << jsonEscape(outputPath->string()) << "\"\n}\n";
+    return 0;
+}
+
+// Full-resolution screening preview. Keep the previous sRGB/16-bit display
+// transfer in memory, avoiding a TIFF round trip and PNG compression.
+int reviewPreviewImage(const std::vector<std::string>& args) {
+    std::optional<std::filesystem::path> inputPath, outputPath;
+    photonstack::ImageReadOptions readOptions;
+    readOptions.fits.debayer = true;
+    readOptions.fits.demosaic = photonstack::FitsDemosaic::Malvar;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const auto& arg = args[i];
+        if (arg != "--input" && arg != "--output" && arg != "--fits-debayer" && arg != "--fits-demosaic") {
+            printError("ArgumentInvalid", "Unknown review-preview argument: " + arg); return 1;
+        }
+        if (i + 1 >= args.size()) { printError("ArgumentMissing", arg + " requires a value"); return 1; }
+        const auto& value = args[++i];
+        if (arg == "--input") inputPath = value;
+        else if (arg == "--output") outputPath = value;
+        else if (arg == "--fits-debayer") {
+            if (value != "on" && value != "off") { printError("ArgumentInvalid", "--fits-debayer requires on or off"); return 1; }
+            readOptions.fits.debayer = value == "on";
+        } else {
+            if (value != "bilinear" && value != "malvar" && value != "menon" && value != "ratio") {
+                printError("ArgumentInvalid", "--fits-demosaic requires bilinear, malvar, menon or ratio"); return 1;
+            }
+            readOptions.fits.demosaic = value == "ratio" ? photonstack::FitsDemosaic::Ratio : value == "menon" ? photonstack::FitsDemosaic::Menon :
+                value == "malvar" ? photonstack::FitsDemosaic::Malvar : photonstack::FitsDemosaic::Bilinear;
+        }
+    }
+    if (!inputPath || !outputPath) { printError("ArgumentMissing", "review-preview requires --input and --output"); return 1; }
+    if (outputPath->extension() != ".tiff" && outputPath->extension() != ".tif") {
+        printError("ArgumentInvalid", "review-preview output must be a new TIFF"); return 1;
+    }
+    std::error_code statusError;
+    const auto status = std::filesystem::symlink_status(*outputPath, statusError);
+    if (std::filesystem::exists(status) || std::filesystem::is_symlink(status)) {
+        printError("OutputExists", "Review preview cannot replace an existing file"); return 1;
+    }
+    const auto started = std::chrono::steady_clock::now();
+    const photonstack::ImageCodec codec;
+    auto input = codec.read(*inputPath, readOptions);
+    if (!input.ok) { printError(input.errorCode, input.message); return 1; }
+    const auto decoded = std::chrono::steady_clock::now();
+    auto& image = input.image;
+    photonstack::detail::parallelRanges(image.pixelCount(), 262144, [&](std::size_t begin, std::size_t end) noexcept {
+        for (std::size_t pixel = begin; pixel < end; ++pixel) {
+            const auto offset = pixel * image.channels;
+            for (std::size_t channel = 0; channel < std::min<std::size_t>(3, image.channels); ++channel) {
+                float value = image.pixels[offset + channel];
+                value = std::isfinite(value) ? std::clamp(value, 0.0F, 1.0F) : 0.0F;
+                if (image.colorEncoding == photonstack::ColorEncoding::Linear)
+                    value = value <= 0.0031308F ? 12.92F * value : 1.055F * std::pow(value, 1.0F / 2.4F) - 0.055F;
+                image.pixels[offset + channel] = std::round(std::clamp(value, 0.0F, 1.0F) * 65535.0F) / 65535.0F;
+            }
+        }
+    });
+    image.colorEncoding = photonstack::ColorEncoding::SRGB;
+    const auto transferred = std::chrono::steady_clock::now();
+    const auto result = photonstack::Stretch().applyAuto(image, {.targetBackground = 0.18F});
+    if (!result.ok) { printError(result.errorCode, result.message); return 1; }
+    const auto stretched = std::chrono::steady_clock::now();
+    photonstack::ImageWriteOptions writeOptions;
+    writeOptions.bitDepth = photonstack::ImageWriteBitDepth::Eight;
+    const auto written = codec.write(result.image, *outputPath, writeOptions);
+    if (!written.ok) { printError(written.errorCode, written.message); return 1; }
+    const auto writtenAt = std::chrono::steady_clock::now();
+    const auto milliseconds = [](auto from, auto to) { return std::chrono::duration<double, std::milli>(to - from).count(); };
+    std::cout << "{\"type\":\"complete\",\"command\":\"review-preview\",\"width\":" << image.width
+              << ",\"height\":" << image.height << ",\"output\":\"" << jsonEscape(outputPath->string()) << "\",\"timingsMilliseconds\":{\"decode\":" << milliseconds(started, decoded)
+              << ",\"displayTransfer\":" << milliseconds(decoded, transferred)
+              << ",\"stretch\":" << milliseconds(transferred, stretched)
+              << ",\"write\":" << milliseconds(stretched, writtenAt) << "}}\n";
+    return 0;
+}
+
 int stretchImage(const std::vector<std::string>& args) {
     std::optional<std::filesystem::path> inputPath;
     std::optional<std::filesystem::path> outputPath;
@@ -1353,6 +1681,17 @@ int applyCurves(const std::vector<std::string>& args) {
                 return 1;
             }
             options.channel = *parsed;
+        } else if (arg == "--preserve-gamut") {
+            if (i + 1 >= args.size()) {
+                printError("ArgumentMissing", "--preserve-gamut requires on or off");
+                return 1;
+            }
+            const auto value = args[++i];
+            if (value != "on" && value != "off") {
+                printError("ArgumentInvalid", "--preserve-gamut requires on or off");
+                return 1;
+            }
+            options.preserveLuminanceGamut = value == "on";
         } else {
             printError("ArgumentInvalid", "Unknown curves argument: " + arg);
             return 1;
@@ -1413,6 +1752,67 @@ int applyCurves(const std::vector<std::string>& args) {
     return 0;
 }
 
+int protectReconstruction(const std::vector<std::string>& args) {
+    std::optional<std::filesystem::path> input, reference, mask, output;
+    photonstack::ReconstructionProtectionOptions options;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const auto& arg = args[i];
+        if (arg == "--input" || arg == "--reference" || arg == "--mask" || arg == "--output") {
+            if (i + 1 == args.size()) { printError("ArgumentMissing", arg + " requires a FITS path"); return 1; }
+            const std::filesystem::path path = args[++i];
+            if (arg == "--input") input = path;
+            else if (arg == "--reference") reference = path;
+            else if (arg == "--mask") mask = path;
+            else output = path;
+        } else if (arg == "--background-sigma" || arg == "--amount") {
+            if (i + 1 == args.size()) { printError("ArgumentMissing", arg + " requires a finite number"); return 1; }
+            try {
+                const double value = parseFiniteFloat(args[++i]);
+                if (arg == "--amount") options.amount = value;
+                else options.backgroundSigma = value;
+            } catch (const std::exception&) { printError("ArgumentInvalid", arg + " requires a finite number"); return 1; }
+        } else { printError("ArgumentInvalid", "Unknown protect-reconstruction argument: " + arg); return 1; }
+    }
+    if (options.amount < 0 || options.amount > 1 || options.backgroundSigma < .25 || options.backgroundSigma > 64) {
+        printError("ArgumentInvalid", "Protection amount must be in [0,1] and background sigma in [0.25,64]"); return 1;
+    }
+    if (!input || !reference || !mask || !output || !photonstack::isFitsPath(*input) ||
+        !photonstack::isFitsPath(*reference) || !photonstack::isFitsPath(*mask) || !photonstack::isFitsPath(*output)) {
+        printError("ArgumentMissing", "protect-reconstruction requires FITS --input, --reference, --mask and --output"); return 1;
+    }
+    for (const auto& source : {*input, *reference, *mask}) {
+        std::error_code ec;
+        const bool sameFile = std::filesystem::equivalent(source, *output, ec);
+        ec.clear();
+        const auto sourcePath = std::filesystem::weakly_canonical(source, ec);
+        if (ec) { printError("PathInvalid", ec.message()); return 1; }
+        const auto outputPath = std::filesystem::weakly_canonical(*output, ec);
+        if (ec) { printError("PathInvalid", ec.message()); return 1; }
+        if (sameFile || sourcePath == outputPath) {
+            printError("OutputConflictsWithInput", "Protection output must not overwrite any input"); return 1;
+        }
+    }
+    const photonstack::ImageCodec codec;
+    const auto readOptions = scientificFitsReadOptions();
+    const auto image = codec.read(*input, readOptions);
+    if (!image.ok) { printError(image.errorCode, image.message); return 1; }
+    const auto direct = codec.read(*reference, readOptions);
+    if (!direct.ok) { printError(direct.errorCode, direct.message); return 1; }
+    const auto weights = codec.read(*mask, readOptions);
+    if (!weights.ok) { printError(weights.errorCode, weights.message); return 1; }
+    const auto result = photonstack::ReconstructionProtection{}.apply(image.image, direct.image, weights.image, options);
+    if (!result.ok) { printError(result.errorCode, result.message); return 1; }
+    const auto written = codec.write(result.image, *output);
+    if (!written.ok) { printError(written.errorCode, written.message); return 1; }
+    std::cout << "{\n  \"type\": \"complete\",\n  \"command\": \"protect-reconstruction\",\n"
+              << "  \"fitsValues\": \"scientific\",\n  \"clampOutput\": false,\n"
+              << "  \"backgroundSigma\": " << options.backgroundSigma << ",\n"
+              << "  \"amount\": " << options.amount << ",\n"
+              << "  \"protectedPixels\": " << result.protectedPixels << ",\n"
+              << "  \"output\": \"" << jsonEscape(output->string()) << "\"\n}\n";
+    return 0;
+}
+
 int applyLocalContrast(const std::vector<std::string>& args) {
     std::optional<std::filesystem::path> inputPath;
     std::optional<std::filesystem::path> outputPath;
@@ -1454,6 +1854,24 @@ int applyLocalContrast(const std::vector<std::string>& args) {
                 printError("ArgumentInvalid", "--radius must be a positive integer");
                 return 1;
             }
+        } else if (arg == "--protect-structure") {
+            if (i + 1 >= args.size()) { printError("ArgumentMissing", "--protect-structure requires on or off"); return 1; }
+            const auto value = args[++i];
+            if (value != "on" && value != "off") { printError("ArgumentInvalid", "--protect-structure requires on or off"); return 1; }
+            options.protectStructure = value == "on";
+        } else if (arg == "--continuum-curve") {
+            if (i + 1 >= args.size()) { printError("ArgumentMissing", "--continuum-curve requires input:output pairs"); return 1; }
+            const auto parsed = parseCurvePoints(args[++i]);
+            if (!parsed.has_value()) { printError("ArgumentInvalid", "--continuum-curve requires input:output pairs"); return 1; }
+            options.continuumCurvePoints = parsed->points;
+        } else if (arg == "--star-chroma") {
+            if (i + 1 >= args.size()) { printError("ArgumentMissing", "--star-chroma requires a number in [0,1]"); return 1; }
+            try { options.starChroma = parseFiniteFloat(args[++i]); }
+            catch (const std::exception&) { printError("ArgumentInvalid", "--star-chroma requires a number in [0,1]"); return 1; }
+        } else if (arg == "--fine-radius") {
+            if (i + 1 >= args.size()) { printError("ArgumentMissing", "--fine-radius requires a positive integer"); return 1; }
+            try { options.fineRadius = parseUnsignedInteger<std::uint32_t>(args[++i]); }
+            catch (const std::exception&) { printError("ArgumentInvalid", "--fine-radius requires a positive integer"); return 1; }
         } else {
             printError("ArgumentInvalid", "Unknown local-contrast argument: " + arg);
             return 1;
@@ -1462,6 +1880,12 @@ int applyLocalContrast(const std::vector<std::string>& args) {
 
     if (!inputPath.has_value() || !outputPath.has_value()) {
         printError("ArgumentMissing", "local-contrast requires --input <image> and --output <image>");
+        return 1;
+    }
+
+    if (!options.continuumCurvePoints.empty() &&
+        (photonstack::isFitsPath(*inputPath) || photonstack::isFitsPath(*outputPath))) {
+        printError("ArgumentInvalid", "--continuum-curve requires display image input and output, not FITS");
         return 1;
     }
 
@@ -1491,6 +1915,129 @@ int applyLocalContrast(const std::vector<std::string>& args) {
               << "  \"clampOutput\": " << (options.clampOutput ? "true" : "false") << ",\n"
               << "  \"output\": \"" << jsonEscape(outputPath->string()) << "\"\n"
               << "}\n";
+    return 0;
+}
+
+int suppressDisplayGrid(const std::vector<std::string>& args) {
+    std::optional<std::filesystem::path> input, output;
+    photonstack::DisplayGridReductionOptions options;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const auto& arg = args[i];
+        if (arg != "--input" && arg != "--output" && arg != "--amount") {
+            printError("ArgumentInvalid", "Unknown suppress-grid argument: " + arg); return 1;
+        }
+        if (i + 1 == args.size()) { printError("ArgumentMissing", arg + " requires a value"); return 1; }
+        const auto& value = args[++i];
+        if (arg == "--input") input = value;
+        else if (arg == "--output") output = value;
+        else {
+            try {
+                std::size_t used = 0;
+                options.amount = std::stod(value, &used);
+                if (used != value.size() || !std::isfinite(options.amount) || options.amount < 0 || options.amount > 1)
+                    throw std::invalid_argument("range");
+            } catch (const std::exception&) {
+                printError("ArgumentInvalid", "--amount must be finite and in [0,1]"); return 1;
+            }
+        }
+    }
+    if (!input || !output || input->empty() || output->empty()) {
+        printError("ArgumentMissing", "suppress-grid requires --input and --output"); return 1;
+    }
+    const auto displayPath = [](const std::filesystem::path& path) {
+        auto suffix = path.extension().string();
+        std::transform(suffix.begin(), suffix.end(), suffix.begin(), [](unsigned char c) { return std::tolower(c); });
+        return suffix == ".tiff" || suffix == ".tif" || suffix == ".png";
+    };
+    if (!displayPath(*input) || !displayPath(*output)) {
+        printError("ArgumentInvalid", "suppress-grid requires TIFF or PNG display input and output"); return 1;
+    }
+    std::error_code ec;
+    const auto status = std::filesystem::symlink_status(*output, ec);
+    if (ec && ec != std::errc::no_such_file_or_directory) { printError("PathInvalid", ec.message()); return 1; }
+    if (status.type() != std::filesystem::file_type::not_found && status.type() != std::filesystem::file_type::none) {
+        printError("OutputExists", "Grid reduction requires a new output path"); return 1;
+    }
+    const photonstack::ImageCodec codec;
+    const auto read = codec.read(*input);
+    if (!read.ok) { printError(read.errorCode, read.message); return 1; }
+    const auto result = photonstack::DisplayGridReducer{}.apply(read.image, options);
+    if (!result.ok) { printError(result.errorCode, result.message); return 1; }
+    photonstack::ImageWriteOptions writeOptions;
+    writeOptions.bitDepth = photonstack::ImageWriteBitDepth::Sixteen;
+    const auto written = codec.write(result.image, *output, writeOptions);
+    if (!written.ok) { printError(written.errorCode, written.message); return 1; }
+    std::cout << "{\"type\":\"complete\",\"command\":\"suppress-grid\",\"valueDomain\":\"display-srgb\","
+                 "\"bitDepth\":16,\"filterOrder\":128,\"amount\":" << std::setprecision(17) << options.amount
+              << ",\"output\":\"" << jsonEscape(output->string()) << "\"}\n";
+    return 0;
+}
+
+int denoiseNonlocal(const std::vector<std::string>& args) {
+    std::optional<std::filesystem::path> input, blend, output;
+    photonstack::NonlocalDenoiseOptions options;
+    bool specifiedH = false;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const auto& arg = args[i];
+        if (arg == "--input" || arg == "--blend-map" || arg == "--output") {
+            if (i + 1 == args.size()) { printError("ArgumentMissing", arg + " requires a FITS path"); return 1; }
+            const std::filesystem::path path = args[++i];
+            if (arg == "--input") input = path;
+            else if (arg == "--blend-map") blend = path;
+            else output = path;
+        } else if (arg == "--mode") {
+            if (i + 1 == args.size()) { printError("ArgumentMissing", "--mode requires luminance or conservative-rgb"); return 1; }
+            const auto& mode = args[++i];
+            if (mode == "luminance") options.mode = photonstack::NonlocalDenoiseMode::Luminance;
+            else if (mode == "conservative-rgb") options.mode = photonstack::NonlocalDenoiseMode::ConservativeRGB;
+            else { printError("ArgumentInvalid", "--mode requires luminance or conservative-rgb"); return 1; }
+        } else if (arg == "--h" || arg == "--red-weight" || arg == "--green-weight" || arg == "--blue-weight") {
+            if (i + 1 == args.size()) { printError("ArgumentMissing", arg + " requires a finite nonnegative number"); return 1; }
+            double value;
+            try {
+                const auto& text = args[++i];
+                std::size_t used = 0;
+                value = std::stod(text, &used);
+                if (used != text.size() || !std::isfinite(value) || value < 0 || (arg != "--h" && value > 1024))
+                    throw std::invalid_argument("range");
+            } catch (const std::exception&) { printError("ArgumentInvalid", arg + " has an invalid numeric value"); return 1; }
+            if (arg == "--h") { options.h = value; specifiedH = true; }
+            else options.luminanceWeights[arg == "--red-weight" ? 0 : arg == "--green-weight" ? 1 : 2] = value;
+        } else { printError("ArgumentInvalid", "Unknown denoise-nonlocal argument: " + arg); return 1; }
+    }
+    if (options.luminanceWeights[0] + options.luminanceWeights[1] + options.luminanceWeights[2] == 0) {
+        printError("ArgumentInvalid", "At least one luminance weight must be positive"); return 1;
+    }
+    if (!input || !blend || !output || !specifiedH || !photonstack::isFitsPath(*input) ||
+        !photonstack::isFitsPath(*blend) || !photonstack::isFitsPath(*output)) {
+        printError("ArgumentMissing", "denoise-nonlocal requires FITS --input, --blend-map, --output and explicit --h"); return 1;
+    }
+    std::error_code ec;
+    const auto status = std::filesystem::symlink_status(*output, ec);
+    if (ec && ec != std::errc::no_such_file_or_directory) { printError("PathInvalid", ec.message()); return 1; }
+    if (status.type() != std::filesystem::file_type::not_found && status.type() != std::filesystem::file_type::none) {
+        printError("OutputExists", "Nonlocal denoising requires a new output path"); return 1;
+    }
+    const auto info = photonstack::FitsCodec{}.inspect(*input);
+    if (!info.ok) { printError(info.errorCode, info.message); return 1; }
+    if (info.metadata.channels < 3) { printError("ImageBufferInvalid", "Nonlocal denoising requires RGB, not CFA or grayscale"); return 1; }
+    const photonstack::ImageCodec codec;
+    const auto image = codec.read(*input, scientificFitsReadOptions());
+    if (!image.ok) { printError(image.errorCode, image.message); return 1; }
+    const auto mask = codec.read(*blend, scientificFitsReadOptions());
+    if (!mask.ok) { printError(mask.errorCode, mask.message); return 1; }
+    const auto result = photonstack::NonlocalDenoiser{}.apply(image.image, mask.image, options);
+    if (!result.ok) { printError(result.errorCode, result.message); return 1; }
+    const auto written = codec.write(result.image, *output);
+    if (!written.ok) { printError(written.errorCode, written.message); return 1; }
+    std::cout << "{\n  \"type\": \"complete\",\n  \"command\": \"denoise-nonlocal\",\n"
+              << "  \"fitsValues\": \"scientific\",\n  \"clampOutput\": false,\n"
+              << "  \"mode\": \"" << (options.mode == photonstack::NonlocalDenoiseMode::ConservativeRGB ? "conservative-rgb" : "luminance") << "\",\n"
+              << "  \"patchWidth\": 7,\n  \"searchWidth\": 11,\n"
+              << "  \"h\": " << std::setprecision(17) << options.h << ",\n"
+              << "  \"luminanceWeights\": [" << options.luminanceWeights[0] << ", "
+              << options.luminanceWeights[1] << ", " << options.luminanceWeights[2] << "],\n"
+              << "  \"output\": \"" << jsonEscape(output->string()) << "\"\n}\n";
     return 0;
 }
 
@@ -1583,6 +2130,81 @@ int denoiseImage(const std::vector<std::string>& args) {
               << "  \"clampOutput\": " << (options.clampOutput ? "true" : "false") << ",\n"
               << "  \"output\": \"" << jsonEscape(outputPath->string()) << "\"\n"
               << "}\n";
+    return 0;
+}
+
+int psfMatchImage(const std::vector<std::string>& args) {
+    std::optional<std::filesystem::path> inputPath, outputPath;
+    photonstack::PsfHomogenizeOptions options;
+    bool hasXX = false, hasYY = false, hasXY = false;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const auto& arg = args[i];
+        if (i + 1 >= args.size()) {
+            printError("ArgumentMissing", arg + " requires a value");
+            return 1;
+        }
+        const auto& value = args[++i];
+        if (arg == "--input")
+            inputPath = value;
+        else if (arg == "--output")
+            outputPath = value;
+        else {
+            try {
+                const auto number = parseFiniteFloat(value);
+                if (arg == "--cov-xx") {
+                    options.covarianceXX = number;
+                    hasXX = true;
+                } else if (arg == "--cov-yy") {
+                    options.covarianceYY = number;
+                    hasYY = true;
+                } else if (arg == "--cov-xy") {
+                    options.covarianceXY = number;
+                    hasXY = true;
+                } else if (arg == "--strength")
+                    options.strength = number;
+                else {
+                    printError("ArgumentInvalid", "Unknown psf-match argument: " + arg);
+                    return 1;
+                }
+            } catch (const std::exception&) {
+                printError("ArgumentInvalid", arg + " requires a finite number");
+                return 1;
+            }
+        }
+    }
+    if (!inputPath || !outputPath || !hasXX || !hasYY || !hasXY) {
+        printError("ArgumentMissing", "psf-match requires input, output and all three covariance components");
+        return 1;
+    }
+    if (!photonstack::isFitsPath(*inputPath) || !photonstack::isFitsPath(*outputPath)) {
+        printError("ArgumentInvalid",
+                   "psf-match requires linear FITS input and FITS output to preserve signed samples");
+        return 1;
+    }
+    const photonstack::ImageCodec codec;
+    const auto read = codec.read(*inputPath, scientificFitsReadOptions());
+    if (!read.ok) {
+        printError(read.errorCode, read.message);
+        return 1;
+    }
+    const auto result = photonstack::PsfHomogenizer{}.apply(read.image, options);
+    if (!result.ok) {
+        printError(result.errorCode, result.message);
+        return 1;
+    }
+    const auto written = codec.write(result.image, *outputPath);
+    if (!written.ok) {
+        printError(written.errorCode, written.message);
+        return 1;
+    }
+    std::cout << "{\"type\":\"complete\",\"command\":\"psf-match\",\"whiteNoiseGain\":" << result.whiteNoiseGain
+              << ",\"kernel\":[";
+    for (std::size_t i = 0; i < result.kernel.size(); ++i) {
+        if (i)
+            std::cout << ',';
+        std::cout << result.kernel[i];
+    }
+    std::cout << "],\"output\":\"" << jsonEscape(outputPath->string()) << "\"}\n";
     return 0;
 }
 
@@ -1761,6 +2383,67 @@ int deconvolveImage(const std::vector<std::string>& args) {
     return 0;
 }
 
+int coolContinuum(const std::vector<std::string>& args) {
+    std::optional<std::filesystem::path> input, output;
+    photonstack::ContinuumCoolingOptions options;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const auto& arg = args[i];
+        if (arg != "--input" && arg != "--output" && arg != "--amount" && arg != "--radius" && arg != "--estimator") {
+            printError("ArgumentInvalid", "Unknown cool-continuum argument: " + arg); return 1;
+        }
+        if (i + 1 == args.size()) {
+            printError("ArgumentMissing", arg + " requires a value"); return 1;
+        }
+        const auto& value = args[++i];
+        try {
+            if (arg == "--input") input = value;
+            else if (arg == "--output") output = value;
+            else if (arg == "--estimator") {
+                if (value == "source-excluded") options.estimator = photonstack::CoolingContinuumEstimator::SourceExcluded;
+                else if (value == "opening") options.estimator = photonstack::CoolingContinuumEstimator::Opening;
+                else throw std::invalid_argument("estimator must be source-excluded or opening");
+            }
+            else if (arg == "--radius") options.radius = parseUnsignedInteger<std::uint32_t>(value);
+            else {
+                std::size_t consumed = 0;
+                options.amount = std::stod(value, &consumed);
+                if (consumed != value.size() || !std::isfinite(options.amount))
+                    throw std::invalid_argument("finite number required");
+            }
+        } catch (const std::exception&) {
+            printError("ArgumentInvalid", "Invalid value for " + arg); return 1;
+        }
+    }
+    if (!input || !output || input->empty() || output->empty() || options.amount < 0 || options.amount > .12 ||
+        options.radius < 4 || options.radius > 64) {
+        printError("ArgumentInvalid", "Input/output required; amount in [0,0.12], radius in [4,64]"); return 1;
+    }
+    if (photonstack::isFitsPath(*input) || photonstack::isFitsPath(*output)) {
+        printError("ArgumentInvalid", "Continuum cooling requires non-FITS display input and output"); return 1;
+    }
+    std::error_code ec;
+    const bool equivalent = std::filesystem::equivalent(*input, *output, ec);
+    const auto source = std::filesystem::weakly_canonical(*input, ec);
+    if (ec) { printError("ArgumentInvalid", ec.message()); return 1; }
+    const auto destination = std::filesystem::weakly_canonical(*output, ec);
+    if (ec) { printError("ArgumentInvalid", ec.message()); return 1; }
+    if (equivalent || source == destination) {
+        printError("OutputConflictsWithInput", "Continuum cooling output must not overwrite its input"); return 1;
+    }
+    const photonstack::ImageCodec codec;
+    photonstack::ImageReadOptions readOptions;
+    readOptions.raw.linearOutput = false;
+    const auto read = codec.read(*input, readOptions);
+    if (!read.ok) { printError(read.errorCode, read.message); return 1; }
+    const auto result = photonstack::LocalContrast{}.coolContinuum(read.image, options);
+    if (!result.ok) { printError(result.errorCode, result.message); return 1; }
+    const auto write = codec.write(result.image, *output);
+    if (!write.ok) { printError(write.errorCode, write.message); return 1; }
+    std::cout << "{\"type\":\"complete\",\"command\":\"color cool-continuum\","
+                 "\"valueDomain\":\"display\",\"output\":\"" << jsonEscape(output->string()) << "\"}\n";
+    return 0;
+}
+
 int adjustColor(const std::string& mode, const std::vector<std::string>& args) {
     std::optional<std::filesystem::path> inputPath;
     std::optional<std::filesystem::path> outputPath;
@@ -1829,6 +2512,16 @@ int adjustColor(const std::string& mode, const std::vector<std::string>& args) {
             if (!parseFloat(greenOptions.greenExcessThreshold, "--green-threshold")) {
                 return 1;
             }
+        } else if (arg == "--green-method" && mode == "remove-green") {
+            if (i + 1 >= args.size()) { printError("ArgumentMissing", "--green-method requires background or average-neutral"); return 1; }
+            const auto value = args[++i];
+            if (value != "background" && value != "average-neutral") { printError("ArgumentInvalid", "--green-method requires background or average-neutral"); return 1; }
+            greenOptions.averageNeutral = value == "average-neutral";
+        } else if (arg == "--preserve-lightness" && mode == "remove-green") {
+            if (i + 1 >= args.size()) { printError("ArgumentMissing", "--preserve-lightness requires on or off"); return 1; }
+            const auto value = args[++i];
+            if (value != "on" && value != "off") { printError("ArgumentInvalid", "--preserve-lightness requires on or off"); return 1; }
+            greenOptions.preserveLightness = value == "on";
         } else {
             printError("ArgumentInvalid", "Unknown color argument: " + arg);
             return 1;
@@ -1837,6 +2530,12 @@ int adjustColor(const std::string& mode, const std::vector<std::string>& args) {
 
     if (!inputPath.has_value() || !outputPath.has_value()) {
         printError("ArgumentMissing", "color " + mode + " requires --input <image> and --output <image>");
+        return 1;
+    }
+
+    if (mode == "remove-green" && (greenOptions.averageNeutral || greenOptions.preserveLightness) &&
+        (photonstack::isFitsPath(*inputPath) || photonstack::isFitsPath(*outputPath))) {
+        printError("ArgumentInvalid", "Green display styling requires non-FITS input and output");
         return 1;
     }
 
@@ -2664,6 +3363,20 @@ int convertImage(const std::vector<std::string>& args, const std::string& comman
                 printError("ArgumentInvalid", "--quality must be between 0 and 1");
                 return 1;
             }
+        } else if (arg == "--fits-cfa-gains") {
+            if (!parseCfaGains(args, i, readOptions.fits.cfaInterpolationGains)) return 1;
+        } else if (arg == "--fits-demosaic") {
+            if (i + 1 >= args.size() || (args[i + 1] != "bilinear" && args[i + 1] != "malvar" && args[i + 1] != "menon" && args[i + 1] != "ratio")) {
+                printError("ArgumentInvalid", "--fits-demosaic requires bilinear, malvar, menon or ratio");
+                return 1;
+            }
+            readOptions.fits.demosaic = args[++i] == "ratio" ? photonstack::FitsDemosaic::Ratio : args[i] == "menon" ? photonstack::FitsDemosaic::Menon : args[i] == "malvar" ? photonstack::FitsDemosaic::Malvar : photonstack::FitsDemosaic::Bilinear;
+        } else if (arg == "--fits-debayer") {
+            if (i + 1 >= args.size() || (args[i + 1] != "on" && args[i + 1] != "off")) {
+                printError("ArgumentInvalid", "--fits-debayer requires on or off");
+                return 1;
+            }
+            readOptions.fits.debayer = args[++i] == "on";
         } else if (arg == "--fits-values") {
             if (!parseFitsValuesArgument(args, i, readOptions.fits)) {
                 return 1;
@@ -3060,7 +3773,8 @@ int registerBatch(const std::vector<std::string>& args) {
     };
 
     const photonstack::ImageCodec codec;
-    const auto readOptions = scientificFitsReadOptions();
+    auto readOptions = scientificFitsReadOptions();
+    readOptions.fits.debayer = true;
     const auto referenceRead = codec.read(*referencePath, readOptions);
     if (!referenceRead.ok) {
         printError(referenceRead.errorCode, referenceRead.message);
@@ -3214,6 +3928,58 @@ int stackImages(const std::vector<std::string>& args) {
                 return 1;
             }
             outputPath = args[++i];
+        } else if (arg == "--interpolation") {
+            if (i + 1 >= args.size() || (args[i + 1] != "bilinear" && args[i + 1] != "bicubic")) {
+                printError("ArgumentInvalid", "--interpolation requires bilinear or bicubic");
+                return 1;
+            }
+            stackOptions.interpolation = args[++i] == "bicubic" ? photonstack::RegistrationInterpolation::Bicubic : photonstack::RegistrationInterpolation::Bilinear;
+        } else if (arg == "--refine-centroids") {
+            if (i + 1 >= args.size() || (args[i + 1] != "on" && args[i + 1] != "off")) {
+                printError("ArgumentInvalid", "--refine-centroids requires on or off"); return 1;
+            }
+            stackOptions.registration.refineSimilarityCentroids = args[++i] == "on";
+        } else if (arg == "--alignment-reference") {
+            if (i + 1 >= args.size() || args[i + 1].empty() || args[i + 1].starts_with("--")) {
+                printError("ArgumentMissing", "--alignment-reference requires an image path");
+                return 1;
+            }
+            stackOptions.alignmentReference = args[++i];
+        } else if (arg == "--frame-weights") {
+            if (i + 1 >= args.size()) { printError("ArgumentMissing", "--frame-weights requires comma-separated positive weights"); return 1; }
+            const std::string value = args[++i];
+            stackOptions.frameWeights.clear();
+            try {
+                std::size_t begin = 0;
+                while (true) {
+                    const auto comma = value.find(',',begin);
+                    const float weight = parseFiniteFloat(value.substr(begin,comma == std::string::npos ? comma : comma-begin));
+                    if (weight <= 0) throw std::invalid_argument("weight");
+                    stackOptions.frameWeights.push_back(weight);
+                    if (comma == std::string::npos) break;
+                    begin = comma+1;
+                }
+            } catch (...) {
+                printError("ArgumentInvalid", "--frame-weights requires finite positive weights"); return 1;
+            }
+        } else if (arg == "--fits-cfa-gains") {
+            if (!parseCfaGains(args, i, stackOptions.cfaInterpolationGains)) return 1;
+        } else if (arg == "--fits-demosaic") {
+            if (i + 1 >= args.size() || (args[i + 1] != "bilinear" && args[i + 1] != "malvar" && args[i + 1] != "menon" && args[i + 1] != "ratio")) {
+                printError("ArgumentInvalid", "--fits-demosaic requires bilinear, malvar, menon or ratio");
+                return 1;
+            }
+            stackOptions.fitsDemosaic = args[++i] == "ratio" ? photonstack::FitsDemosaic::Ratio : args[i] == "menon" ? photonstack::FitsDemosaic::Menon : args[i] == "malvar" ? photonstack::FitsDemosaic::Malvar : photonstack::FitsDemosaic::Bilinear;
+        } else if (arg == "--fits-debayer" || arg == "--normalize-background") {
+            if (i + 1 >= args.size() || (args[i + 1] != "on" && args[i + 1] != "off")) {
+                printError("ArgumentInvalid", arg + " requires on or off");
+                return 1;
+            }
+            const bool enabled = args[++i] == "on";
+            if (arg == "--fits-debayer")
+                stackOptions.debayerFits = enabled;
+            else
+                stackOptions.normalizeBackground = enabled;
         } else if (arg == "--method") {
             if (i + 1 >= args.size()) {
                 printError("ArgumentMissing", "--method requires a value");
@@ -3449,18 +4215,26 @@ int stackImages(const std::vector<std::string>& args) {
               << "  \"type\": \"complete\",\n"
               << "  \"command\": \"stack\",\n"
               << "  \"fitsValues\": \"scientific\",\n"
+              << "  \"fitsDebayer\": " << (stackOptions.debayerFits ? "true" : "false") << ",\n"
+              << "  \"fitsDemosaic\": \"" << (stackOptions.fitsDemosaic == photonstack::FitsDemosaic::Ratio ? "ratio" : stackOptions.fitsDemosaic == photonstack::FitsDemosaic::Menon ? "menon" : stackOptions.fitsDemosaic == photonstack::FitsDemosaic::Malvar ? "malvar" : "bilinear") << "\",\n"
+              << "  \"interpolation\": \"" << (stackOptions.interpolation == photonstack::RegistrationInterpolation::Bicubic ? "bicubic" : "bilinear") << "\",\n"
+              << "  \"normalizeBackground\": " << (stackOptions.normalizeBackground ? "true" : "false") << ",\n"
               << "  \"method\": \"" << jsonEscape(method) << "\",\n"
               << "  \"align\": \""
-              << (stackOptions.alignDistortion ? "distortion"
-                                               : (stackOptions.alignAffine
-                                                      ? "affine"
-                                                      : (stackOptions.alignSimilarity
-                                                             ? "similarity"
-                                                             : (stackOptions.alignTranslation ? "translation" : "none"))))
+              << (stackOptions.alignDistortion
+                      ? "distortion"
+                      : (stackOptions.alignAffine ? "affine"
+                                                  : (stackOptions.alignSimilarity
+                                                         ? "similarity"
+                                                         : (stackOptions.alignTranslation ? "translation" : "none"))))
               << "\",\n"
               << "  \"frames\": " << inputFiles.size() << ",\n"
               << "  \"alignedFrames\": " << stackResult.alignedFrames << ",\n"
               << "  \"alignmentFallbacks\": " << stackResult.alignmentFallbacks << ",\n"
+              << "  \"centroidRefinedFrames\": " << stackResult.centroidRefinedFrames << ",\n"
+              << "  \"centroidRefinementFallbacks\": " << stackResult.centroidRefinementFallbacks << ",\n"
+              << "  \"centroidAffineFrames\": " << stackResult.centroidAffineFrames << ",\n"
+              << "  \"centroidSimilarityRetainedFrames\": " << stackResult.centroidSimilarityRetainedFrames << ",\n"
               << "  \"minimumAlignmentMatches\": " << stackResult.minimumAlignmentMatches << ",\n"
               << "  \"output\": \"" << jsonEscape(outputPath->string()) << "\"\n"
               << "}\n";
@@ -5395,6 +6169,10 @@ int reduceStars(const std::vector<std::string>& args) {
                 printError("ArgumentInvalid", "--min-peak must be a positive number");
                 return 1;
             }
+        } else if (arg == "--max-stars") {
+            if (i + 1 >= args.size()) { printError("ArgumentMissing", "--max-stars requires a count"); return 1; }
+            try { options.mask.detection.maxStars = parseUnsignedInteger<std::size_t>(args[++i]); }
+            catch (const std::exception&) { printError("ArgumentInvalid", "Invalid star count"); return 1; }
         } else {
             printError("ArgumentInvalid", "Unknown stars reduce argument: " + arg);
             return 1;
@@ -6005,6 +6783,14 @@ int runWorkflow(const std::filesystem::path& path) {
 
 int runCommandImpl(const std::vector<std::string>& args) {
 
+    if (!args.empty() && args[0] == "review-preview") {
+        return reviewPreviewImage(std::vector<std::string>(args.begin() + 1, args.end()));
+    }
+
+    if (!args.empty() && args[0] == "deep-sky") {
+        return runDeepSkyCommand(std::vector<std::string>(args.begin() + 1, args.end()));
+    }
+
     if (args.empty() || args[0] == "help" || args[0] == "--help" || args[0] == "-h") {
         printUsage();
         return args.empty() ? 1 : 0;
@@ -6096,6 +6882,14 @@ int runCommandImpl(const std::vector<std::string>& args) {
         return normalizeImage(std::vector<std::string>(args.begin() + 1, args.end()));
     }
 
+    if (args[0] == "color-calibrate") {
+        return calibrateStarColors(std::vector<std::string>(args.begin() + 1, args.end()));
+    }
+
+    if (args[0] == "develop") {
+        return developImage(std::vector<std::string>(args.begin() + 1, args.end()));
+    }
+
     if (args[0] == "stretch") {
         return stretchImage(std::vector<std::string>(args.begin() + 1, args.end()));
     }
@@ -6107,13 +6901,30 @@ int runCommandImpl(const std::vector<std::string>& args) {
     if (args[0] == "local-contrast") {
         return applyLocalContrast(std::vector<std::string>(args.begin() + 1, args.end()));
     }
+    if (args[0] == "protect-reconstruction") {
+        return protectReconstruction(std::vector<std::string>(args.begin() + 1, args.end()));
+    }
+    if (args[0] == "frequency-stack") {
+        try { return runFrequencyStack(std::vector<std::string>(args.begin() + 1, args.end())); }
+        catch (const std::exception& error) { printError("FrequencyStackFailed", error.what()); return 1; }
+    }
 
     if (args[0] == "denoise") {
         return denoiseImage(std::vector<std::string>(args.begin() + 1, args.end()));
     }
+    if (args[0] == "denoise-nonlocal") {
+        return denoiseNonlocal(std::vector<std::string>(args.begin() + 1, args.end()));
+    }
+    if (args[0] == "suppress-grid") {
+        return suppressDisplayGrid(std::vector<std::string>(args.begin() + 1, args.end()));
+    }
 
     if (args[0] == "sharpen") {
         return sharpenImage(std::vector<std::string>(args.begin() + 1, args.end()));
+    }
+
+    if (args[0] == "psf-match") {
+        return psfMatchImage(std::vector<std::string>(args.begin() + 1, args.end()));
     }
 
     if (args[0] == "deconvolve") {
@@ -6122,13 +6933,16 @@ int runCommandImpl(const std::vector<std::string>& args) {
 
     if (args[0] == "color") {
         if (args.size() < 2) {
-            printError("ArgumentInvalid", "Usage: photonstack color neutralize|saturate|remove-green ...");
+            printError("ArgumentInvalid", "Usage: photonstack color neutralize|saturate|remove-green|cool-continuum ...");
             return 1;
+        }
+        if (args[1] == "cool-continuum") {
+            return coolContinuum(std::vector<std::string>(args.begin() + 2, args.end()));
         }
         if (args[1] == "neutralize" || args[1] == "saturate" || args[1] == "remove-green") {
             return adjustColor(args[1], std::vector<std::string>(args.begin() + 2, args.end()));
         }
-        printError("ArgumentInvalid", "Usage: photonstack color neutralize|saturate|remove-green ...");
+        printError("ArgumentInvalid", "Usage: photonstack color neutralize|saturate|remove-green|cool-continuum ...");
         return 1;
     }
 

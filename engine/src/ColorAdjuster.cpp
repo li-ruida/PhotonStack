@@ -1,10 +1,13 @@
 #include "photonstack/ColorAdjuster.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
+#include "DisplayGamut.hpp"
 #include "MaskedImageSampling.hpp"
 
 namespace photonstack {
@@ -145,6 +148,16 @@ ColorAdjustmentResult ColorAdjuster::suppressGreenCast(const ImageBuffer& image,
 
     ImageBuffer output = image;
     std::size_t affectedPixels = 0;
+    if (options.averageNeutral || options.preserveLightness) {
+        if (image.colorEncoding != ColorEncoding::SRGB)
+            return colorError("ImageColorEncodingMismatch",
+                              "Lightness-preserving green styling requires sRGB display input");
+        for (std::size_t p = 0; p < image.pixelCount(); ++p)
+            if (detail::pixelHasValidColor(image, p))
+                for (int c = 0; c < 3; ++c)
+                    if (image.pixels[p * image.channels + c] < 0 || image.pixels[p * image.channels + c] > 1)
+                        return colorError("ImageValueInvalid", "Green display styling requires samples in [0,1]");
+    }
     for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
         if (!detail::pixelHasValidColor(image, pixel)) {
             detail::clearMaskedPixel(output, pixel);
@@ -161,14 +174,46 @@ ColorAdjustmentResult ColorAdjuster::suppressGreenCast(const ImageBuffer& image,
             continue;
         }
 
-        const float backgroundMask = 1.0F - smoothstep(options.backgroundLimit * 0.65F, options.backgroundLimit, luminance);
+        const float backgroundMask =
+            1.0F - smoothstep(options.backgroundLimit * 0.65F, options.backgroundLimit, luminance);
         const float excessMask = std::clamp(excess / std::max(0.03F, luminance * 0.35F), 0.0F, 1.0F);
-        const float blend = std::clamp(options.amount * backgroundMask * excessMask, 0.0F, 1.0F);
+        const float blend = options.averageNeutral
+                                ? options.amount
+                                : std::clamp(options.amount * backgroundMask * excessMask, 0.0F, 1.0F);
         if (blend <= 0.0F) {
             continue;
         }
 
         output.pixels[offset + 1] = std::clamp(green + (neutralGreen - green) * blend, 0.0F, 1.0F);
+        if (options.preserveLightness) {
+            const auto decode = [](double v) { return v <= .04045 ? v / 12.92 : std::pow((v + .055) / 1.055, 2.4); };
+            const auto encode = [](double v) {
+                return v <= .0031308 ? 12.92 * v : 1.055 * std::pow(v, 1 / 2.4) - .055;
+            };
+            const std::array<double, 3> weights{.2126, .7152, .0722};
+            std::array<double, 3> color;
+            double originalY = 0, adjustedY = 0;
+            for (int c = 0; c < 3; ++c) {
+                originalY += weights[c] * decode(image.pixels[offset + c]);
+                color[c] = decode(output.pixels[offset + c]);
+                adjustedY += weights[c] * color[c];
+            }
+            // A pure green pixel may become black at full suppression. Its
+            // achromatic value is the only finite neutral solution at that Y.
+            for (double& value : color)
+                value = adjustedY > 0 ? value * originalY / adjustedY : originalY;
+            double available = std::numeric_limits<double>::infinity();
+            for (double value : color) {
+                if (value > originalY)
+                    available = std::min(available, (1 - originalY) / (value - originalY));
+                if (value < originalY)
+                    available = std::min(available, originalY / (originalY - value));
+            }
+            const double scale = detail::softGamutScale(available);
+            for (int c = 0; c < 3; ++c)
+                output.pixels[offset + c] =
+                    static_cast<float>(encode(std::clamp(originalY + scale * (color[c] - originalY), 0.0, 1.0)));
+        }
         ++affectedPixels;
     }
 

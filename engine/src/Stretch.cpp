@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "MaskedImageSampling.hpp"
+#include "photonstack/ParallelRanges.hpp"
 
 namespace photonstack {
 namespace {
@@ -19,15 +20,13 @@ StretchResult stretchError(std::string code, std::string message) {
     return result;
 }
 
-float stretchSample(float value, const StretchOptions& options) {
+float stretchSample(float value, const StretchOptions& options, double gamma) {
     const double normalized = std::clamp(
         (static_cast<double>(value) - options.blackPoint) /
             (static_cast<double>(options.whitePoint) - options.blackPoint),
         0.0, 1.0
     );
 
-    const double mid = std::clamp(static_cast<double>(options.midPoint), 0.001, 0.999);
-    const double gamma = std::log(0.5) / std::log(mid);
     double stretched = std::pow(normalized, gamma);
 
     if (options.arcsinhStrength > 0.0F) {
@@ -56,6 +55,15 @@ double weightedMedian(std::vector<WeightedSample>& values) {
     if (values.empty()) {
         return 0.0;
     }
+    // O(n) exact order statistics for fully covered images. Fractional alpha
+    // still uses weighted statistics; no sampling or loss of faint pixels.
+    if (std::all_of(values.begin(), values.end(), [](const auto& sample) { return sample.weight == 1.0; })) {
+        const auto middle = values.begin() + values.size() / 2;
+        const auto less = [](const auto& left, const auto& right) { return left.value < right.value; };
+        std::nth_element(values.begin(), middle, values.end(), less);
+        if (values.size() % 2 != 0) return middle->value;
+        return (std::max_element(values.begin(), middle, less)->value + middle->value) * 0.5;
+    }
     std::sort(values.begin(), values.end(), [](const WeightedSample& left, const WeightedSample& right) {
         return left.value < right.value;
     });
@@ -82,6 +90,13 @@ double weightedMedian(std::vector<WeightedSample>& values) {
 double weightedPercentile(std::vector<WeightedSample> values, double position) {
     if (values.empty()) {
         return 0.0;
+    }
+    if (std::all_of(values.begin(), values.end(), [](const auto& sample) { return sample.weight == 1.0; })) {
+        const auto rank = static_cast<std::size_t>(std::clamp(position, 0.0, 1.0) * (values.size() - 1));
+        const auto selected = values.begin() + rank;
+        std::nth_element(values.begin(), selected, values.end(),
+            [](const auto& left, const auto& right) { return left.value < right.value; });
+        return selected->value;
     }
     std::sort(values.begin(), values.end(), [](const WeightedSample& left, const WeightedSample& right) {
         return left.value < right.value;
@@ -123,6 +138,59 @@ std::vector<WeightedSample> validLuminanceSamples(const ImageBuffer& image) {
         }
     }
     return values;
+}
+
+struct AutoStatistics {
+    double background = 0, mad = 0, minimum = 0, maximum = 0, white = 0;
+    bool valid = false;
+};
+
+AutoStatistics autoStatistics(const ImageBuffer& image, float clip) {
+    bool opaque = true;
+    if (image.channels == 4) {
+        for (std::size_t p = 0; p < image.pixelCount(); ++p) {
+            if (image.pixels[p * 4 + 3] != 1.0F) { opaque = false; break; }
+        }
+    }
+    if (opaque) {
+        std::vector<double> values;
+        values.reserve(image.pixelCount());
+        for (std::size_t p = 0; p < image.pixelCount(); ++p) {
+            if (!detail::pixelHasValidColor(image, p)) continue;
+            const double value = luminanceAt(image, p);
+            if (std::isfinite(value)) values.push_back(value);
+        }
+        if (values.empty()) return {};
+        const auto median = [](std::vector<double>& samples) {
+            auto mid = samples.begin() + samples.size() / 2;
+            std::nth_element(samples.begin(), mid, samples.end());
+            return samples.size() % 2 ? *mid : (*std::max_element(samples.begin(), mid) + *mid) * 0.5;
+        };
+        const auto [low, high] = std::minmax_element(values.begin(), values.end());
+        AutoStatistics result;
+        result.minimum = *low; result.maximum = *high;
+        result.background = median(values);
+        auto white = values.begin() + static_cast<std::size_t>(static_cast<double>(clip) * (values.size() - 1));
+        std::nth_element(values.begin(), white, values.end());
+        result.white = *white;
+        for (auto& value : values) value = std::fabs(value - result.background);
+        result.mad = median(values) * 1.4826;
+        result.valid = true;
+        return result;
+    }
+    auto luminance = validLuminanceSamples(image);
+    if (luminance.empty()) return {};
+    auto medianSamples = luminance;
+    AutoStatistics result;
+    result.background = weightedMedian(medianSamples);
+    for (auto& sample : luminance) sample.value = std::fabs(sample.value - result.background);
+    result.mad = weightedMedian(luminance) * 1.4826;
+    const auto [low, high] = std::minmax_element(medianSamples.begin(), medianSamples.end(),
+        [](const auto& a, const auto& b) { return a.value < b.value; });
+    result.minimum = low->value; result.maximum = high->value;
+    result.white = weightedPercentile(std::move(medianSamples), clip);
+    result.valid = true;
+    return result;
 }
 
 bool hasInvalidCoveredSample(const ImageBuffer& image) {
@@ -184,34 +252,43 @@ StretchResult Stretch::apply(const ImageBuffer& image, const StretchOptions& opt
     }
 
     ImageBuffer output = image;
-    for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
-        const auto offset = pixel * image.channels;
-        if (!detail::pixelHasValidColor(image, pixel)) {
-            detail::clearMaskedPixel(output, pixel);
-            continue;
-        }
-        const auto colorChannels = std::min<std::uint16_t>(3, image.channels);
-        if (options.preserveColor && colorChannels >= 3) {
-            const double luminance = luminanceAt(image, pixel);
-            const float mapped = stretchSample(static_cast<float>(luminance), options);
-            if (luminance <= 1.0e-6) {
-                output.pixels[offset] = mapped;
-                output.pixels[offset + 1] = mapped;
-                output.pixels[offset + 2] = mapped;
+    const double mid = std::clamp(static_cast<double>(options.midPoint), 0.001, 0.999);
+    const double gamma = std::log(0.5) / std::log(mid);
+    detail::parallelRanges(image.pixelCount(), 262144, [&](std::size_t begin, std::size_t end) noexcept {
+        for (std::size_t pixel = begin; pixel < end; ++pixel) {
+            const auto offset = pixel * image.channels;
+            if (!detail::pixelHasValidColor(image, pixel)) {
+                detail::clearMaskedPixel(output, pixel);
+                continue;
+            }
+            const auto colorChannels = std::min<std::uint16_t>(3, image.channels);
+            if (options.preserveColor && colorChannels >= 3) {
+                const double luminance = luminanceAt(image, pixel);
+                const float mapped = stretchSample(static_cast<float>(luminance), options, gamma);
+                // Measure color ratios from the selected black point. Background
+                // subtraction can leave signed samples with luminance near zero;
+                // dividing by that original luminance amplifies chroma without bound.
+                const double signal = luminance - options.blackPoint;
+                if (signal <= 1.0e-6) {
+                    output.pixels[offset] = mapped;
+                    output.pixels[offset + 1] = mapped;
+                    output.pixels[offset + 2] = mapped;
+                } else {
+                    const double ratio = mapped / signal;
+                    output.pixels[offset] =
+                        static_cast<float>(std::clamp((image.pixels[offset] - options.blackPoint) * ratio, 0.0, 1.0));
+                    output.pixels[offset + 1] =
+                        static_cast<float>(std::clamp((image.pixels[offset + 1] - options.blackPoint) * ratio, 0.0, 1.0));
+                    output.pixels[offset + 2] =
+                        static_cast<float>(std::clamp((image.pixels[offset + 2] - options.blackPoint) * ratio, 0.0, 1.0));
+                }
             } else {
-                const double ratio = mapped / luminance;
-                output.pixels[offset] = static_cast<float>(std::clamp(image.pixels[offset] * ratio, 0.0, 1.0));
-                output.pixels[offset + 1] =
-                    static_cast<float>(std::clamp(image.pixels[offset + 1] * ratio, 0.0, 1.0));
-                output.pixels[offset + 2] =
-                    static_cast<float>(std::clamp(image.pixels[offset + 2] * ratio, 0.0, 1.0));
-            }
-        } else {
-            for (std::uint16_t channel = 0; channel < colorChannels; ++channel) {
-                output.pixels[offset + channel] = stretchSample(image.pixels[offset + channel], options);
+                for (std::uint16_t channel = 0; channel < colorChannels; ++channel) {
+                    output.pixels[offset + channel] = stretchSample(image.pixels[offset + channel], options, gamma);
+                }
             }
         }
-    }
+    });
     output.colorEncoding = ColorEncoding::SRGB;
 
     StretchResult result;
@@ -241,26 +318,14 @@ StretchOptions Stretch::estimateAuto(const ImageBuffer& image, const AutoStretch
                                ? options.arcsinhStrength
                                : defaults.arcsinhStrength,
     };
-    std::vector<WeightedSample> luminance = validLuminanceSamples(image);
-    if (luminance.empty()) {
-        return {};
-    }
-
-    std::vector<WeightedSample> medianSamples = luminance;
-    const double background = weightedMedian(medianSamples);
-    for (auto& sample : luminance) {
-        sample.value = std::fabs(sample.value - background);
-    }
-    const double mad = weightedMedian(luminance) * 1.4826;
-    const auto [minimumIt, maximumIt] = std::minmax_element(
-        medianSamples.begin(), medianSamples.end(),
-        [](const WeightedSample& left, const WeightedSample& right) { return left.value < right.value; }
-    );
+    const auto stats = autoStatistics(image, safeOptions.highlightClip);
+    if (!stats.valid) return {};
+    const double background = stats.background;
     const double dataScale =
-        std::max({1.0, std::fabs(background), std::fabs(minimumIt->value), std::fabs(maximumIt->value)});
+        std::max({1.0, std::fabs(background), std::fabs(stats.minimum), std::fabs(stats.maximum)});
     const double minimumSpan = dataScale * 1.0e-6;
-    double black = std::max(minimumIt->value, background - static_cast<double>(safeOptions.shadowsSigma) * mad);
-    double white = weightedPercentile(medianSamples, safeOptions.highlightClip);
+    double black = std::max(stats.minimum, background - static_cast<double>(safeOptions.shadowsSigma) * stats.mad);
+    double white = stats.white;
     if (!std::isfinite(black) || !std::isfinite(white) || white - black <= minimumSpan) {
         black = background - minimumSpan;
         white = background + minimumSpan;

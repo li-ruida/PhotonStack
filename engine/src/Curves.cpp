@@ -151,7 +151,7 @@ std::array<float, kCurveLutResolution + 1> buildCurveLookup(const PreparedCurve&
     return lookup;
 }
 
-void applyLuminanceCurve(const ImageBuffer& image, ImageBuffer& output, std::size_t offset, const PreparedCurve& curve) {
+void applyLuminanceCurve(const ImageBuffer& image, ImageBuffer& output, std::size_t offset, const PreparedCurve& curve, bool preserveGamut) {
     if (image.channels < 3) {
         output.pixels[offset] = sampleCurve(image.pixels[offset], curve);
         return;
@@ -162,6 +162,18 @@ void applyLuminanceCurve(const ImageBuffer& image, ImageBuffer& output, std::siz
     const float blue = image.pixels[offset + 2];
     const float luminance = std::clamp(0.2126F * red + 0.7152F * green + 0.0722F * blue, 0.0F, 1.0F);
     const float mapped = sampleCurve(luminance, curve);
+    if (preserveGamut) {
+        const double center = .2126 * red + .7152 * green + .0722 * blue;
+        double scale = 1;
+        if (center > 0)
+            scale = std::min(scale, mapped / center);
+        if (center < 1)
+            scale = std::min(scale, (1 - static_cast<double>(mapped)) / (1 - center));
+        for (int channel = 0; channel < 3; ++channel)
+            output.pixels[offset + channel] = static_cast<float>(
+                mapped + scale * (image.pixels[offset + channel] - center));
+        return;
+    }
     const float ratio = luminance <= 1.0e-6F ? mapped : mapped / luminance;
     output.pixels[offset] = std::clamp(red * ratio, 0.0F, 1.0F);
     output.pixels[offset + 1] = std::clamp(green * ratio, 0.0F, 1.0F);
@@ -194,6 +206,20 @@ CurvesResult Curves::apply(const ImageBuffer& image, const CurvesOptions& option
                    return !std::isfinite(sample);
                })) {
         return curvesError("ImageBufferInvalid", "Input image contains non-finite samples");
+    }
+
+    if (options.preserveLuminanceGamut) {
+        if (options.channel != CurveChannel::Luminance)
+            return curvesError("ArgumentInvalid", "Gamut preservation requires the luminance channel");
+        for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
+            if (!detail::pixelHasValidColor(image, pixel))
+                continue;
+            for (std::uint16_t channel = 0; channel < detail::colorChannelCount(image); ++channel) {
+                const float value = image.pixels[pixel * image.channels + channel];
+                if (value < 0 || value > 1)
+                    return curvesError("ImageValueInvalid", "Gamut-preserving curves require samples in [0,1]");
+            }
+        }
     }
 
     auto points = options.points;
@@ -250,7 +276,7 @@ CurvesResult Curves::apply(const ImageBuffer& image, const CurvesOptions& option
                 }
                 break;
             case CurveChannel::Luminance:
-                applyLuminanceCurve(image, output, offset, curve);
+                applyLuminanceCurve(image, output, offset, curve, options.preserveLuminanceGamut);
                 break;
             }
             if (!options.preserveAlpha && image.channels >= 4) {

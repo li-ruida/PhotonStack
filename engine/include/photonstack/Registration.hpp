@@ -64,11 +64,18 @@ struct DistortionTransform {
     float influenceRadius = 256.0F;
 };
 
+enum class RegistrationInterpolation { Bilinear, Bicubic };
+
 struct RegistrationOptions {
     StarDetectionOptions starDetection;
+    // Similarity searches may use a wider radius for initial correspondence,
+    // but final fit residuals are bounded by max(2 * matchTolerance, 2.5 px).
     float matchTolerance = 3.0F;
     std::size_t minimumMatches = 3;
     bool similarityFallbackToTranslation = true;
+    // Refine coarse similarity matches with native-pixel PSF centers. With
+    // estimateAffine, adopt affine geometry only after cross-validation.
+    bool refineSimilarityCentroids = false;
 };
 
 struct RegistrationResult {
@@ -81,6 +88,14 @@ struct RegistrationResult {
     std::size_t detectedMovingStars = 0;
     float inlierRatio = 0.0F;
     bool usedFallback = false;
+    bool usedCentroidRefinement = false;
+    float centroidRefinementRms = 0.0F;
+    bool usedCentroidAffine = false;
+    // Held-out clipped MSE ratio; -1 means model comparison was unavailable.
+    float centroidAffineValidationRatio = -1.0F;
+    // All native pairs used during refinement (including fit outliers), in
+    // [reference x,y, moving x,y] order, to allow independent validation stars.
+    std::vector<std::array<float, 4>> centroidRefinementPairs;
     std::string errorCode;
     std::string message;
 };
@@ -93,6 +108,8 @@ using RegistrationCoordinateConsumer =
 
 class Registration {
   public:
+    explicit Registration(RegistrationInterpolation interpolation = RegistrationInterpolation::Bilinear)
+        : interpolation_(interpolation) {}
     RegistrationResult estimateTranslation(const ImageBuffer& reference, const ImageBuffer& moving,
                                            const RegistrationOptions& options = {}) const;
     RegistrationResult estimateSimilarity(const ImageBuffer& reference, const ImageBuffer& moving,
@@ -116,6 +133,9 @@ class Registration {
                               const RegistrationRowConsumer& consumer) const;
     bool renderDistortionForwardRows(const ImageBuffer& image, const DistortionTransform& transform,
                                      const RegistrationCoordinateConsumer& consumer) const;
+
+  private:
+    RegistrationInterpolation interpolation_;
 };
 
 } // namespace photonstack

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -80,9 +81,17 @@ struct RawDecodeOptions {
     bool linearOutput = true;
 };
 
+enum class FitsDemosaic { Bilinear, Malvar, Menon, Ratio };
+
 struct FitsDecodeOptions {
     FitsDecodeMode mode = FitsDecodeMode::DisplayNormalized;
     bool maskNonFinitePixels = false;
+    // Opt in after sensor calibration; untagged mono/RGB FITS are unchanged.
+    bool debayer = false;
+    FitsDemosaic demosaic = FitsDemosaic::Bilinear;
+    // Normalize channel responses for cross-channel interpolation, then undo
+    // them in the result. Measured samples and output physical units are retained.
+    std::array<float, 3> cfaInterpolationGains = {1, 1, 1};
 };
 
 struct ImageReadOptions {

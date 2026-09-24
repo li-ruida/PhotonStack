@@ -9,8 +9,19 @@ LEGACY_APP_DIR="$BUILD_DIR/PhotonStackMac.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
-EXECUTABLE="$SWIFT_BUILD_DIR/arm64-apple-macosx/debug/PhotonStackMac"
-CLI_EXECUTABLE="$BUILD_DIR/debug/apps/PhotonStackCLI/photonstack"
+CLI_EXECUTABLE="$BUILD_DIR/release/apps/PhotonStackCLI/photonstack"
+PREBUILT_SWIFT=""
+if [[ "${1:-}" == "--prebuilt" && $# == 3 ]]; then
+  PREBUILT_SWIFT="$2"
+  CLI_EXECUTABLE="$3"
+  [[ -x "$PREBUILT_SWIFT" && -x "$CLI_EXECUTABLE" ]] || {
+    echo "Both prebuilt executables must exist and be executable." >&2
+    exit 2
+  }
+elif [[ $# != 0 ]]; then
+  echo "Usage: $0 [--prebuilt /path/PhotonStackMac /path/photonstack]" >&2
+  exit 2
+fi
 ICON_SOURCE="$ROOT_DIR/apps/PhotonStackMac/Resources/AppIcon.png"
 ICNS_PATH="$RESOURCES_DIR/AppIcon.icns"
 PRODUCT_VERSION="$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")"
@@ -34,15 +45,27 @@ else
 fi
 BUILD_ID="v${PRODUCT_VERSION} (${GIT_COMMIT}, ${BUILD_NUMBER})"
 
-"$ROOT_DIR/tools/scripts/build.sh" debug
+if [[ -n "$PREBUILT_SWIFT" ]]; then
+  EXECUTABLE="$PREBUILT_SWIFT"
+else
+"$ROOT_DIR/tools/scripts/build.sh" release
 
-swift build \
-  --package-path "$ROOT_DIR" \
-  --scratch-path "$SWIFT_BUILD_DIR" \
-  --product PhotonStackMac
+swift_build_args=(--package-path "$ROOT_DIR" --scratch-path "$SWIFT_BUILD_DIR" --configuration release --product PhotonStackMac)
+if [[ -n "${SDKROOT:-}" ]]; then
+  swift_build_args+=(--sdk "$SDKROOT")
+fi
+swift build "${swift_build_args[@]}"
+# SwiftPM build systems can use different output layouts; package the binary
+# from this invocation instead of a stale executable at a hard-coded path.
+EXECUTABLE="$(swift build "${swift_build_args[@]}" --show-bin-path)/PhotonStackMac"
+fi
 
 rm -rf "$APP_DIR" "$LEGACY_APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
+mkdir -p "$RESOURCES_DIR/ThirdPartyNotices"
+cp "$ROOT_DIR/third_party/colour-demosaicing-LICENSE.txt" "$RESOURCES_DIR/ThirdPartyNotices/"
+cp "$ROOT_DIR/third_party/pocketfft-LICENSE.md" "$RESOURCES_DIR/ThirdPartyNotices/"
+cp "$ROOT_DIR/third_party/pocketfft-header-NOTICE.txt" "$RESOURCES_DIR/ThirdPartyNotices/"
 cp "$EXECUTABLE" "$MACOS_DIR/PhotonStackMac"
 cp "$CLI_EXECUTABLE" "$MACOS_DIR/photonstack"
 

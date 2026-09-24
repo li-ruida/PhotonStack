@@ -5649,6 +5649,75 @@ void testStretchPreservesColorRatio() {
     assert(std::fabs((result.image.pixels[1] / result.image.pixels[2]) - 2.0F) < 0.01F);
 }
 
+void testParallelStretchMatchesSerialTiles() {
+    photonstack::ImageBuffer input;
+    input.width = 1024; input.height = 1027; input.channels = 4;
+    input.pixels.resize(input.sampleCount());
+    for (std::size_t p = 0; p < input.pixelCount(); ++p) {
+        for (unsigned c = 0; c < 3; ++c)
+            input.pixels[p * 4 + c] = static_cast<float>((p * 1237 + c * 17) % 197) / 71.0F - 0.5F;
+        input.pixels[p * 4 + 3] = p % 17 == 0 ? 0 : p % 13 == 0 ? .25F : 1;
+        if (p % 17 == 0) input.pixels[p * 4] = std::numeric_limits<float>::quiet_NaN();
+    }
+    for (bool preserve : {true, false}) {
+        const photonstack::StretchOptions options{.blackPoint = -.3F, .midPoint = .17F, .whitePoint = 2,
+                                                  .arcsinhStrength = preserve ? 0.0F : 8.0F, .preserveColor = preserve};
+        const auto parallel = photonstack::Stretch().apply(input, options);
+        assert(parallel.ok);
+        for (unsigned y = 0; y < input.height; ++y) {
+            photonstack::ImageBuffer row;
+            row.width = input.width; row.height = 1; row.channels = 4;
+            const auto first = input.pixels.begin() + y * input.width * 4;
+            row.pixels.assign(first, first + input.width * 4);
+            const auto serial = photonstack::Stretch().apply(row, options);
+            assert(serial.ok);
+            assert(std::equal(serial.image.pixels.begin(), serial.image.pixels.end(),
+                              parallel.image.pixels.begin() + y * input.width * 4));
+        }
+    }
+}
+
+void testAutoStretchExactOrderStatistics() {
+    // Compare with a deliberately sorted reference (including ties, signed
+    // values, odd/even populations, and excluded pixels), not another nth_element.
+    for (bool withMask : {false, true})
+    for (unsigned count : {3U, 4U, 65U, 128U, 4097U}) {
+        photonstack::ImageBuffer image;
+        image.width = count + (withMask ? 1 : 0); image.height = 1; image.channels = 4;
+        image.pixels.resize(image.sampleCount());
+        std::vector<double> values;
+        for (unsigned i = 0; i < count; ++i) {
+            const float value = static_cast<float>((i * 7919U + 17U) % 251U) / 19.0F - 4.0F;
+            for (unsigned c = 0; c < 3; ++c) image.pixels[i * 4 + c] = value;
+            image.pixels[i * 4 + 3] = 1;
+            values.push_back(static_cast<double>(value) * 0.2126 + static_cast<double>(value) * 0.7152 +
+                             static_cast<double>(value) * 0.0722);
+        }
+        if (withMask) image.pixels[count * 4] = std::numeric_limits<float>::quiet_NaN(); // hidden, never included
+        std::sort(values.begin(), values.end());
+        const auto median = [](std::vector<double> samples) {
+            std::sort(samples.begin(), samples.end());
+            return samples.size() % 2 ? samples[samples.size() / 2]
+                : (samples[samples.size() / 2 - 1] + samples[samples.size() / 2]) * 0.5;
+        };
+        const double background = median(values);
+        auto deviations = values;
+        for (auto& value : deviations) value = std::fabs(value - background);
+        for (float clip : {0.75F, 0.999F, 1.0F}) {
+            const photonstack::AutoStretchOptions options{.targetBackground = 0.18F, .highlightClip = clip};
+            const float black = static_cast<float>(std::max(values.front(), background - options.shadowsSigma * median(deviations) * 1.4826));
+            const float white = static_cast<float>(values[static_cast<std::size_t>(clip * static_cast<double>(count - 1))]);
+            const double normalized = std::clamp((background - black) / (static_cast<double>(white) - black), 0.001, 0.999);
+            const double gamma = std::log(static_cast<double>(options.targetBackground)) / std::log(normalized);
+            const float mid = static_cast<float>(std::clamp(std::pow(0.5, 1.0 / gamma), 0.001, 0.999));
+            const auto actual = photonstack::Stretch().estimateAuto(image, options);
+            assert(actual.blackPoint == black);
+            assert(actual.whitePoint == white);
+            assert(actual.midPoint == mid);
+        }
+    }
+}
+
 void testAutoStretch() {
     photonstack::ImageBuffer image;
     image.width = 5;
@@ -9598,6 +9667,8 @@ int main() {
     testStretch();
     testStretchPreservesColorRatio();
     testAutoStretch();
+    testAutoStretchExactOrderStatistics();
+    testParallelStretchMatchesSerialTiles();
     testCurves();
     testLocalContrast();
     testNoiseReduction();

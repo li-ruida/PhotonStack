@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/mreineck/pocketfft",
+  "commit": "c90e55b3d529f8efa40ed01a20de22405f45fc65",
+  "header_sha256": "3e9a05318d8e3b1446bda1c4617e6a103cdd23599ae0a776a92a6e8800e92fdc",
+  "license_sha256": "a85ca13fdf90160b64a0698215868c13b74d835ad0a4e2ba44713b8c5058a056",
+  "header_local_path": "engine/src/vendor/pocketfft_hdronly.h",
+  "unmodified_upstream_files": true
+}

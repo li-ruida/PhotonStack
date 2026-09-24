@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "StraightAlphaSampling.hpp"
+#include "photonstack/StarCentroid.hpp"
 
 namespace photonstack {
 namespace {
@@ -88,6 +89,40 @@ float sampleNearest(const ImageBuffer& image, int x, int y, std::uint16_t channe
 
 float sampleBilinear(const ImageBuffer& image, float x, float y, std::uint16_t channel) {
     return detail::sampleBilinearStraightAlpha(image, x, y, channel, false);
+}
+
+// Catmull-Rom reconstruction with a central-cell range clamp. Use the
+// existing straight-alpha bilinear sampler near boundaries or incomplete
+// coverage; negative kernel weights must never extrapolate through masks.
+float sampleRegistered(const ImageBuffer& image, float x, float y, std::uint16_t channel,
+                       RegistrationInterpolation interpolation) {
+    if (interpolation == RegistrationInterpolation::Bilinear || !std::isfinite(x) || !std::isfinite(y) ||
+        x < 1 || y < 1 || x >= static_cast<float>(image.width) - 2 || y >= static_cast<float>(image.height) - 2 ||
+        (image.channels == 4 && channel == 3))
+        return sampleBilinear(image, x, y, channel);
+    const int ix = static_cast<int>(std::floor(x)), iy = static_cast<int>(std::floor(y));
+    const auto weights = [](float t) {
+        return std::array<double, 4>{-.5*t + t*t - .5*t*t*t,
+                                    1 - 2.5*t*t + 1.5*t*t*t,
+                                    .5*t + 2*t*t - 1.5*t*t*t,
+                                    -.5*t*t + .5*t*t*t};
+    };
+    const auto wx = weights(x-ix), wy = weights(y-iy);
+    double value = 0;
+    float low = std::numeric_limits<float>::infinity(), high = -low;
+    for (int j = 0; j < 4; ++j) {
+        for (int i = 0; i < 4; ++i) {
+            const auto offset = (static_cast<std::size_t>(iy+j-1)*image.width + ix+i-1)*image.channels;
+            const float sample = image.pixels[offset+channel];
+            if (!std::isfinite(sample) || (image.channels == 4 && image.pixels[offset+3] != 1.0F))
+                return sampleBilinear(image, x, y, channel);
+            value += wx[i]*wy[j]*sample;
+            if (i >= 1 && i <= 2 && j >= 1 && j <= 2) {
+                low = std::min(low, sample); high = std::max(high, sample);
+            }
+        }
+    }
+    return std::clamp(static_cast<float>(value), low, high);
 }
 
 struct MatchedStarPair {
@@ -490,10 +525,10 @@ SimilarityFit fitSimilarityTransform(const std::vector<MatchedStarPair>& pairs, 
         return {};
     }
 
-    float movingCenterX = 0.0F;
-    float movingCenterY = 0.0F;
-    float referenceCenterX = 0.0F;
-    float referenceCenterY = 0.0F;
+    double movingCenterX = 0;
+    double movingCenterY = 0;
+    double referenceCenterX = 0;
+    double referenceCenterY = 0;
     for (const auto index : indices) {
         const auto& pair = pairs[index];
         movingCenterX += pair.moving.x;
@@ -501,21 +536,21 @@ SimilarityFit fitSimilarityTransform(const std::vector<MatchedStarPair>& pairs, 
         referenceCenterX += pair.reference.x;
         referenceCenterY += pair.reference.y;
     }
-    const float invCount = 1.0F / static_cast<float>(indices.size());
+    const double invCount = 1.0 / static_cast<double>(indices.size());
     movingCenterX *= invCount;
     movingCenterY *= invCount;
     referenceCenterX *= invCount;
     referenceCenterY *= invCount;
 
-    float dot = 0.0F;
-    float cross = 0.0F;
-    float movingEnergy = 0.0F;
+    double dot = 0;
+    double cross = 0;
+    double movingEnergy = 0;
     for (const auto index : indices) {
         const auto& pair = pairs[index];
-        const float mx = pair.moving.x - movingCenterX;
-        const float my = pair.moving.y - movingCenterY;
-        const float rx = pair.reference.x - referenceCenterX;
-        const float ry = pair.reference.y - referenceCenterY;
+        const double mx = pair.moving.x - movingCenterX;
+        const double my = pair.moving.y - movingCenterY;
+        const double rx = pair.reference.x - referenceCenterX;
+        const double ry = pair.reference.y - referenceCenterY;
         dot += mx * rx + my * ry;
         cross += mx * ry - my * rx;
         movingEnergy += mx * mx + my * my;
@@ -524,23 +559,24 @@ SimilarityFit fitSimilarityTransform(const std::vector<MatchedStarPair>& pairs, 
         return {};
     }
 
-    const float scale = std::sqrt(dot * dot + cross * cross) / movingEnergy;
-    const float rotation = std::atan2(cross, dot);
-    const float cosTheta = std::cos(rotation);
-    const float sinTheta = std::sin(rotation);
-    const float dx = referenceCenterX - scale * (cosTheta * movingCenterX - sinTheta * movingCenterY);
-    const float dy = referenceCenterY - scale * (sinTheta * movingCenterX + cosTheta * movingCenterY);
+    const double scale = std::hypot(dot, cross) / movingEnergy;
+    const double rotation = std::atan2(cross, dot);
+    const double cosTheta = std::cos(rotation);
+    const double sinTheta = std::sin(rotation);
+    const double dx = referenceCenterX - scale * (cosTheta * movingCenterX - sinTheta * movingCenterY);
+    const double dy = referenceCenterY - scale * (sinTheta * movingCenterX + cosTheta * movingCenterY);
 
     SimilarityFit fit;
     fit.ok = true;
-    fit.transform = {.scale = scale, .rotationRadians = rotation, .dx = dx, .dy = dy};
+    fit.transform = {.scale = static_cast<float>(scale), .rotationRadians = static_cast<float>(rotation),
+                     .dx = static_cast<float>(dx), .dy = static_cast<float>(dy)};
     fit.affine = {
-        .a = scale * cosTheta,
-        .b = -scale * sinTheta,
-        .c = scale * sinTheta,
-        .d = scale * cosTheta,
-        .dx = dx,
-        .dy = dy,
+        .a = static_cast<float>(scale * cosTheta),
+        .b = static_cast<float>(-scale * sinTheta),
+        .c = static_cast<float>(scale * sinTheta),
+        .d = static_cast<float>(scale * cosTheta),
+        .dx = static_cast<float>(dx),
+        .dy = static_cast<float>(dy),
     };
 
     double residualSum = 0.0;
@@ -1321,6 +1357,189 @@ RegistrationResult detectSimilarityProjectedPairs(const ImageBuffer& reference, 
     return result;
 }
 
+bool refineSimilarityCentroids(const ImageBuffer& reference, const ImageBuffer& moving,
+                               const RegistrationOptions& options, SimilarityFit& fit,
+                               std::size_t& matchCount, std::vector<std::array<float, 4>>& acceptedPairs) {
+    RegistrationOptions local = options;
+    local.matchTolerance = std::max(4.0F, options.matchTolerance * 2);
+    std::vector<MatchedStarPair> candidates;
+    if (!detectSimilarityProjectedPairs(reference, moving, local, fit.transform, candidates).ok) return false;
+    // Bound the cost and avoid letting a dense region dominate the transform.
+    constexpr int grid = 8, perCell = 6;
+    std::array<int, grid * grid> cellCounts{};
+    std::vector<MatchedStarPair> pairs;
+    for (auto pair : candidates) {
+        const int cellX = std::clamp(static_cast<int>(pair.reference.x / reference.width * grid), 0, grid - 1);
+        const int cellY = std::clamp(static_cast<int>(pair.reference.y / reference.height * grid), 0, grid - 1);
+        auto& count = cellCounts[cellY * grid + cellX];
+        if (count >= perCell) continue;
+        const auto a = fitStarCentroid(reference, pair.reference.x, pair.reference.y);
+        const auto b = fitStarCentroid(moving, pair.moving.x, pair.moving.y);
+        if (!a.ok || !b.ok) continue;
+        pair.reference.x = a.x; pair.reference.y = a.y;
+        pair.moving.x = b.x; pair.moving.y = b.y;
+        if (similarityResidual(pair, fit.transform) > local.matchTolerance) continue;
+        pairs.push_back(pair); ++count;
+    }
+    const auto required = std::max<std::size_t>(12, options.minimumMatches);
+    if (pairs.size() < required) return false;
+    std::vector<std::size_t> inliers(pairs.size());
+    for (std::size_t j = 0; j < pairs.size(); ++j) inliers[j] = j;
+    const auto median = [](std::vector<float> values) {
+        const auto middle = values.begin() + values.size() / 2;
+        std::nth_element(values.begin(), middle, values.end());
+        return *middle;
+    };
+    SimilarityFit refined;
+    for (int iteration = 0; iteration < 8; ++iteration) {
+        refined = fitSimilarityTransform(pairs, inliers);
+        if (!refined.ok) return false;
+        std::vector<float> residuals;
+        for (const auto j : inliers) residuals.push_back(similarityResidual(pairs[j], refined.transform));
+        const float center = median(residuals);
+        for (auto& r : residuals) r = std::abs(r - center);
+        const float limit = std::min(options.matchTolerance, std::max(.20F, center + 4 * 1.4826F * median(residuals)));
+        std::vector<std::size_t> next;
+        for (const auto j : inliers)
+            if (similarityResidual(pairs[j], refined.transform) <= limit) next.push_back(j);
+        if (next.size() < required) return false;
+        if (next == inliers) break;
+        inliers = std::move(next);
+    }
+    refined = fitSimilarityTransform(pairs, inliers);
+    if (!refined.ok || refined.rms > .75F) return false;
+    // Reject poorly distributed solutions, even when their fit residual is small.
+    double sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0, oldError = 0;
+    for (const auto j : inliers) {
+        const double x = pairs[j].reference.x / reference.width;
+        const double y = pairs[j].reference.y / reference.height;
+        sx += x; sy += y; sxx += x*x; syy += y*y; sxy += x*y;
+        const double residual = similarityResidual(pairs[j], fit.transform);
+        oldError += residual * residual;
+    }
+    const double n = inliers.size(), xx = sxx/n - sx*sx/(n*n), yy = syy/n - sy*sy/(n*n);
+    const double xy = sxy/n - sx*sy/(n*n);
+    if ((xx + yy)/2 - std::hypot((xx - yy)/2, xy) < .0025 ||
+        refined.rms * refined.rms > oldError/n + 1e-6) return false;
+    fit = refined; matchCount = inliers.size();
+    for (const auto& pair : pairs) acceptedPairs.push_back({pair.reference.x, pair.reference.y,
+                                                          pair.moving.x, pair.moving.y});
+    return true;
+}
+
+float centroidMedian(std::vector<float> values) {
+    const auto middle = values.begin() + values.size() / 2;
+    std::nth_element(values.begin(), middle, values.end());
+    if (values.size() % 2) return *middle;
+    return (*middle + *std::max_element(values.begin(), middle)) * .5F;
+}
+
+bool centroidSpatialSupport(const std::vector<MatchedStarPair>& pairs, const std::vector<std::size_t>& indices,
+                            const ImageBuffer& reference) {
+    double sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+    for (const auto j : indices) {
+        const double x = pairs[j].reference.x / reference.width;
+        const double y = pairs[j].reference.y / reference.height;
+        sx += x; sy += y; sxx += x*x; syy += y*y; sxy += x*y;
+    }
+    const double n = indices.size(), xx = sxx/n - sx*sx/(n*n), yy = syy/n - sy*sy/(n*n);
+    const double xy = sxy/n - sx*sy/(n*n);
+    return (xx + yy)/2 - std::hypot((xx - yy)/2, xy) >= .0025;
+}
+
+AffineFit fitCentroidModel(const std::vector<MatchedStarPair>& pairs, std::vector<std::size_t>& inliers,
+                          bool affine, std::size_t required, float tolerance, const ImageBuffer& reference) {
+    const auto solve = [&]() {
+        if (affine) return fitAffineTransform(pairs, inliers);
+        const auto fit = fitSimilarityTransform(pairs, inliers);
+        return AffineFit{.ok = fit.ok, .transform = fit.affine, .rms = fit.rms};
+    };
+    for (int iteration = 0; iteration < 8; ++iteration) {
+        if (inliers.size() < required || !centroidSpatialSupport(pairs, inliers, reference)) return {};
+        const auto fit = solve();
+        if (!fit.ok || !std::isfinite(fit.rms)) return {};
+        std::vector<float> residuals;
+        for (const auto j : inliers) residuals.push_back(affineResidual(pairs[j], fit.transform));
+        const float center = centroidMedian(residuals);
+        for (auto& r : residuals) r = std::abs(r - center);
+        const float limit = std::min(tolerance, std::max(.20F, center + 4 * 1.4826F * centroidMedian(residuals)));
+        std::vector<std::size_t> next;
+        for (const auto j : inliers)
+            if (affineResidual(pairs[j], fit.transform) <= limit) next.push_back(j);
+        if (next == inliers) break;
+        inliers = std::move(next);
+    }
+    if (inliers.size() < required || !centroidSpatialSupport(pairs, inliers, reference)) return {};
+    auto fit = solve();
+    if (!fit.ok || !std::isfinite(fit.rms) || fit.rms > .75F || !plausibleAffineTransform(fit.transform)) return {};
+    return fit;
+}
+
+void selectCentroidAffine(const ImageBuffer& reference, const ImageBuffer& moving,
+                          const RegistrationOptions& options, RegistrationResult& result) {
+    // Keep the refined similarity unless independent folds support extra degrees
+    // of freedom. Neither model sees its validation stars during its fit.
+    const auto required = std::max<std::size_t>(24, options.minimumMatches);
+    if (!result.usedCentroidRefinement || result.centroidRefinementPairs.size() < required) return;
+    std::vector<MatchedStarPair> pairs;
+    for (const auto& p : result.centroidRefinementPairs)
+        pairs.push_back({.reference = {.x = p[0], .y = p[1]}, .moving = {.x = p[2], .y = p[3]}});
+    std::vector<float> similarityErrors(pairs.size()), affineErrors(pairs.size());
+    for (std::size_t fold = 0; fold < 2; ++fold) {
+        std::vector<std::size_t> training;
+        for (std::size_t j = fold; j < pairs.size(); j += 2) training.push_back(j);
+        auto affineTraining = training;
+        const auto minimumTraining = std::max<std::size_t>(12, (options.minimumMatches + 1) / 2);
+        const auto similarity = fitCentroidModel(pairs, training, false, minimumTraining,
+                                                options.matchTolerance, reference);
+        const auto affine = fitCentroidModel(pairs, affineTraining, true, minimumTraining,
+                                            options.matchTolerance, reference);
+        if (!similarity.ok || !affine.ok) return;
+        for (std::size_t j = 1 - fold; j < pairs.size(); j += 2) {
+            similarityErrors[j] = affineResidual(pairs[j], similarity.transform);
+            affineErrors[j] = affineResidual(pairs[j], affine.transform);
+        }
+    }
+    const float center = centroidMedian(similarityErrors);
+    auto deviations = similarityErrors;
+    for (auto& r : deviations) r = std::abs(r - center);
+    const double cap = std::max(.20F, center + 3 * 1.4826F * centroidMedian(deviations));
+    std::array<double, 2> similarityScore{}, affineScore{};
+    for (std::size_t j = 0; j < pairs.size(); ++j) {
+        const double s = std::min<double>(similarityErrors[j], cap);
+        const double a = std::min<double>(affineErrors[j], cap);
+        similarityScore[j % 2] += s*s; affineScore[j % 2] += a*a;
+    }
+    const double s = similarityScore[0] + similarityScore[1], a = affineScore[0] + affineScore[1];
+    if (s <= 1e-12) return;
+    result.centroidAffineValidationRatio = static_cast<float>(a / s);
+    // Require both folds to improve, a meaningful relative improvement, and
+    // more than numerical/sub-millipixel changes in otherwise exact fits.
+    if (a >= .95 * s || (s - a) / pairs.size() < 1e-5 ||
+        affineScore[0] >= similarityScore[0] || affineScore[1] >= similarityScore[1]) return;
+    std::vector<std::size_t> inliers(pairs.size());
+    for (std::size_t j = 0; j < pairs.size(); ++j) inliers[j] = j;
+    const auto fit = fitCentroidModel(pairs, inliers, true, required, options.matchTolerance, reference);
+    if (!fit.ok) return;
+    // This is a fine correction, not a second coarse registration. Bound its
+    // extrapolation at all corners, not only where bright stars were fitted.
+    const auto& b = result.affine;
+    const auto& t = fit.transform;
+    for (const float x : {0.F, static_cast<float>(moving.width - 1)})
+        for (const float y : {0.F, static_cast<float>(moving.height - 1)}) {
+            const double correction = std::hypot((t.a-b.a)*x + (t.b-b.b)*y + t.dx-b.dx,
+                                                  (t.c-b.c)*x + (t.d-b.d)*y + t.dy-b.dy);
+            if (!std::isfinite(correction) || correction > std::max(4.F, 2 * options.matchTolerance)) return;
+        }
+    result.affine = fit.transform;
+    populateSimilaritySummary(result, result.affine);
+    result.matches = inliers.size();
+    result.inlierRatio = static_cast<float>(result.matches) /
+        std::max<std::size_t>(1, std::min(result.detectedReferenceStars, result.detectedMovingStars));
+    result.centroidRefinementRms = fit.rms;
+    result.usedCentroidAffine = true;
+}
+
 RegistrationResult detectProjectiveProjectedPairs(const ImageBuffer& reference, const ImageBuffer& moving,
                                                   const RegistrationOptions& options, ProjectiveTransform transform,
                                                   std::vector<MatchedStarPair>& pairs) {
@@ -1664,13 +1883,16 @@ RegistrationResult Registration::estimateSimilarity(const ImageBuffer& reference
 
     SimilarityFit fit;
     std::vector<std::size_t> inliers = indices;
+    // Matching searches a deliberately broad neighbourhood. Acceptance must
+    // remain bounded by the requested geometric tolerance: a poor fit cannot
+    // justify its own large residuals by increasing that tolerance from RMS.
+    const float residualLimit = std::max(options.matchTolerance * 2.0F, 2.5F);
     for (int iteration = 0; iteration < 5; ++iteration) {
         fit = fitSimilarityTransform(pairs, inliers);
         if (!fit.ok) {
             break;
         }
 
-        const float residualLimit = std::max({options.matchTolerance * 2.0F, fit.rms * 2.0F, 2.5F});
         std::vector<std::size_t> nextInliers;
         nextInliers.reserve(indices.size());
         for (const auto index : indices) {
@@ -1678,33 +1900,49 @@ RegistrationResult Registration::estimateSimilarity(const ImageBuffer& reference
                 nextInliers.push_back(index);
             }
         }
-        if (nextInliers.size() < requiredMatches || nextInliers.size() == inliers.size()) {
+        if (nextInliers.size() < requiredMatches) {
+            inliers.clear();
+            break;
+        }
+        if (nextInliers == inliers) {
             break;
         }
         inliers = std::move(nextInliers);
     }
 
     fit = fitSimilarityTransform(pairs, inliers);
-    if (!fit.ok || inliers.size() < requiredMatches) {
-        if (translationResult.ok && options.similarityFallbackToTranslation) {
+    const bool residualsAccepted = fit.ok && std::isfinite(fit.rms) && fit.rms <= residualLimit &&
+        std::all_of(inliers.begin(), inliers.end(), [&](std::size_t index) {
+            return similarityResidual(pairs[index], fit.transform) <= residualLimit;
+        });
+    if (!residualsAccepted || inliers.size() < requiredMatches) {
+        if (translationResult.ok && translationResult.matches >= requiredMatches && options.similarityFallbackToTranslation) {
             auto fallback = translationResult;
             fallback.usedFallback = true;
             fallback.message = "Similarity fit failed; using translation fallback";
             return fallback;
         }
-        return registrationError("RegistrationInsufficientMatches", "Similarity registration could not solve a stable transform");
+        return registrationError("RegistrationResidualTooLarge",
+                                 "Similarity registration lacks enough star matches within the residual tolerance");
     }
 
+    std::size_t finalMatches = inliers.size();
+    std::vector<std::array<float, 4>> refinedPairs;
+    const bool centroidRefined = options.refineSimilarityCentroids &&
+        refineSimilarityCentroids(reference, moving, options, fit, finalMatches, refinedPairs);
     RegistrationResult result;
     result.ok = true;
+    result.usedCentroidRefinement = centroidRefined;
+    result.centroidRefinementRms = centroidRefined ? fit.rms : 0;
+    result.centroidRefinementPairs = std::move(refinedPairs);
     result.translation = {.dx = fit.transform.dx, .dy = fit.transform.dy};
     result.transform = fit.transform;
     result.affine = fit.affine;
-    result.matches = inliers.size();
+    result.matches = finalMatches;
     result.detectedReferenceStars = matchResult.detectedReferenceStars;
     result.detectedMovingStars = matchResult.detectedMovingStars;
     const auto denominator = std::max<std::size_t>(1, std::min(matchResult.detectedReferenceStars, matchResult.detectedMovingStars));
-    result.inlierRatio = static_cast<float>(inliers.size()) / static_cast<float>(denominator);
+    result.inlierRatio = static_cast<float>(finalMatches) / static_cast<float>(denominator);
     return result;
 }
 
@@ -1712,6 +1950,11 @@ RegistrationResult Registration::estimateAffine(const ImageBuffer& reference, co
                                                 const RegistrationOptions& options) const {
     if (!validRegistrationOptions(options)) {
         return registrationError("ArgumentInvalid", "Registration options are outside valid ranges");
+    }
+    if (options.refineSimilarityCentroids) {
+        auto result = estimateSimilarity(reference, moving, options);
+        if (result.ok) selectCentroidAffine(reference, moving, options, result);
+        return result;
     }
     const auto translationResult = estimateTranslation(reference, moving, options);
     if (!translationResult.ok && translationResult.errorCode == "ImageBufferInvalid") {
@@ -2231,6 +2474,8 @@ bool Registration::renderTranslationRows(const ImageBuffer& image, Translation t
     if (!std::isfinite(translation.dx) || !std::isfinite(translation.dy)) {
         return false;
     }
+    if (interpolation_ != RegistrationInterpolation::Bilinear)
+        return renderSimilarityRows(image, {1, 0, translation.dx, translation.dy}, consumer);
     return renderMappedRows(
         image, consumer,
         [&](std::uint32_t x, std::uint32_t y) {
@@ -2263,7 +2508,7 @@ bool Registration::renderSimilarityRows(const ImageBuffer& image, SimilarityTran
             };
         },
         [&](float sourceX, float sourceY, std::uint16_t channel) {
-            return sampleBilinear(image, sourceX, sourceY, channel);
+            return sampleRegistered(image, sourceX, sourceY, channel, interpolation_);
         });
 }
 
@@ -2290,11 +2535,13 @@ bool Registration::renderAffineRows(const ImageBuffer& image, AffineTransform tr
             return std::pair<float, float>{invA * targetX + invB * targetY, invC * targetX + invD * targetY};
         },
         [&](float sourceX, float sourceY, std::uint16_t channel) {
-            return sampleBilinear(image, sourceX, sourceY, channel);
+            return sampleRegistered(image, sourceX, sourceY, channel, interpolation_);
         });
 }
 
 ImageBuffer Registration::applyTranslation(const ImageBuffer& image, Translation translation) const {
+    if (interpolation_ != RegistrationInterpolation::Bilinear)
+        return applySimilarity(image, {1, 0, translation.dx, translation.dy});
     if (!validImageBuffer(image) || !std::isfinite(translation.dx) || !std::isfinite(translation.dy)) {
         return {};
     }
@@ -2345,7 +2592,7 @@ ImageBuffer Registration::applySimilarity(const ImageBuffer& image, SimilarityTr
             const float sourceY = (-sinTheta * targetX + cosTheta * targetY) / scale;
             const auto outputOffset = (static_cast<std::size_t>(y) * output.width + x) * output.channels;
             for (std::uint16_t c = 0; c < output.channels; ++c) {
-                output.pixels[outputOffset + c] = sampleBilinear(image, sourceX, sourceY, c);
+                output.pixels[outputOffset + c] = sampleRegistered(image, sourceX, sourceY, c, interpolation_);
             }
         }
     }
@@ -2383,7 +2630,7 @@ ImageBuffer Registration::applyAffine(const ImageBuffer& image, AffineTransform 
             const float sourceY = invC * targetX + invD * targetY;
             const auto outputOffset = (static_cast<std::size_t>(y) * output.width + x) * output.channels;
             for (std::uint16_t channel = 0; channel < output.channels; ++channel) {
-                output.pixels[outputOffset + channel] = sampleBilinear(image, sourceX, sourceY, channel);
+                output.pixels[outputOffset + channel] = sampleRegistered(image, sourceX, sourceY, channel, interpolation_);
             }
         }
     }
@@ -2414,7 +2661,7 @@ bool Registration::renderDistortionRows(const ImageBuffer& image, const Distorti
                 return std::pair<float, float>{baseSourceX + polynomialDx, baseSourceY + polynomialDy};
             },
             [&](float sourceX, float sourceY, std::uint16_t channel) {
-                return sampleBilinear(image, sourceX, sourceY, channel);
+                return sampleRegistered(image, sourceX, sourceY, channel, interpolation_);
             });
     }
 
@@ -2551,7 +2798,7 @@ bool Registration::renderDistortionRows(const ImageBuffer& image, const Distorti
             return std::pair<float, float>{sourceX, sourceY};
         },
         [&](float sourceX, float sourceY, std::uint16_t channel) {
-            return sampleBilinear(image, sourceX, sourceY, channel);
+            return sampleRegistered(image, sourceX, sourceY, channel, interpolation_);
         });
 }
 

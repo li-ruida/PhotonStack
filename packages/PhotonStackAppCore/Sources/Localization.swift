@@ -490,6 +490,8 @@ public enum LocalizedTextKey: String, CaseIterable, Codable, Sendable {
     case stopProcessingAndQuitAction
     case inspectAction
     case previewAction
+    case sourcePreviewAction
+    case currentImageLabel
     case stretchAction
     case contrastAction
     case denoiseAction
@@ -892,6 +894,8 @@ private enum LocalizedTextCatalog {
         .stopProcessingAndQuitAction: "Stop and Quit",
         .inspectAction: "Inspect",
         .previewAction: "Preview",
+        .sourcePreviewAction: "Preview Source",
+        .currentImageLabel: "Current image",
         .stretchAction: "Stretch",
         .contrastAction: "Contrast",
         .denoiseAction: "Denoise",
@@ -1116,7 +1120,7 @@ private enum LocalizedTextCatalog {
         .inspectorAssetGroup: "Asset",
         .inspectorPhotoInfoGroup: "Photo Info",
         .inspectorWorkspaceGroup: "Workspace",
-        .inspectorWorkflowGroup: "Workflow & Alignment",
+        .inspectorWorkflowGroup: "Deep Sky Workflow",
         .inspectorAdjustmentsGroup: "Image Adjustments",
         .inspectorBatchGroup: "Batch",
         .inspectorHistoryGroup: "History & Tasks",
@@ -1124,7 +1128,7 @@ private enum LocalizedTextCatalog {
         .inspectorAssetGroupIntro: "Review the selected file, assign calibration roles, and tune RAW decoding before processing.",
         .inspectorPhotoInfoGroupIntro: "Inspect image dimensions, format, camera, lens, exposure, ISO, aperture, focal length, white balance, and decoder details.",
         .inspectorWorkspaceGroupIntro: "Work with source assets, smart intermediate products, and the visible layer stack.",
-        .inspectorWorkflowGroupIntro: "Run stacking, star registration, and mosaic planning so frames align before deeper edits.",
+        .inspectorWorkflowGroupIntro: "Analyze and review light frames, then stack and develop them in one workbench.",
         .inspectorAdjustmentsGroupIntro: "Use histogram, RGB curves, stretch, contrast, denoise, sharpen, star tools, background correction, trails, meteors, and cloud cleanup.",
         .inspectorBatchGroupIntro: "Queue repeated operations, pause or retry failed work, and keep long processing jobs organized.",
         .inspectorHistoryGroupIntro: "Review editable processing steps, replay the edit graph, and inspect completed or running tasks.",
@@ -1293,6 +1297,8 @@ private enum LocalizedTextCatalog {
         .stopProcessingAndQuitAction: "停止并退出",
         .inspectAction: "检查",
         .previewAction: "预览",
+        .sourcePreviewAction: "预览原片",
+        .currentImageLabel: "当前图像",
         .stretchAction: "拉伸",
         .contrastAction: "对比",
         .denoiseAction: "降噪",
@@ -1517,7 +1523,7 @@ private enum LocalizedTextCatalog {
         .inspectorAssetGroup: "素材",
         .inspectorPhotoInfoGroup: "照片信息",
         .inspectorWorkspaceGroup: "操作区",
-        .inspectorWorkflowGroup: "工作流与配准",
+        .inspectorWorkflowGroup: "深空工作流",
         .inspectorAdjustmentsGroup: "图像调整",
         .inspectorBatchGroup: "批处理",
         .inspectorHistoryGroup: "历史与任务",
@@ -1525,7 +1531,7 @@ private enum LocalizedTextCatalog {
         .inspectorAssetGroupIntro: "查看当前素材、分配亮场/暗场等校准角色，并在处理前调整 RAW 解码参数。",
         .inspectorPhotoInfoGroupIntro: "查看尺寸、格式、相机、镜头、曝光、ISO、光圈、焦距、白平衡和解码器等摄影参数。",
         .inspectorWorkspaceGroupIntro: "管理源素材、智能中间对象和最终可见的图层栈。",
-        .inspectorWorkflowGroupIntro: "用于堆栈、星点配准和接片规划，让多张照片在进入精修前先对齐。",
+        .inspectorWorkflowGroupIntro: "在同一个工作台中分析亮场、筛选原片，并完成校准、对齐、堆栈和显影。",
         .inspectorAdjustmentsGroupIntro: "包含直方图、RGB 曲线、拉伸、对比度、降噪、锐化、缩星、背景校正、航迹/流星/云雾处理等图像工具。",
         .inspectorBatchGroupIntro: "把重复处理加入队列，支持暂停、继续和重试，适合长时间批量任务。",
         .inspectorHistoryGroupIntro: "查看可重放的处理步骤、撤销/重做编辑图，并检查正在运行或已完成的任务。",

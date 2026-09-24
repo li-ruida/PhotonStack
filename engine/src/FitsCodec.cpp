@@ -1,4 +1,7 @@
 #include "photonstack/FitsCodec.hpp"
+#include "DemosaicMenon.hpp"
+#include "DemosaicRatio.hpp"
+#include "photonstack/ParallelRanges.hpp"
 
 #include <algorithm>
 #include <array>
@@ -438,6 +441,54 @@ bool isFitsPath(const std::filesystem::path& path) {
     return extension == ".fits" || extension == ".fit" || extension == ".fts";
 }
 
+bool FitsSensorIdentity::sameAcquisition(const FitsSensorIdentity& b) const {
+    return ok && b.ok && width == b.width && height == b.height && camera == b.camera &&
+        bayer == b.bayer && xOffset == b.xOffset && yOffset == b.yOffset && exposure == b.exposure && gain == b.gain;
+}
+
+FitsSensorIdentity FitsCodec::inspectSensor(const std::filesystem::path& path) const {
+    FitsSensorIdentity result;
+    const auto fail = [&](const char* message) {
+        result.errorCode = "SensorIdentityInvalid"; result.message = message; return result;
+    };
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) return fail("Cannot open sensor FITS input");
+    const auto header = parseHeader(stream);
+    if (!header.ok) return fail("Cannot parse sensor FITS header");
+    const auto description = imageDescription(header);
+    if (!description || description->channels != 1) return fail("Sensor model requires a single CFA plane");
+    const auto get = [&](const char* key) {
+        const auto it = header.values.find(key); return it == header.values.end() ? std::string{} : it->second;
+    };
+    result.bayer = get("BAYERPAT");
+    std::transform(result.bayer.begin(), result.bayer.end(), result.bayer.begin(),
+        [](unsigned char c) { return std::toupper(c); });
+    if (result.bayer != "RGGB" && result.bayer != "GRBG" && result.bayer != "GBRG" && result.bayer != "BGGR")
+        return fail("Sensor model requires a supported explicit Bayer pattern");
+    result.camera = get("INSTRUME");
+    const auto telescope = get("TELESCOP");
+    if (!telescope.empty()) result.camera += "|" + telescope;
+    if (result.camera.empty()) return fail("Sensor model requires a camera identity");
+    const auto exposureKey = header.values.contains("EXPOSURE") ? "EXPOSURE" : "EXPTIME";
+    if (!header.values.contains(exposureKey) || !header.values.contains("GAIN"))
+        return fail("Sensor model requires explicit exposure and gain");
+    const auto exposure = floatingValue(header, exposureKey, 0), gain = floatingValue(header, "GAIN", 0);
+    if (!exposure || !gain || !std::isfinite(*exposure) || !std::isfinite(*gain) || *exposure <= 0 || *gain < 0)
+        return fail("Invalid sensor exposure or gain");
+    const auto profile = get("PSCOLOR");
+    if (!profile.empty() && profile != "Linear" && profile != "LINEAR-SRGB")
+        return fail("Sensor model requires linear acquisition samples");
+    for (const auto* key : {"XBAYROFF", "YBAYROFF"}) {
+        const auto offset = integerValue(header, key);
+        if (header.values.contains(key) && !offset) return fail("Invalid Bayer offset");
+        const int parity = offset ? int((*offset % 2 + 2) % 2) : 0;
+        if (std::string(key) == "XBAYROFF") result.xOffset = parity; else result.yOffset = parity;
+    }
+    result.width = description->width; result.height = description->height;
+    result.exposure = *exposure; result.gain = *gain; result.ok = true;
+    return result;
+}
+
 InspectResult FitsCodec::inspect(const std::filesystem::path& path) const {
     if (!std::filesystem::exists(path)) {
         return inspectError("InputFileNotFound", "Input file does not exist", path);
@@ -482,6 +533,14 @@ ImageReadResult FitsCodec::read(const std::filesystem::path& path) const {
 }
 
 ImageReadResult FitsCodec::read(const std::filesystem::path& path, const FitsDecodeOptions& options) const {
+    return read(path, options, nullptr);
+}
+
+ImageReadResult FitsCodec::read(const std::filesystem::path& path, const FitsDecodeOptions& options,
+                               const CalibrationOptions* calibration, const ImageBuffer* sensorPattern) const {
+    if (sensorPattern && (options.mode != FitsDecodeMode::Scientific ||
+        (calibration && (calibration->bias || calibration->dark || calibration->flat))))
+        return readError("SensorPatternConflict", "Sensor pattern requires scientific decoding without other calibration masters");
     if (options.mode != FitsDecodeMode::DisplayNormalized && options.mode != FitsDecodeMode::Scientific) {
         return readError("ArgumentInvalid", "FITS decode options are invalid");
     }
@@ -618,10 +677,174 @@ ImageReadResult FitsCodec::read(const std::filesystem::path& path, const FitsDec
         return readError("InputReadFailed", "Failed while reading the FITS data section");
     }
 
+    if (sensorPattern) {
+        const auto& model = *sensorPattern;
+        if (description->channels != 1 || !header.values.contains("BAYERPAT") ||
+            model.width != result.image.width || model.height != result.image.height || model.channels != 1 ||
+            model.colorEncoding != ColorEncoding::Linear || model.pixels.size() != pixelCount)
+            return readError("SensorPatternInvalid", "Sensor pattern requires a matching linear grayscale model and CFA input");
+        for (std::size_t p = 0; p < pixelCount; ++p) {
+            if (!std::isfinite(model.pixels[p])) return readError("SensorPatternInvalid", "Nonfinite sensor pattern value");
+            if (!std::isfinite(result.image.pixels[p * 4 + 3]) || result.image.pixels[p * 4 + 3] <= 0) continue;
+            for (unsigned c = 0; c < 3; ++c) {
+                result.image.pixels[p * 4 + c] -= model.pixels[p];
+                if (!std::isfinite(result.image.pixels[p * 4 + c]))
+                    return readError("SensorPatternInvalid", "Sensor correction exceeds finite sample range");
+            }
+        }
+    }
+    if (calibration) {
+        if (options.mode != FitsDecodeMode::Scientific)
+            return readError("ScientificImageRequired", "Sensor calibration requires scientific FITS decoding");
+        if (options.maskNonFinitePixels) {
+            for (std::size_t p = 0; p < pixelCount; ++p) {
+                if (!std::isfinite(result.image.pixels[p * 4 + 3])) {
+                    for (int c = 0; c < 4; ++c) result.image.pixels[p * 4 + c] = 0;
+                }
+            }
+        }
+        auto calibrated = Calibrator().calibrate(result.image, *calibration);
+        if (!calibrated.ok) return readError(calibrated.errorCode, calibrated.message);
+        result.image = std::move(calibrated.image);
+    }
+
+    if (options.debayer && description->channels == 1 && header.values.contains("BAYERPAT")) {
+        for (float gain : options.cfaInterpolationGains)
+            if (!std::isfinite(gain) || gain <= 0 || gain > 20)
+                return readError("ArgumentInvalid", "CFA interpolation gains must be finite, positive and at most 20");
+        auto pattern = header.values.at("BAYERPAT");
+        std::transform(pattern.begin(), pattern.end(), pattern.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        if (pattern != "RGGB" && pattern != "GRBG" && pattern != "GBRG" && pattern != "BGGR") {
+            return readError("BayerPatternUnsupported", "Unsupported FITS BAYERPAT: " + pattern);
+        }
+        const auto xOffset = integerValue(header, "XBAYROFF");
+        const auto yOffset = integerValue(header, "YBAYROFF");
+        if ((header.values.contains("XBAYROFF") && !xOffset) || (header.values.contains("YBAYROFF") && !yOffset)) {
+            return readError("ImageHeaderInvalid", "FITS Bayer offsets must be integers");
+        }
+        if (result.image.width < 2 || result.image.height < 2) {
+            return readError("ImageTooSmall", "Bayer images must be at least 2 by 2 pixels");
+        }
+        // Preserve the sensor samples separately so interpolation never feeds on
+        // already interpolated pixels. Coordinates follow the stored FITS rows.
+        std::vector<float> mosaic;
+        try {
+            mosaic.resize(pixelCount);
+        } catch (const std::bad_alloc&) {
+            return readError("ImageAllocationFailed", "Could not allocate the Bayer sample buffer");
+        }
+        for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
+            mosaic[pixel] = std::isfinite(result.image.pixels[pixel * 4 + 3]) && result.image.pixels[pixel * 4 + 3] > 1.e-6F
+                                ? result.image.pixels[pixel * 4]
+                                : std::numeric_limits<float>::quiet_NaN();
+        }
+        const auto colorAt = [&](int x, int y) {
+            const auto px = (x + (xOffset.value_or(0) % 2) + 2) % 2;
+            const auto py = (y + (yOffset.value_or(0) % 2) + 2) % 2;
+            const char color = pattern[static_cast<std::size_t>(py * 2 + px)];
+            return color == 'R' ? 0 : color == 'G' ? 1 : 2;
+        };
+        detail::parallelRanges(result.image.height, std::max<std::size_t>(1, 262144 / result.image.width),
+            [&](std::size_t firstRow, std::size_t lastRow) noexcept {
+                for (int y = static_cast<int>(firstRow); y < static_cast<int>(lastRow); ++y) {
+                    for (int x = 0; x < static_cast<int>(result.image.width); ++x) {
+                        const auto pixel = static_cast<std::size_t>(y) * result.image.width + x;
+                        for (int channel = 0; channel < 3; ++channel) {
+                            if (colorAt(x, y) == channel) {
+                                result.image.pixels[pixel * 4 + channel] = mosaic[pixel];
+                                continue;
+                            }
+                            // Malvar-He-Cutler (ICASSP 2004), Figure 2. Keep measured
+                            // samples and signed scientific values. At borders or near
+                            // invalid samples, use the finite-neighbour bilinear fallback.
+                            if ((options.demosaic == FitsDemosaic::Malvar || options.demosaic == FitsDemosaic::Ratio) && x >= 2 && y >= 2 &&
+                                x + 2 < static_cast<int>(result.image.width) &&
+                                y + 2 < static_cast<int>(result.image.height)) {
+                                const auto v = [&](int dx, int dy) -> double {
+                                    return static_cast<double>(mosaic[static_cast<std::size_t>(y + dy) * result.image.width + x + dx]) *
+                                           options.cfaInterpolationGains[colorAt(x + dx, y + dy)];
+                                };
+                                const double center = v(0, 0);
+                                const double cross2 = v(-2, 0) + v(2, 0) + v(0, -2) + v(0, 2);
+                                double value;
+                                if (channel == 1) {
+                                    value = (4 * center + 2 * (v(-1, 0) + v(1, 0) + v(0, -1) + v(0, 1)) - cross2) / 8;
+                                } else if (colorAt(x, y) != 1) {
+                                    value = (6 * center + 2 * (v(-1, -1) + v(1, -1) + v(-1, 1) + v(1, 1)) - 1.5 * cross2) / 8;
+                                } else {
+                                    const bool horizontal = colorAt(x + 1, y) == channel;
+                                    const double near = horizontal ? v(-1, 0) + v(1, 0) : v(0, -1) + v(0, 1);
+                                    const double along = horizontal ? v(-2, 0) + v(2, 0) : v(0, -2) + v(0, 2);
+                                    const double across = horizontal ? v(0, -2) + v(0, 2) : v(-2, 0) + v(2, 0);
+                                    value = (5 * center + 4 * near - along + .5 * across -
+                                             v(-1, -1) - v(1, -1) - v(-1, 1) - v(1, 1)) / 8;
+                                }
+                                value /= options.cfaInterpolationGains[channel];
+                                if (std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max()) {
+                                    result.image.pixels[pixel * 4 + channel] = static_cast<float>(value);
+                                    continue;
+                                }
+                            }
+                            double sum = 0.0;
+                            int count = 0;
+                            for (int dy = -1; dy <= 1; ++dy) {
+                                for (int dx = -1; dx <= 1; ++dx) {
+                                    const int sx = x + dx, sy = y + dy;
+                                    if (sx < 0 || sy < 0 || sx >= static_cast<int>(result.image.width) ||
+                                        sy >= static_cast<int>(result.image.height) || colorAt(sx, sy) != channel) {
+                                        continue;
+                                    }
+                                    const float value = mosaic[static_cast<std::size_t>(sy) * result.image.width + sx];
+                                    if (std::isfinite(value)) {
+                                        sum += value;
+                                        ++count;
+                                    }
+                                }
+                            }
+                            result.image.pixels[pixel * 4 + channel] =
+                                count > 0 ? static_cast<float>(sum / count) : std::numeric_limits<float>::quiet_NaN();
+                            if (count == 0 && options.maskNonFinitePixels) {
+                                result.image.pixels[pixel * 4 + 3] = std::numeric_limits<float>::quiet_NaN();
+                            }
+                        }
+                    }
+                }
+        });
+        if (options.demosaic == FitsDemosaic::Ratio) {
+            const std::array<int, 4> colors{colorAt(0, 0), colorAt(1, 0), colorAt(0, 1), colorAt(1, 1)};
+            try {
+                const auto reconstructed = detail::demosaicRatio(mosaic,
+                    static_cast<int>(result.image.width), static_cast<int>(result.image.height),
+                    colors, options.cfaInterpolationGains, result.image.pixels);
+                for (std::size_t p = 0; p < pixelCount; ++p)
+                    for (int c = 0; c < 3; ++c)
+                        if (std::isfinite(reconstructed[p * 3 + c]))
+                            result.image.pixels[p * 4 + c] = reconstructed[p * 3 + c];
+            } catch (const std::bad_alloc&) {
+                return readError("ImageAllocationFailed", "Could not allocate ratio Bayer reconstruction buffers");
+            }
+        }
+        if (options.demosaic == FitsDemosaic::Menon) {
+            std::array<int, 4> colors{colorAt(0,0),colorAt(1,0),colorAt(0,1),colorAt(1,1)};
+            try {
+                const auto reconstructed = detail::demosaicMenon(mosaic,
+                    static_cast<int>(result.image.width), static_cast<int>(result.image.height),
+                    colors, options.cfaInterpolationGains);
+                for (std::size_t p=0;p<pixelCount;++p)
+                    for (int c=0;c<3;++c)
+                        if (std::isfinite(reconstructed[p*3+c])) result.image.pixels[p*4+c]=reconstructed[p*3+c];
+            } catch (const std::bad_alloc&) {
+                return readError("ImageAllocationFailed", "Could not allocate directional Bayer reconstruction buffers");
+            }
+        }
+
+    }
+
     if (options.maskNonFinitePixels) {
         for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
             const auto outputOffset = pixel * result.image.channels;
-            if (!std::isfinite(result.image.pixels[outputOffset + 3])) {
+            if (!std::isfinite(result.image.pixels[outputOffset + 3]) || result.image.pixels[outputOffset + 3] <= 0) {
                 result.image.pixels[outputOffset] = 0.0F;
                 result.image.pixels[outputOffset + 1] = 0.0F;
                 result.image.pixels[outputOffset + 2] = 0.0F;

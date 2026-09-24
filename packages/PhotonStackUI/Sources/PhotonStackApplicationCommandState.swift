@@ -71,6 +71,13 @@ public struct PhotonStackProcessCommands: Commands {
 
     public var body: some Commands {
         CommandMenu(state.processMenuTitle) {
+            Button(state.snapshot.language == .simplifiedChinese ? "深空筛片与堆栈…" : "Deep Sky Assessment & Stack…") {
+                NotificationCenter.default.post(name: .photonStackOpenDeepSky, object: nil)
+            }
+            .keyboardShortcut("d", modifiers: [.command, .shift])
+            .disabled(!state.snapshot.isWorkspaceActive)
+            Divider()
+
             Button(state.batchRegistrationTitle) {
                 NotificationCenter.default.post(name: .photonStackRunBatchRegistration, object: nil)
             }

@@ -311,7 +311,7 @@ private func writeSolidTestPNG(to url: URL, red: CGFloat, green: CGFloat, blue: 
     #expect(containsPair(mapped, "--protect-bright-targets", "off"))
 }
 
-@Test func cliProcessingServicePublishesEveryProgressLineForCurrentJob() async throws {
+@Test func cliProcessingServicePreservesFirstAndLastProgressForCurrentJob() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
         "PhotonStackCLIProgress-\(UUID().uuidString)",
         isDirectory: true
@@ -363,6 +363,42 @@ private func writeSolidTestPNG(to url: URL, red: CGFloat, green: CGFloat, blue: 
     #expect(result.standardOutput.contains("\"type\":\"progress\"") == false)
     #expect(result.standardOutput.contains("\"type\": \"progress\"") == false)
     #expect(result.standardOutput.contains("\"type\":\"complete\"") == true)
+}
+
+@Test func cliProcessingServiceCoalescesProgressFloodWithoutLosingCompletion() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackProgressFlood-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let executable = directory.appendingPathComponent("photonstack")
+    let script = """
+    #!/bin/bash
+    for ((i=0; i<2000; i++)); do
+      printf '{"type":"progress","task":"stack","command":"stack","stage":"cache","progress":0.%04d}\n' "$i"
+    done
+    printf '%s\n' '{"type":"progress","task":"stack","command":"stack","stage":"complete","progress":1}'
+    printf '%s\n' '{"type":"complete","command":"stack","frames":359}'
+    """
+    try script.write(to: executable, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+    let jobID = UUID()
+    let recorder = ProgressEventRecorder()
+    let observer = NotificationCenter.default.addObserver(forName: .photonStackProcessingProgress, object: nil, queue: nil) { notification in
+        if let event = notification.object as? ProcessingProgressEvent, event.jobID == jobID {
+            recorder.append(event)
+        }
+    }
+    defer { NotificationCenter.default.removeObserver(observer) }
+    let service = CLIProcessingService(executableURL: executable)
+    let result = try await ProcessingProgressContext.$jobID.withValue(jobID) {
+        try await service.runCLI(arguments: ["stack"])
+    }
+    let events = recorder.snapshot()
+    #expect(events.count >= 2 && events.count < 2001)
+    #expect(events.first?.progress == 0)
+    #expect(events.last?.progress == 1)
+    #expect(events.last?.stage == "complete")
+    #expect(result.standardOutput.contains("\"frames\":359"))
+    #expect(!result.standardOutput.contains("\"type\":\"progress\""))
 }
 
 @Test func cliProcessingServiceMapsCombinedCurvePreviewArguments() async throws {

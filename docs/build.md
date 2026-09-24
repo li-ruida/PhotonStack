@@ -2,6 +2,9 @@
 
 PhotonStack currently targets macOS first.
 
+The engine uses the system CommonCrypto SHA-256 implementation on Apple platforms.
+Non-Apple CMake builds require the OpenSSL Crypto development library for source-content provenance.
+
 ## Requirements
 
 Install the following on macOS:
@@ -50,8 +53,6 @@ tools/scripts/test.sh debug
 Build and package the app with:
 
 ```bash
-tools/scripts/build.sh debug
-tools/scripts/build-macos.sh
 tools/scripts/package-macos.sh
 ```
 
@@ -63,12 +64,25 @@ build/PhotonStack.app
 
 `tools/scripts/package-macos.sh` currently:
 
-- builds the CLI and macOS app targets
+- builds the CLI and macOS app targets in Release mode, including the in-process image engine
 - creates `build/PhotonStack.app`
 - embeds the `photonstack` CLI in the app bundle
 - writes bundle metadata and build identity files
 - generates `AppIcon.icns` from the repository PNG source when Python and Pillow are available
 - applies ad hoc signing when `codesign` is available
+
+To package binaries already built with a specific SDK, use
+`tools/scripts/package-macos.sh --prebuilt /absolute/path/PhotonStackMac /absolute/path/photonstack`.
+The output path and bundle identifier remain `build/PhotonStack.app` and
+`dev.photonstack.mac`.
+
+Run `tools/scripts/install-macos.sh` to replace `/Applications/PhotonStack.app`
+with that verified build. It preserves the installed path and application
+identifier, saves the previous version as a ZIP under `artifacts/app-backups`, and
+does not launch another app instance. Use this same installed app for subsequent
+upgrades instead of creating versioned review applications. Stable identity
+avoids treating each review build as a separate app; ad hoc signing and host
+permission policy can still require renewed authorization after an update.
 
 ## Local App Development
 

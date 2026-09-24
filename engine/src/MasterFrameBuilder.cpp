@@ -43,6 +43,8 @@ MasterFrameResult MasterFrameBuilder::build(const std::vector<std::filesystem::p
 
     StackOptions stackOptions;
     stackOptions.raw = options.raw;
+    stackOptions.temporaryDirectory = options.temporaryDirectory;
+    stackOptions.debayerFits = false;
     switch (options.method) {
     case MasterFrameMethod::Average:
         stackOptions.method = StackMethod::Average;

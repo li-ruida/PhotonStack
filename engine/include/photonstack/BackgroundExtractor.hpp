@@ -21,11 +21,24 @@ struct BackgroundExtractionOptions {
     bool clampOutput = true;
 };
 
+struct BackgroundExclusionEllipse {
+    float x=0, y=0, major=1, minor=1, angleDegrees=0;
+};
 struct BackgroundGridOptions {
     BackgroundExtractionOptions extraction;
     std::uint32_t columns = 6;
     std::uint32_t rows = 4;
     bool protectBrightTargets = true;
+    bool extrapolateEdges = false;
+    // Cells retaining less than 25% usable pixels after exclusions are filled
+    // from valid sky cells, rather than estimating a pedestal from tiny slivers.
+    std::vector<BackgroundExclusionEllipse> exclusions;
+};
+
+struct BackgroundPolynomialOptions {
+    BackgroundExtractionOptions extraction;
+    std::uint32_t columns=32, rows=48;
+    std::vector<BackgroundExclusionEllipse> exclusions;
 };
 
 struct BackgroundExtractionResult {
@@ -43,6 +56,7 @@ struct BackgroundExtractionResult {
 
 class BackgroundExtractor {
   public:
+    BackgroundExtractionResult extractPolynomial(const ImageBuffer& image, const BackgroundPolynomialOptions& options) const;
     BackgroundExtractionResult extractGlobal(const ImageBuffer& image,
                                              const BackgroundExtractionOptions& options) const;
     BackgroundExtractionResult extractGrid(const ImageBuffer& image, const BackgroundGridOptions& options) const;

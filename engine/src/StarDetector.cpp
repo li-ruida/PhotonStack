@@ -76,7 +76,7 @@ StarDetectionResult detectLuminanceBuffer(
     if (!(totalCoverage > 1.0e-6) || !std::isfinite(totalCoverage)) {
         return detectionError("ImageCoverageEmpty", "Star detection requires at least one valid pixel");
     }
-    const double mean = sum / totalCoverage;
+    double mean = sum / totalCoverage;
     double variance = 0.0;
     for (std::size_t index = 0; index < luminance.size(); ++index) {
         if (!isValid(index)) {
@@ -86,7 +86,22 @@ StarDetectionResult detectLuminanceBuffer(
         variance += delta * delta * std::clamp(static_cast<double>(coverageAt(index)), 0.0, 1.0);
     }
     variance /= totalCoverage;
-    const double standardDeviation = std::sqrt(std::max(0.0, variance));
+    double standardDeviation = std::sqrt(std::max(0.0, variance));
+    if (options.robustStatistics) {
+        std::vector<float> valid;
+        valid.reserve(luminance.size());
+        for (std::size_t i = 0; i < luminance.size(); ++i)
+            if (isValid(i) && coverageAt(i) >= .99F) valid.push_back(luminance[i]);
+        if (valid.size() < 16) return detectionError("ImageCoverageEmpty", "Robust stellar statistics need complete pixel coverage");
+        const auto median = [](std::vector<float>& values) {
+            auto mid = values.begin() + values.size() / 2;
+            std::nth_element(values.begin(), mid, values.end());
+            return values.size() % 2 ? double(*mid) : .5 * (double(*mid) + *std::max_element(values.begin(), mid));
+        };
+        mean = median(valid);
+        for (auto& value : valid) value = float(std::abs(value - mean));
+        standardDeviation = median(valid) * 1.482602218505602;
+    }
     const double threshold = std::max(static_cast<double>(options.minPeak),
                                       mean + static_cast<double>(options.sigmaThreshold) * standardDeviation);
 
@@ -218,8 +233,34 @@ StarDetectionResult detectLuminanceBuffer(
     std::vector<Star> filteredStars;
     filteredStars.reserve(std::min(stars.size(), options.maxStars));
     constexpr float minSeparationSquared = 3.0F * 3.0F;
+    // A spatial index keeps complete counting linear in typical dense fields.
+    // Every accepted center participates, including those beyond the return cap.
+    constexpr auto missing = std::numeric_limits<std::size_t>::max();
+    struct Center { float x, y; std::size_t next; };
+    const auto columns = (std::size_t(width) + 2) / 3;
+    const auto rows = (std::size_t(height) + 2) / 3;
+    std::vector<std::size_t> heads;
+    std::vector<Center> centers;
+    if (options.countAllDetections) heads.assign(columns * rows, missing);
     for (const auto& ranked : stars) {
         const auto& star = ranked.star;
+        if (options.countAllDetections) {
+            const auto cx = std::min(columns - 1, std::size_t(star.x / 3));
+            const auto cy = std::min(rows - 1, std::size_t(star.y / 3));
+            bool tooClose = false;
+            for (auto y = cy == 0 ? 0 : cy - 1; y <= std::min(rows - 1, cy + 1) && !tooClose; ++y)
+                for (auto x = cx == 0 ? 0 : cx - 1; x <= std::min(columns - 1, cx + 1) && !tooClose; ++x)
+                    for (auto index = heads[y * columns + x]; index != missing; index = centers[index].next) {
+                        const float dx = centers[index].x - star.x, dy = centers[index].y - star.y;
+                        if (dx * dx + dy * dy < minSeparationSquared) { tooClose = true; break; }
+                    }
+            if (tooClose) continue;
+            const auto cell = cy * columns + cx;
+            centers.push_back({star.x, star.y, heads[cell]});
+            heads[cell] = centers.size() - 1;
+            if (filteredStars.size() < options.maxStars) filteredStars.push_back(star);
+            continue;
+        }
         const bool tooClose = std::any_of(filteredStars.begin(), filteredStars.end(), [&](const Star& selected) {
             const float dx = selected.x - star.x;
             const float dy = selected.y - star.y;
@@ -236,6 +277,7 @@ StarDetectionResult detectLuminanceBuffer(
 
     StarDetectionResult result;
     result.ok = true;
+    result.detectedCount = options.countAllDetections ? centers.size() : filteredStars.size();
     result.stars = std::move(filteredStars);
     return result;
 }

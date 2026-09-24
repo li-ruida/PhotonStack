@@ -17,6 +17,7 @@ enum class MasterFrameMethod {
 struct MasterFrameOptions {
     MasterFrameMethod method = MasterFrameMethod::Median;
     RawDecodeOptions raw;
+    std::filesystem::path temporaryDirectory;
 };
 
 struct MasterFrameResult {

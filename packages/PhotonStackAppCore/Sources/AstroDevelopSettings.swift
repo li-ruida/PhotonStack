@@ -8,6 +8,7 @@ public struct AstroDevelopSettings: Equatable, Sendable {
     public var background = 0.035
     public var saturation = 0.7
     public var shadowNeutralization = 0.8
+    public var starColorCleanup = 0.8
     public var starExposure = 1.0
     public var starPeakThreshold = 0.0
     public var toneCurve = "asinh"
@@ -21,6 +22,7 @@ public struct AstroDevelopSettings: Equatable, Sendable {
     public var operationParameters: [String: String] {
         ["mode": "astro-v1", "toneCurve": toneCurve, "toneScale": String(toneScale), "whitePoint": String(whitePoint), "stellarBalance": String(stellarBalance),
          "brightness": String(brightness), "background": String(background),
+         "starColorCleanup": String(starColorCleanup),
          "starExposure": String(starExposure), "starPeakThreshold": String(starPeakThreshold),
          "saturation": String(saturation), "shadowNeutralization": String(shadowNeutralization),
          "redGain": String(redGain), "blueGain": String(blueGain)]
@@ -36,6 +38,7 @@ public struct AstroDevelopSettings: Equatable, Sendable {
         brightness = p["brightness"].flatMap(Double.init) ?? brightness
         background = p["background"].flatMap(Double.init) ?? background
         starExposure = p["starExposure"].flatMap(Double.init) ?? 0.5
+        starColorCleanup = p["starColorCleanup"].flatMap(Double.init) ?? 0
         starPeakThreshold = p["starPeakThreshold"].flatMap(Double.init) ?? 0
         saturation = p["saturation"].flatMap(Double.init) ?? saturation
         shadowNeutralization = p["shadowNeutralization"].flatMap(Double.init) ?? 0

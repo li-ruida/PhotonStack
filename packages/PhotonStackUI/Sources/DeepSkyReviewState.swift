@@ -43,7 +43,7 @@ enum DeepSkyReview {
 
     static func kept(_ frame: DeepSkyReport.Frame, settings: DeepSkySettings) -> Bool {
         guard frame.usable else { return false }
-        switch settings.overrides[frame.input] {
+        switch decision(frame, settings: settings) {
         case "keep": return true
         case "reject": return false
         default: return settings.values["selection.apply"] == "off" || frame.recommendedKeep
@@ -53,7 +53,12 @@ enum DeepSkyReview {
         !frame.usable || !frame.recommendedKeep || !frame.warnings.isEmpty
     }
     static func manual(_ frame: DeepSkyReport.Frame, settings: DeepSkySettings) -> Bool {
-        ["keep", "reject"].contains(settings.overrides[frame.input] ?? "auto")
+        ["keep", "reject"].contains(decision(frame, settings: settings))
+    }
+    static func decision(_ frame: DeepSkyReport.Frame, settings: DeepSkySettings) -> String {
+        settings.overrides[frame.input]
+            ?? settings.overrides[PhotonStackProject.assetIdentityPath(for: URL(fileURLWithPath: frame.input))]
+            ?? "auto"
     }
     static func reason(_ code: String, chinese: Bool) -> String {
         guard chinese else { return code.replacingOccurrences(of: "-", with: " ") }

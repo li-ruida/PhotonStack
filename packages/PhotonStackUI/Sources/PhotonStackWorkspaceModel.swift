@@ -508,7 +508,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     private let cacheBuildIdentity: String
     private let previewCacheSchemaVersion = "preview-cache-v4"
     private let previewCacheReceiptSchemaVersion = "preview-cache-receipt-v2"
-    private let artifactRemovalCacheRevision = "satellite-trails-v6-path-shape"
+    private let artifactRemovalCacheRevision = "artifact-trails-v22-chromatic-beacon-foreground"
     private let artifactMarkerRendererRevision = "labels-v12-global-declutter-overflow-summary"
     private let cloudMarkerRendererRevision = "labels-v3-global-declutter-overflow-summary"
     static let maximumCurvePresetImportBytes: UInt64 = 4 * 1_024 * 1_024
@@ -3838,7 +3838,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     public func setDeepSkyValue(_ value: String, for key: String) {
         guard !isProcessing else { return }
         var settings = deepSkySettings
-        settings.values[key] = value
+        if let schema = deepSkySchema {
+            settings.setCompatibleValue(value, for: key, schema: schema)
+        } else {
+            settings.values[key] = value
+        }
         project.deepSkySettings = settings
         project.updatedAt = Date()
         triggerAutosave()
@@ -3848,13 +3852,27 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         updateDeepSkyOverrides([path: value])
     }
 
+    public func configureStarTrailComposition() {
+        guard !isProcessing, let schema = deepSkySchema else { return }
+        var settings = deepSkySettings
+        settings.configureStarTrailComposition(schema: schema)
+        project.deepSkySettings = settings
+        project.updatedAt = Date()
+        triggerAutosave()
+    }
+
     public func updateDeepSkyOverrides(_ changes: [String: String]) {
         guard !isProcessing else { return }
         var settings = deepSkySettings
         let paths = Set(lightAssets.map { PhotonStackProject.assetIdentityPath(for: $0.originalURL) })
-        let unusable = Set((settings.lastReport?.frames ?? []).filter { !$0.usable }.map(\.input))
-        for (path, value) in changes where paths.contains(path) && ["auto", "keep", "reject"].contains(value) {
+        let unusable = Set((settings.lastReport?.frames ?? []).filter { !$0.usable }.map {
+            PhotonStackProject.assetIdentityPath(for: URL(fileURLWithPath: $0.input))
+        })
+        for (requestedPath, value) in changes where ["auto", "keep", "reject"].contains(value) {
+            let path = PhotonStackProject.assetIdentityPath(for: URL(fileURLWithPath: requestedPath))
+            guard paths.contains(path) else { continue }
             guard value != "keep" || !unusable.contains(path) else { continue }
+            if requestedPath != path { settings.overrides.removeValue(forKey: requestedPath) }
             if value == "auto" { settings.overrides.removeValue(forKey: path) }
             else { settings.overrides[path] = value }
         }
@@ -3936,9 +3954,35 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public func showLatestDeepSkyResult() {
-        guard canModifyWorkspaceProducts, let url = latestDeepSkyResultURL else { return }
+        guard canModifyProcessingConfiguration, let url = latestDeepSkyResultURL else { return }
+        // Navigation supersedes a background RAW preview without interrupting
+        // an actual processing job or letting the late preview replace the result.
+        cancelRawPreviewUpdate()
         activeLayerID = nil
         setPreview(url, canvasMode: .sourcePreview)
+        errorMessage = nil
+        triggerAutosave()
+    }
+
+    public var isShowingLatestDeepSkyResult: Bool {
+        guard canvasMode == .sourcePreview,
+              let currentInputURL, let result = latestDeepSkyResultURL else { return false }
+        return Self.urlsReferenceSameFile(currentInputURL, result)
+    }
+
+    public var isShowingSelectedOriginal: Bool {
+        guard canvasMode == .sourcePreview,
+              let currentInputURL, let selectedAsset else { return false }
+        return Self.urlsReferenceSameFile(currentInputURL, selectedAsset.originalURL)
+    }
+
+    public func showSelectedOriginal() {
+        guard canModifyProcessingConfiguration, let selectedAsset,
+              !rejectMissingAsset(in: [selectedAsset]) else { return }
+        cancelRawPreviewUpdate()
+        activeLayerID = nil
+        setPreview(selectedAsset.originalURL, canvasMode: .sourcePreview)
+        errorMessage = nil
         triggerAutosave()
     }
 
@@ -7629,7 +7673,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             if operation.parameters["mode"] == "astro-v1" {
                 return ["mode": .options(["astro-v1"]), "stellarBalance": .toggle,
                         "toneCurve": .options(["rational", "asinh"]), "toneScale": .decimal(0...1_000_000_000), "whitePoint": .decimal(0...1_000_000_000),
-                        "brightness": .decimal(0.3...4), "background": .decimal(0.01...0.12), "starExposure": .decimal(0.1...1), "starPeakThreshold": .decimal(0...1),
+                        "brightness": .decimal(0.3...4), "background": .decimal(0.01...0.12), "starExposure": .decimal(0.1...1), "starPeakThreshold": .decimal(0...1), "starColorCleanup": .decimal(0...1),
                         "saturation": .decimal(0...1.5), "redGain": .decimal(0.6...1.4), "blueGain": .decimal(0.6...1.4)]
             }
             return ["targetBackground": .decimal(0.05...0.65)]
@@ -13224,11 +13268,14 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
               removedTrailCount >= 0,
               protectedMeteorCount >= 0,
               trailCount == rawItems.count,
-              removedTrailCount <= trailCount,
-              protectedMeteorCount <= trailCount
+              removedTrailCount <= trailCount
         else {
             throw ProcessingServiceError.invalidReport(command: "artifacts detect")
         }
+
+        // The engine counts protected meteor candidates before excluding them
+        // from `items` (includeMeteors defaults to false). This count is not
+        // bounded by the number of returned, removable artificial trails.
 
         let imageWidth: Int?
         if object["width"] != nil {

@@ -82,6 +82,10 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
             return "Winsorized"
         case (.english, .percentile):
             return "Percentile"
+        case (.english, .maximum):
+            return "Maximum (Lighten)"
+        case (.english, .minimum):
+            return "Minimum (Darken)"
         case (.simplifiedChinese, .average):
             return "平均"
         case (.simplifiedChinese, .weighted):
@@ -94,6 +98,10 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
             return "Winsorized"
         case (.simplifiedChinese, .percentile):
             return "百分位"
+        case (.simplifiedChinese, .maximum):
+            return "最大值（变亮）"
+        case (.simplifiedChinese, .minimum):
+            return "最小值（变暗）"
         }
     }
 

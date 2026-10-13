@@ -25,6 +25,7 @@ private func presentRelinkPanel(for asset: PhotonStackAsset, model: PhotonStackW
 public extension Notification.Name {
     static let photonStackImportAssetURLs = Notification.Name("dev.photonstack.importAssetURLs")
     static let photonStackOpenDeepSky = Notification.Name("dev.photonstack.openDeepSky")
+    static let photonStackOpenFinishing = Notification.Name("dev.photonstack.openFinishing")
     static let photonStackRunBatchRegistration = Notification.Name("dev.photonstack.runBatchRegistration")
     static let photonStackExportProductManifest = Notification.Name("dev.photonstack.exportProductManifest")
     static let photonStackPreviewLayerStack = Notification.Name("dev.photonstack.previewLayerStack")
@@ -224,6 +225,8 @@ public struct PhotonStackRootView: View {
     @State private var newProjectTemplate: ProjectTemplate = .deepSky
     @State private var pendingProductManifestExport = false
     @State private var pendingLayerStackPreview = false
+    @State private var inspectorPage: WorkspaceInspectorPage = .processing
+    @State private var finishingRequested = false
 
     public init(
         processingService: any ProcessingService,
@@ -241,19 +244,25 @@ public struct PhotonStackRootView: View {
                 onImportFolder: { startImportFolder() }
             )
         } detail: {
-            HStack(spacing: 0) {
-                VStack(spacing: 0) {
-                    PhotonStackPreview(model: model)
-
-                    Divider()
-
-                    ActionBar(model: model)
-                }
-
+            VStack(spacing: 0) {
+                WorkspaceJourneyBar(model: model, finishingRequested: finishingRequested, onSelect: navigateJourney)
                 Divider()
-
-                InspectorPanel(model: model)
-                    .frame(width: 320)
+                if model.project.assets.isEmpty {
+                    WorkspaceWelcomeView(chinese: model.language == .simplifiedChinese,
+                        onImport: startImportFiles, onImportFolder: startImportFolder, onOpenProject: openProject)
+                } else {
+                    HStack(spacing: 0) {
+                        VStack(spacing: 0) {
+                            PhotonStackPreview(model: model)
+                            Divider()
+                            ActionBar(model: model)
+                        }
+                        Divider()
+                        InspectorPanel(model: model, page: $inspectorPage,
+                            isFinishing: finishingRequested || model.journeyResultIsCurrent)
+                            .frame(width: 320)
+                    }
+                }
             }
         }
         .toolbar {
@@ -462,6 +471,13 @@ public struct PhotonStackRootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .photonStackOpenDeepSky)) { _ in
             isDeepSkyPresented = true
         }
+        .onReceive(NotificationCenter.default.publisher(for: .photonStackOpenFinishing)) { _ in
+            navigateJourney(.finish)
+        }
+        .onChange(of: model.project.id) { _, _ in
+            finishingRequested = false
+            inspectorPage = .processing
+        }
         .onReceive(NotificationCenter.default.publisher(for: .photonStackRunBatchRegistration)) { _ in
             guard model.applicationCommandSnapshot.canRunBatchRegistration,
                   let reference = model.batchRegistrationAssets.first
@@ -534,6 +550,31 @@ public struct PhotonStackRootView: View {
         )
         #endif
         .frame(minWidth: 1120, minHeight: 720)
+    }
+
+    private func navigateJourney(_ step: WorkspaceJourneyStep) {
+        guard !model.hasActiveProcessing else { return }
+        switch step {
+        case .importPhotos:
+            startImportFiles()
+        case .review, .stack:
+            finishingRequested = false
+            isDeepSkyPresented = true
+        case .finish:
+            // Returning to the editor must not reset a user's later adjustments.
+            if model.isShowingSelectedOriginal, model.journeyResultIsCurrent {
+                model.showLatestDeepSkyResult()
+            }
+            finishingRequested = true
+            inspectorPage = .processing
+        case .export:
+            #if os(macOS)
+            if model.canExportCurrentImage,
+               let output = NativeFilePanels.exportImageURL(message: model.localized(.exportImageMessage)) {
+                model.startExportCurrentImage(to: output)
+            }
+            #endif
+        }
     }
 
     private func presentNewProjectSheet() {
@@ -998,8 +1039,7 @@ private struct ActionBar: View {
 
         HStack(spacing: 8) {
             DeepSkyControl(model: model, context: "toolbar")
-                .buttonStyle(.borderedProminent)
-                .labelStyle(.titleAndIcon)
+                .labelStyle(.iconOnly)
 
             AstroDevelopControl(model: model)
                 .labelStyle(.titleAndIcon)
@@ -1016,18 +1056,28 @@ private struct ActionBar: View {
             .disabled(canInspectAsset == false)
             .help(model.localized(.inspectAction))
 
-            Button {
-                model.startBuildPreview()
-            } label: {
-                Label(model.localized(.sourcePreviewAction), systemImage: "photo")
+            if model.latestDeepSkyResultURL == nil {
+                Button {
+                    model.startBuildPreview()
+                } label: {
+                    Label(model.localized(.sourcePreviewAction), systemImage: "photo")
+                }
+                .accessibilityLabel(
+                    "\(model.localized(.sourcePreviewAction)): \(model.selectedAsset?.displayName ?? model.localized(.sourcePreviewAction))"
+                )
+                .disabled(canInspectAsset == false)
+                .help(model.localized(.sourcePreviewAction))
             }
-            .accessibilityLabel(
-                "\(model.localized(.sourcePreviewAction)): \(model.selectedAsset?.displayName ?? model.localized(.sourcePreviewAction))"
-            )
-            .disabled(canInspectAsset == false)
-            .help(model.localized(.sourcePreviewAction))
 
             Menu {
+                Button {
+                    model.startAutoStretchPreview()
+                } label: {
+                    Label(model.language == .simplifiedChinese ? "自动拉伸" : "Auto Stretch", systemImage: "sun.max")
+                }
+                .accessibilityIdentifier("adjustments.auto-stretch")
+                .help(model.language == .simplifiedChinese ? "生成可撤销的拉伸图层，不改动原片；目标背景值在参数面板设置。" : "Create a reversible stretch layer without changing originals. Set target background in the parameters panel.")
+
                 Button {
                     model.startLocalContrastPreview()
                 } label: {
@@ -1121,7 +1171,8 @@ private struct ActionBar: View {
 
 private struct InspectorPanel: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
-    @State private var page: WorkspaceInspectorPage = .processing
+    @Binding var page: WorkspaceInspectorPage
+    var isFinishing: Bool
     @State private var expandedGroups: Set<InspectorToolGroup> = Set(InspectorToolGroup.defaultExpanded)
     private let groupAnimation = Animation.interactiveSpring(response: 0.28, dampingFraction: 0.9, blendDuration: 0.08)
 
@@ -1161,6 +1212,7 @@ private struct InspectorPanel: View {
                     }
 
                     if page == .processing {
+                        if !isFinishing {
                         InspectorToolGroupView(
                             model: model,
                             group: .workflow,
@@ -1169,7 +1221,14 @@ private struct InspectorPanel: View {
                         ) {
                             DeepSkyWorkflowOverview(model: model)
                         }
-
+                        } else {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(model.language == .simplifiedChinese ? "后期调整" : "Finish your image").font(.headline)
+                                Text(model.language == .simplifiedChinese ? "先调整明暗与色彩，再检查噪点和细节。高级工具按需使用。" : "Start with tone and color, then inspect noise and detail. Advanced tools are optional.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        if isFinishing {
                         InspectorToolGroupView(
                             model: model,
                             group: .adjustments,
@@ -1177,6 +1236,14 @@ private struct InspectorPanel: View {
                             isExpanded: binding(for: .adjustments)
                         ) {
                             AdjustmentsInspectorSection(model: model, parameters: processingParametersBinding)
+                        }
+                        } else {
+                            Button(model.language == .simplifiedChinese ? "直接调整当前图像…" : "Edit current image…") {
+                                NotificationCenter.default.post(name: .photonStackOpenFinishing, object: nil)
+                            }
+                            .disabled(!model.canProcessCurrentInput || model.hasActiveProcessing)
+                            Text(model.language == .simplifiedChinese ? "适合单张照片或已经堆好的成片。不会自动堆栈。" : "For a single photo or an existing master. This does not run stacking.")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
 
                     }
@@ -3005,6 +3072,12 @@ private struct ParametersSection: View {
                 .font(.headline)
 
             Stepper("\(model.localized(.previewWidth)) \(parameters.previewWidth) px", value: $parameters.previewWidth, in: 512...4096, step: 256)
+
+            ParameterSlider(
+                title: model.language == .simplifiedChinese ? "自动拉伸 · 目标背景" : "Auto Stretch · Target background",
+                value: $parameters.stretchTargetBackground,
+                range: 0.05...0.65
+            ).accessibilityIdentifier("parameters.stretch-target")
 
             ParameterSlider(
                 title: model.localized(.starReduction),
@@ -5731,12 +5804,16 @@ private struct SidebarAssetRow: View {
 
 private struct PhotonStackPreview: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
+    @StateObject private var scientificPreviews = DeepSkyReviewPreviewStore()
     @State private var magnification = 1.0
     @State private var fitToWindow = true
     @State private var showArtifactMarkedPreview = false
 
     var body: some View {
         VStack(spacing: 0) {
+            if model.latestDeepSkyResultURL != nil {
+                WorkspacePreviewSourceControl(model: model, imageURL: currentURL)
+            }
             PreviewZoomBar(
                 model: model,
                 magnification: $magnification,
@@ -5750,8 +5827,14 @@ private struct PhotonStackPreview: View {
                 Color.black
 
                 if let url = currentURL {
-                    PlatformImageView(url: url, magnification: $magnification, fitToWindow: $fitToWindow)
-                        .padding(16)
+                    if ["fit", "fits", "fts"].contains(url.pathExtension.lowercased()) {
+                        WorkspaceFITSPreview(model: model, previews: scientificPreviews, input: url,
+                            magnification: $magnification, fitToWindow: $fitToWindow)
+                            .padding(16)
+                    } else {
+                        PlatformImageView(url: url, magnification: $magnification, fitToWindow: $fitToWindow)
+                            .padding(16)
+                    }
                 } else {
                     ContentUnavailableView(model.localized(.noImage), systemImage: "photo")
                 }
@@ -5863,7 +5946,7 @@ private struct PreviewZoomBar: View {
 
             Spacer()
 
-            if let imageURL {
+            if model.latestDeepSkyResultURL == nil, let imageURL {
                 Text(imageURL.lastPathComponent)
                     .font(.caption)
                     .foregroundStyle(.secondary)

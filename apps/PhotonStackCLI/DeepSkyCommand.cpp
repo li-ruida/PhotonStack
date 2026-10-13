@@ -65,6 +65,7 @@ std::string report(const DeepSkyWorkflowResult& r, const DeepSkyRecipe& recipe, 
         << ",\"independentLuminanceNoise\":" << boolean(r.independentLuminanceNoise)
         << ",\"crop\":{\"x\":" << r.cropX << ",\"y\":" << r.cropY << ",\"width\":" << r.cropWidth << ",\"height\":" << r.cropHeight << '}'
         << ",\"denoiseH\":" << r.denoiseH << ",\"development\":{\"toneScale\":" << r.development.toneScale
+        << ",\"colorCleanedStars\":" << r.development.colorCleanedStars
         << ",\"shadowNoise\":" << r.development.shadowNoise << ",\"whitePoint\":" << r.development.whitePoint << ",\"calibrationStars\":" << r.development.calibrationStars << ",\"gains\":["
         << r.development.gains[0] << ',' << r.development.gains[1] << ',' << r.development.gains[2] << "]},\"channelAlignment\":[";
     for (unsigned c=0;c<3;++c) {

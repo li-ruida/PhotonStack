@@ -320,9 +320,19 @@ bool renderAlignmentRows(const ImageBuffer& image, const AlignmentPlan& plan, co
     return false;
 }
 
+bool isExtremaMethod(StackMethod method) {
+    return method == StackMethod::Maximum || method == StackMethod::Minimum;
+}
+
+void combineStreamingSample(float& output, float sample, float weight, StackMethod method) {
+    if (method == StackMethod::Maximum) output = std::max(output, sample);
+    else if (method == StackMethod::Minimum) output = std::min(output, sample);
+    else output += sample * weight;
+}
+
 void accumulateStreamingFrame(ImageBuffer& accumulator, const ImageBuffer& frame, float weight,
                               StackProgressReporter& progress, std::size_t frameNumber,
-                              double start, double end) {
+                              double start, double end, StackMethod method = StackMethod::Average) {
     progress.report(StackProgressStage::Accumulating, start, frameNumber, 0, accumulator.height);
     for (std::uint32_t y = 0; y < accumulator.height; ++y) {
         for (std::uint32_t x = 0; x < accumulator.width; ++x) {
@@ -336,8 +346,8 @@ void accumulateStreamingFrame(ImageBuffer& accumulator, const ImageBuffer& frame
             const float contributionWeight = weight * coverage;
             for (std::uint16_t channel = 0; channel < accumulator.channels; ++channel) {
                 if (!isAlphaChannel(accumulator, channel)) {
-                    accumulator.pixels[outputOffset + channel] +=
-                        frame.pixels[inputOffset + channel] * contributionWeight;
+                    combineStreamingSample(accumulator.pixels[outputOffset + channel],
+                                           frame.pixels[inputOffset + channel], contributionWeight, method);
                 }
             }
             if (hasAlpha(accumulator)) {
@@ -349,7 +359,7 @@ void accumulateStreamingFrame(ImageBuffer& accumulator, const ImageBuffer& frame
 }
 
 bool accumulateStreamingRow(ImageBuffer& accumulator, float weight, std::uint32_t row, const float* samples,
-                            std::size_t sampleCount) {
+                            std::size_t sampleCount, StackMethod method = StackMethod::Average) {
     const auto expectedSamples = static_cast<std::size_t>(accumulator.width) * accumulator.channels;
     if (row >= accumulator.height || samples == nullptr || sampleCount != expectedSamples) {
         return false;
@@ -364,7 +374,8 @@ bool accumulateStreamingRow(ImageBuffer& accumulator, float weight, std::uint32_
         const float contributionWeight = weight * coverage;
         for (std::uint16_t channel = 0; channel < accumulator.channels; ++channel) {
             if (!isAlphaChannel(accumulator, channel)) {
-                accumulator.pixels[outputOffset + channel] += samples[inputOffset + channel] * contributionWeight;
+                combineStreamingSample(accumulator.pixels[outputOffset + channel],
+                                       samples[inputOffset + channel], contributionWeight, method);
             }
         }
         if (hasAlpha(accumulator)) {
@@ -375,14 +386,22 @@ bool accumulateStreamingRow(ImageBuffer& accumulator, float weight, std::uint32_
 }
 
 void finalizeStreamingAccumulator(ImageBuffer& accumulator, float totalWeight,
-                                  StackProgressReporter& progress, double start, double end) {
+                                  StackProgressReporter& progress, double start, double end,
+                                  StackMethod method = StackMethod::Average) {
     progress.report(StackProgressStage::Finalizing, start, 0, 0, accumulator.height);
     for (std::uint32_t y = 0; y < accumulator.height; ++y) {
         for (std::uint32_t x = 0; x < accumulator.width; ++x) {
             const auto pixel = static_cast<std::size_t>(y) * accumulator.width + x;
             const auto offset = pixel * accumulator.channels;
             const float validWeight = hasAlpha(accumulator) ? accumulator.pixels[offset + 3] : totalWeight;
-            if (validWeight > 0.0F) {
+            if (isExtremaMethod(method)) {
+                // Alpha retains the same mean coverage convention as other stack modes.
+                // It is not part of the extremum; missing pixels must not win a minimum.
+                for (std::uint16_t channel = 0; channel < accumulator.channels; ++channel) {
+                    if (!isAlphaChannel(accumulator, channel) && !std::isfinite(accumulator.pixels[offset + channel]))
+                        accumulator.pixels[offset + channel] = 0;
+                }
+            } else if (validWeight > 0.0F) {
                 for (std::uint16_t channel = 0; channel < accumulator.channels; ++channel) {
                     if (!isAlphaChannel(accumulator, channel)) {
                         accumulator.pixels[offset + channel] /= validWeight;
@@ -479,6 +498,12 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
     const auto referenceChannels = reference.channels;
     const auto referenceColorEncoding = reference.colorEncoding;
     ImageBuffer accumulator = createOutputLike(reference);
+    if (isExtremaMethod(options.method)) {
+        const float initial = options.method == StackMethod::Maximum
+            ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity();
+        for (std::size_t i = 0; i < accumulator.pixels.size(); ++i)
+            if (!isAlphaChannel(accumulator, i % accumulator.channels)) accumulator.pixels[i] = initial;
+    }
     TemporaryFrameCache weightedAlignmentCache;
     if (weighted && requiresAlignment) {
         const auto cacheResult = createTemporaryFrameCache(weightedAlignmentCache, options.temporaryDirectory);
@@ -504,7 +529,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
     float totalWeight = 0;
     if (!externalReference) {
         totalWeight = frameWeight(reference, referenceIndex);
-        accumulateStreamingFrame(accumulator, reference, totalWeight, progress, 1, referenceReadEnd, frameSpan);
+        accumulateStreamingFrame(accumulator, reference, totalWeight, progress, 1, referenceReadEnd, frameSpan, options.method);
         const auto released = notifyInputConsumed(options, referenceIndex);
         if (!released.ok) return released;
     }
@@ -557,7 +582,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
                             readResult.image.height);
             const bool rendered = renderAlignmentRows(
                 readResult.image, alignmentPlan, [&](std::uint32_t row, const float* samples, std::size_t sampleCount) {
-                    const bool accumulated = accumulateStreamingRow(accumulator, weight, row, samples, sampleCount);
+                    const bool accumulated = accumulateStreamingRow(accumulator, weight, row, samples, sampleCount, options.method);
                     if (accumulated) {
                         progress.reportRow(StackProgressStage::Accumulating, row, readResult.image.height,
                                            alignmentEnd, frameEnd, processedFrames);
@@ -593,7 +618,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
             const float weight = frameWeight(readResult.image, index);
             totalWeight += weight;
             accumulateStreamingFrame(accumulator, readResult.image, weight, progress, processedFrames,
-                                     readEnd, frameEnd);
+                                     readEnd, frameEnd, options.method);
         }
         const auto released = notifyInputConsumed(options, index);
         if (!released.ok) return released;
@@ -614,7 +639,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
     if (totalWeight <= 0.0F) {
         return stackError("StackWeightInvalid", "Average produced zero total weight");
     }
-    finalizeStreamingAccumulator(accumulator, totalWeight, progress, framePhaseEnd, 1.0);
+    finalizeStreamingAccumulator(accumulator, totalWeight, progress, framePhaseEnd, 1.0, options.method);
     metrics.image = std::move(accumulator);
     return metrics;
 }
@@ -989,6 +1014,8 @@ float robustStackValue(std::vector<WeightedValue>& values, std::vector<WeightedV
     }
     case StackMethod::Average:
     case StackMethod::WeightedAverage:
+    case StackMethod::Maximum:
+    case StackMethod::Minimum:
         return 0.0F;
     }
     return 0.0F;
@@ -1502,7 +1529,8 @@ StackResult Stacker::stack(const std::vector<std::filesystem::path>& inputs, con
         return stackError("ArgumentInvalid", "Frame noise variances require noise diagnostics");
     }
     if (options.collectRejectionMaps && (inputs.size() < 2 ||
-        options.method == StackMethod::Average || options.method == StackMethod::WeightedAverage)) {
+        options.method == StackMethod::Average || options.method == StackMethod::WeightedAverage ||
+        isExtremaMethod(options.method))) {
         return stackError("ArgumentInvalid", "Rejection maps require at least two inputs and a robust stack method");
     }
     if (options.sigma.medianMad && options.method != StackMethod::SigmaClip) {
@@ -1517,6 +1545,8 @@ StackResult Stacker::stack(const std::vector<std::filesystem::path>& inputs, con
         return stackError("ArgumentInvalid", "An external alignment reference requires alignment");
     }
     if (!options.frameWeights.empty()) {
+        if (isExtremaMethod(options.method))
+            return stackError("ArgumentInvalid", "Maximum/minimum stacking does not accept frame weights");
         if (options.frameWeights.size() != inputs.size() ||
             std::any_of(options.frameWeights.begin(),options.frameWeights.end(),[](float w){return !std::isfinite(w) || w<=0;}))
             return stackError("ArgumentInvalid", "Frame weights must contain one finite positive value per input");
@@ -1532,6 +1562,8 @@ StackResult Stacker::stack(const std::vector<std::filesystem::path>& inputs, con
     }
     switch (options.method) {
     case StackMethod::Average:
+    case StackMethod::Maximum:
+    case StackMethod::Minimum:
         return streamAverageFiles(inputs, options, false);
     case StackMethod::WeightedAverage:
         return streamAverageFiles(inputs, options, true);

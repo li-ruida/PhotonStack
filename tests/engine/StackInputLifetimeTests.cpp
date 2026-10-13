@@ -59,14 +59,16 @@ int main() {
     const auto external = root / "reference.fits";
     require(FitsCodec().write(frames.front(), external).ok);
     const std::vector methods{StackMethod::Average,   StackMethod::WeightedAverage,     StackMethod::Median,
-                              StackMethod::SigmaClip, StackMethod::WinsorizedSigmaClip, StackMethod::PercentileClip};
+                              StackMethod::SigmaClip, StackMethod::WinsorizedSigmaClip, StackMethod::PercentileClip,
+                              StackMethod::Maximum, StackMethod::Minimum};
     for (const auto method : methods)
         for (int referenceMode = 0; referenceMode < 3; ++referenceMode) {
             restore();
             StackOptions options;
             options.method = method;
             options.temporaryDirectory = cacheRoot;
-            options.frameWeights = {1, 2, 3, 4, 5, 6};
+            const bool extrema = method == StackMethod::Maximum || method == StackMethod::Minimum;
+            if (!extrema) options.frameWeights = {1, 2, 3, 4, 5, 6};
             options.normalizeBackground = true;
             options.alignDistortion = referenceMode != 0;
             if (referenceMode == 2)
@@ -74,7 +76,7 @@ int main() {
             options.registration.minimumMatches = 8;
             options.registration.starDetection.minPeak = 0;
             options.registration.starDetection.sigmaThreshold = 1;
-            const bool robust = method != StackMethod::Average && method != StackMethod::WeightedAverage;
+            const bool robust = method != StackMethod::Average && method != StackMethod::WeightedAverage && !extrema;
             options.collectRejectionMaps = robust;
             if (method == StackMethod::SigmaClip) {
                 options.collectNoiseDiagnostic = true;

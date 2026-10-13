@@ -121,5 +121,5 @@ int main() {
     require(ratio.serialize().find("decode.demosaic \"ratio\"") != std::string::npos, "recipe lost method");
     require(DeepSkyRecipe::parse(ratio.serialize(), temporary.path).serialize() == ratio.serialize(), "recipe roundtrip");
     require(FitsDecodeOptions{}.demosaic == FitsDemosaic::Bilinear, "codec default changed");
-    require(DeepSkyRecipe{}.serialize().find("decode.demosaic \"malvar\"") != std::string::npos, "workflow default changed");
+    require(DeepSkyRecipe{}.serialize().find("decode.demosaic \"malvar-guarded\"") != std::string::npos, "workflow guard default lost");
 }

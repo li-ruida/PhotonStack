@@ -7224,6 +7224,7 @@ import Testing
     #expect(operation.parameters["starExposure"] == "0.25")
     #expect(operation.parameters["redGain"] == "0.92")
     #expect(operation.parameters["starPeakThreshold"] == "0.75")
+    #expect(operation.parameters["starColorCleanup"] == "0.8")
     #expect(operation.parameters["input"] == input.path)
     #expect(operation.parameters["output"]?.hasSuffix(".tiff") == true)
     let replayService = RecordingProcessingService()
@@ -7235,6 +7236,7 @@ import Testing
     #expect(snapshot.cliArguments.first == "develop")
     #expect(snapshot.cliArguments.contains("0.25"))
     #expect(snapshot.cliArguments.contains("--star-peak-threshold"))
+    #expect(snapshot.cliArguments.contains("--star-color-cleanup"))
     #expect(snapshot.cliArguments.contains("0.75"))
     #expect(snapshot.autoStretchCalls == 0)
     #expect(replay.latestJob?.status == .succeeded)
@@ -9298,6 +9300,33 @@ import Testing
     #expect(model.errorMessage == nil)
 }
 
+@Test @MainActor func artifactDetectionAcceptsProtectedCandidatesExcludedFromItems() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("PhotonStackExcludedMeteors-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let input = directory.appendingPathComponent("input.png")
+    try writeSolidPNG(to: input, red: 0.02, green: 0.02, blue: 0.02, width: 240, height: 140)
+    let item = #"{"kind":"airplane","confidence":0.95,"x1":10,"y1":20,"x2":220,"y2":80,"length":218.4,"width":4,"meanBrightness":0.08}"#
+    for count in [0, 1] {
+        let report = """
+        {"type":"complete","command":"artifacts detect","width":240,"height":140,"trails":\(count),"removedTrails":0,"protectedMeteors":23,"items":[\(count == 0 ? "" : item)]}
+        """
+        var project = PhotonStackProject(name: "Excluded Protected Candidates")
+        project.addAssets(from: [input])
+        let model = PhotonStackWorkspaceModel(
+            project: project,
+            processingService: RecordingProcessingService(artifactDetectOutputOverride: report),
+            previewDirectory: directory.appendingPathComponent("preview-\(count)", isDirectory: true)
+        )
+        await model.detectArtifactTrails()
+        #expect(model.latestJob?.status == .succeeded)
+        #expect(model.artifactTrailReport?.protectedMeteors == 23)
+        #expect(model.artifactTrailReport?.items.count == count)
+        #expect(model.errorMessage == nil)
+    }
+}
+
 @Test @MainActor func artifactAndCloudMarkedPreviewsApplyExifOrientation() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("PhotonStackOrientedMarkers-\(UUID().uuidString)", isDirectory: true)
@@ -9376,7 +9405,7 @@ import Testing
     #expect(snapshot.artifactRemoveSatellites == true)
     #expect(snapshot.artifactRemoveMeteors == false)
     let operation = try #require(model.project.editGraph.operations.first { $0.kind == .artifactRemove })
-    #expect(operation.parameters["algorithmRevision"] == "satellite-trails-v6-path-shape")
+    #expect(operation.parameters["algorithmRevision"] == "artifact-trails-v22-chromatic-beacon-foreground")
     #expect(operation.parameters["selectedIndices"] == "1")
     #expect(operation.parameters["removeSatellites"] == "true")
     #expect(operation.parameters["removeMeteors"] == "false")
@@ -9740,7 +9769,7 @@ import Testing
     let snapshot = await cachedService.snapshot()
     #expect(snapshot.artifactSelectedIndices == nil)
     let operation = try #require(cachedModel.project.editGraph.operations.first { $0.kind == .artifactRemove })
-    #expect(operation.parameters["algorithmRevision"] == "satellite-trails-v6-path-shape")
+    #expect(operation.parameters["algorithmRevision"] == "artifact-trails-v22-chromatic-beacon-foreground")
     #expect(operation.parameters["selectedIndices"] == "0,1")
 }
 
@@ -11549,6 +11578,147 @@ import Testing
     #expect(model.previewURL != firstInput)
     #expect(model.selectedAsset?.originalURL == firstInput)
     #expect(model.commandOutput == String(format: model.localized(.assetsImported), 1))
+}
+
+@Test @MainActor func stackPreviewRoundTripPreservesResultsAndRestoresAfterReopening() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("PhotonStackStackPreviewSwitch-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let first = directory.appendingPathComponent("first.png")
+    let second = directory.appendingPathComponent("second.png")
+    let result = directory.appendingPathComponent("stack.png")
+    for url in [first, second, result] {
+        try writeSolidPNG(to: url, red: 0.3, green: 0.5, blue: 0.7, width: 8, height: 6)
+    }
+    let resultBytes = try Data(contentsOf: result)
+    var project = PhotonStackProject(name: "Stack Preview Switch")
+    project.addAssets(from: [first, second])
+    project.appendOperation(EditOperation(kind: .stack,
+        parameters: ["mode": "deepSkyRecipe", "output": result.path]))
+    project.appendLayer(ProcessingLayer(name: "Result layer", kind: .baseImage, inputURL: result))
+    let service = RecordingProcessingService(requiresExistingInputFiles: true)
+    let model = PhotonStackWorkspaceModel(project: project, processingService: service,
+        previewDirectory: directory.appendingPathComponent("previews", isDirectory: true))
+    let firstAsset = try #require(project.assets.first)
+    let secondAsset = try #require(project.assets.last)
+    model.select(firstAsset)
+    for _ in 0..<3 {
+        model.showLatestDeepSkyResult()
+        #expect(model.currentInputURL == result)
+        #expect(model.isShowingLatestDeepSkyResult)
+        #expect(!model.isShowingSelectedOriginal)
+        model.showSelectedOriginal()
+        #expect(model.currentInputURL == first)
+        #expect(model.isShowingSelectedOriginal)
+        #expect(!model.isShowingLatestDeepSkyResult)
+    }
+    model.showLatestDeepSkyResult()
+    model.select(secondAsset)
+    #expect(model.isShowingSelectedOriginal)
+    model.showLatestDeepSkyResult()
+    #expect(model.currentInputURL == result)
+    #expect(model.selectedAssetID == secondAsset.id)
+    model.showSelectedOriginal()
+    #expect(model.currentInputURL == second)
+    #expect(model.project.editGraph == project.editGraph)
+    #expect(model.project.layers == project.layers)
+    #expect(try Data(contentsOf: result) == resultBytes)
+
+    let saved = directory.appendingPathComponent("project", isDirectory: true)
+    await model.saveProject(to: saved)
+    let reopened = PhotonStackWorkspaceModel(processingService: service,
+        previewDirectory: directory.appendingPathComponent("reopened-previews", isDirectory: true))
+    await reopened.loadProject(from: saved)
+    #expect(reopened.isShowingSelectedOriginal)
+    #expect(reopened.selectedAssetID == secondAsset.id)
+    reopened.showLatestDeepSkyResult()
+    #expect(reopened.currentInputURL == result)
+    #expect(reopened.isShowingLatestDeepSkyResult)
+
+    try FileManager.default.removeItem(at: second)
+    reopened.showSelectedOriginal()
+    #expect(reopened.currentInputURL == result)
+    #expect(!reopened.canResetPreviewToOriginal)
+    reopened.select(firstAsset)
+    try FileManager.default.removeItem(at: result)
+    reopened.showLatestDeepSkyResult()
+    #expect(reopened.currentInputURL == first)
+    #expect(reopened.latestDeepSkyResultURL == nil)
+}
+
+@Test @MainActor func stackPreviewSwitchCancelsLateRawPreview() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("PhotonStackStackPreviewCancellation-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let raw = directory.appendingPathComponent("source.nef")
+    let result = directory.appendingPathComponent("stack.png")
+    try Data([1]).write(to: raw)
+    try writeSolidPNG(to: result, red: 0.3, green: 0.5, blue: 0.7, width: 8, height: 6)
+    var project = PhotonStackProject(name: "Stack Preview Cancellation")
+    project.addAssets(from: [raw])
+    project.appendOperation(EditOperation(kind: .stack,
+        parameters: ["mode": "deepSkyRecipe", "output": result.path]))
+    let service = RecordingProcessingService(rawAdjustDelayNanoseconds: 300_000_000,
+        ignoreRawAdjustCancellation: true)
+    let model = PhotonStackWorkspaceModel(project: project, processingService: service,
+        previewDirectory: directory.appendingPathComponent("previews", isDirectory: true))
+
+    model.setRawExposureBias(0.5)
+    try await waitForRawAdjustCall(1, from: service)
+    #expect(model.isRawPreviewUpdating)
+    model.showLatestDeepSkyResult()
+    #expect(model.currentInputURL == result)
+    #expect(!model.isRawPreviewUpdating)
+    try await waitForRawAdjustCompletion(1, from: service)
+    #expect(model.isShowingLatestDeepSkyResult)
+
+    model.setRawExposureBias(1.0)
+    try await waitForRawAdjustCall(2, from: service)
+    model.showSelectedOriginal()
+    #expect(model.currentInputURL == raw)
+    #expect(!model.isRawPreviewUpdating)
+    try await waitForRawAdjustCompletion(2, from: service)
+    #expect(model.isShowingSelectedOriginal)
+    model.showLatestDeepSkyResult()
+    #expect(model.currentInputURL == result)
+}
+
+@Test @MainActor func stackPreviewSwitchDoesNotInterruptForegroundProcessing() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("PhotonStackStackPreviewForeground-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let source = directory.appendingPathComponent("source.png")
+    let result = directory.appendingPathComponent("stack.png")
+    for url in [source, result] {
+        try writeSolidPNG(to: url, red: 0.3, green: 0.5, blue: 0.7, width: 8, height: 6)
+    }
+    var project = PhotonStackProject(name: "Stack Preview Foreground")
+    project.addAssets(from: [source])
+    project.appendOperation(EditOperation(kind: .stack,
+        parameters: ["mode": "deepSkyRecipe", "output": result.path]))
+    let service = RecordingProcessingService(autoStretchDelayNanoseconds: 180_000_000)
+    let model = PhotonStackWorkspaceModel(project: project, processingService: service,
+        previewDirectory: directory.appendingPathComponent("previews", isDirectory: true))
+    model.showLatestDeepSkyResult()
+    model.startAutoStretchPreview()
+    try await waitForAutoStretchCall(from: service)
+    model.showSelectedOriginal()
+    #expect(model.currentInputURL == result)
+    #expect(model.isProcessing)
+    try await waitForProcessingCompletion(in: model)
+    #expect(model.jobs.last?.status == .succeeded)
+    model.showSelectedOriginal()
+    model.startAutoStretchPreview()
+    try await waitForAutoStretchCall(from: service, minimum: 2)
+    model.showLatestDeepSkyResult()
+    #expect(model.currentInputURL == source)
+    try await waitForProcessingCompletion(in: model)
+    #expect(model.jobs.last?.status == .succeeded)
+    model.showLatestDeepSkyResult()
+    #expect(model.currentInputURL == result)
 }
 
 @Test @MainActor func workspaceContextCannotSwitchUntilForegroundProcessingFinishes() async throws {

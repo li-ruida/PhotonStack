@@ -2,6 +2,7 @@ add_library(photonstack_engine STATIC
   src/AstroDevelop.cpp
   src/ChannelAlignment.cpp
   src/ArtifactTrailRemover.cpp
+  src/ChromaticBeaconDetector.cpp
   src/BackgroundExtractor.cpp
   src/BackgroundDenoiser.cpp
   src/BackgroundPolynomial.cpp
@@ -13,6 +14,7 @@ add_library(photonstack_engine STATIC
   src/Curves.cpp
   src/DemosaicMenon.cpp
   src/DemosaicRatio.cpp
+  src/DemosaicStarGuard.cpp
   src/DisplayGridReducer.cpp
   src/Deconvolution.cpp
   src/DrizzleStacker.cpp
@@ -38,6 +40,7 @@ add_library(photonstack_engine STATIC
   src/StarDetector.cpp
   src/StarCentroid.cpp
   src/StarColorCalibrator.cpp
+  src/StarColorCleanup.cpp
   src/StarMask.cpp
   src/StarReducer.cpp
   src/Stretch.cpp

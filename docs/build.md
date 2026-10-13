@@ -45,6 +45,7 @@ tools/scripts/test.sh debug
 - `tools/scripts/format.sh`: apply the repository C++ formatting rules
 - `tools/scripts/build-macos.sh`: build the SwiftPM macOS app target
 - `tools/scripts/package-macos.sh`: package the macOS app bundle and embedded CLI
+- `tools/scripts/package-dmg.sh`: create a verified DMG from the packaged app
 - `tools/scripts/run-macos-dev.sh`: local helper for launching, debugging, or log-streaming the packaged app
 - `tools/scripts/test-raw-smoke.sh`: RAW workflow smoke test for a local sample file
 
@@ -83,6 +84,17 @@ does not launch another app instance. Use this same installed app for subsequent
 upgrades instead of creating versioned review applications. Stable identity
 avoids treating each review build as a separate app; ad hoc signing and host
 permission policy can still require renewed authorization after an update.
+
+To create a local disk image with the packaged app and an Applications shortcut:
+
+```bash
+bash tools/scripts/package-dmg.sh "$HOME/Downloads/PhotonStack.dmg"
+```
+
+The output must not already exist. The script verifies the app signature and
+disk-image integrity and removes its temporary staging folder. This uses the
+app's existing ad hoc signature; it does not add Developer ID signing or Apple
+notarization.
 
 ## Local App Development
 

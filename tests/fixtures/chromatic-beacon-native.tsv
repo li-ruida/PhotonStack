@@ -1,0 +1,25 @@
+# Fixed review regions in the user's native 6048x4032 stacked frame.
+# Source SHA256: 8655ba34e400fa2b161dac9fbd75fa6af6a1ec3cf7322668b64ca41454289eca
+# No source image bytes are distributed. x y width height, top-left origin.
+# exact: bit-exact RGB preservation; lamp: independent local background residual.
+exact left-roof 0 2600 180 500
+exact left-facade 0 2750 250 350
+exact lower-foreground 0 3300 6048 732
+exact quiet-upper-sky 4000 300 600 300
+lamp upper-left-red 444 325 7 7
+lamp central-red 2860 1289 7 7
+lamp upper-right-red 5772 2449 7 7
+lamp cross-left-red 1028 1852 7 7
+lamp weak-cross-tail 577 2005 7 7
+lamp central-white-near-star 2537 1151 10 7
+lamp central-green-near-star 2510 1541 10 7
+lamp weak-green-wing-a 214 2154 8 8
+lamp weak-green-wing-b 343 2101 8 8
+lamp weak-green-wing-c 383 2085 8 8
+lamp low-horizontal-green-a 2914 2787 9 9
+lamp low-horizontal-green-b 3781 2821 11 8
+lamp lower-diagonal-red 4194 2161 8 8
+exact low-stellar-streak 2820 2920 75 60
+exact right-roof 5920 2850 128 450
+exact right-facade 5880 3000 168 300
+lamp near-right-roof-red 5899 2784 8 8

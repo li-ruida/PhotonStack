@@ -10907,6 +10907,154 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         replayTemporaryDirectories.removeAll()
     }
 
+    /// Capture only the current result's lineage, never the project's unrelated history.
+    public func captureReusableWorkflow(name: String, redetectSelections: Bool = false) async throws -> ReusableWorkflow {
+        guard !hasActiveProcessing, !editGraphNeedsReplay else {
+            throw PhotonStackAppCore.WorkflowError("请等待处理结束并应用当前修改后再保存 / Finish processing and apply pending edits first")
+        }
+        var capturedPlan = fullResolutionExportReplayPlan()
+        if canvasMode == .layerComposite {
+            let layers = visiblePreviewLayers
+            // Normal, opaque successive adjustment results cover earlier layers. This is
+            // the editor's ordinary finishing path, not a custom multi-image composite.
+            guard let top = layers.last, let topURL = top.inputURL,
+                  layers.allSatisfy({ $0.inputURL != nil && $0.maskArtifactID == nil && $0.blendMode == .normal && $0.opacity >= 0.999 }) else {
+                throw PhotonStackAppCore.WorkflowError("当前结果包含多图层混合或手工蒙版，不能自动移植到新目标。请选择单一处理结果后保存。 / Select a single unmasked result before saving a reusable workflow.")
+            }
+            let size = try await workflowPixelSize(at: topURL)
+            for url in Set(layers.compactMap(\.inputURL)) {
+                guard try await workflowPixelSize(at: url) == size else {
+                    throw PhotonStackAppCore.WorkflowError("图层尺寸不同，当前画布不是单一处理结果。请隐藏其他图层再保存。 / Hide differently sized layers before saving a single result.")
+                }
+            }
+            capturedPlan = editGraphReplayPlan(targetURL: topURL, finalOperationIsEligible: isFullResolutionExportOperation)
+        }
+        guard let plan = capturedPlan else {
+            throw PhotonStackAppCore.WorkflowError("当前图片没有可保存的处理历史。请先堆栈或应用后期调整；导入的成品无法反推出操作。 / Process a result first; a flattened image has no recoverable workflow.")
+        }
+        var operations = plan.operations.filter { $0.isEnabled }
+        // Sequence macros replay their own decoding/calibration. Earlier preview operations
+        // are not a per-frame pipeline and must not be applied to just the first exposure.
+        if let sequenceIndex = operations.lastIndex(where: { $0.kind == .stack || $0.kind == .drizzle }) {
+            var sequence = operations[sequenceIndex]
+            if sequence.kind == .stack, sequence.parameters["mode"] != "deepSkyRecipe",
+               let calibration = calibrationOperation(before: sequence), calibration.isEnabled {
+                sequence.parameters.merge(calibration.parameters) { value, _ in value }
+                sequence.parameters["calibrationApplied"] = "true"
+            }
+            operations = [sequence] + Array(operations.dropFirst(sequenceIndex + 1))
+        }
+        var steps: [WorkflowStep] = []
+        var notices: [String] = []
+        for operation in operations {
+            guard isFullResolutionExportOperation(operation) else { continue }
+            if operation.kind == .stack, operation.parameters["mode"] == "deepSkyRecipe" {
+                guard let recipe = operation.parameters["recipe"] else { throw PhotonStackAppCore.WorkflowError("缺少原始堆栈配方 / Missing stack recipe") }
+                try FileManager.default.createDirectory(at: previewDirectory, withIntermediateDirectories: true)
+                let recipeURL = previewDirectory.appendingPathComponent("workflow-capture-\(UUID().uuidString).txt")
+                try recipe.write(to: recipeURL, atomically: true, encoding: .utf8)
+                defer { try? FileManager.default.removeItem(at: recipeURL) }
+                let inspected = try await processingService.inspectDeepSkyRecipe(recipeURL)
+                let captured = try WorkflowStep.deepSky(values: inspected.values)
+                steps.append(captured.step)
+                notices += captured.notices
+            } else {
+                steps.append(try WorkflowStep.capture(operation, redetectSelections: redetectSelections))
+            }
+        }
+        if redetectSelections, operations.contains(where: { $0.kind == .artifactRemove || $0.kind == .cloudRemove }) {
+            notices.append("飞机线和云区会在新图上自动重新检测，不复用原图的手工圈选。 / Trails and clouds are re-detected on each new image.")
+        }
+        let workflow = ReusableWorkflow(name: name, steps: steps, parameters: parameters,
+                                        exportOptions: exportOptions, notices: notices)
+        try workflow.validate()
+        return workflow
+    }
+
+    private func workflowPixelSize(at url: URL) async throws -> (width: Double, height: Double) {
+        if let size = imagePixelSize(at: url) { return size }
+        // FITS is not an ImageIO format. Inspect its header with the same engine
+        // used for processing; do not reject an ordinary scientific source layer.
+        let result = try await processingService.inspect(PhotonStackAsset(originalURL: url, kind: AssetKind.detect(from: url)))
+        let metadata = try parseInspectMetadata(result)
+        guard let width = metadata.width, let height = metadata.height else {
+            throw PhotonStackAppCore.WorkflowError("无法读取图层尺寸 / Cannot inspect layer dimensions")
+        }
+        return (5...8).contains(metadata.orientation ?? 1) ? (Double(height), Double(width)) : (Double(width), Double(height))
+    }
+
+    /// Each job gets an isolated editor/cache; the user's open project is never replaced.
+    func executeReusableWorkflow(_ workflow: ReusableWorkflow, plan: WorkflowInputPlan, inputs: [URL],
+                                 directory: URL, onStep: @MainActor (Int, String) -> Void) async throws -> URL {
+        try workflow.validate()
+        guard let first = inputs.first else { throw PhotonStackAppCore.WorkflowError("没有输入照片 / No input images") }
+        var jobProject = PhotonStackProject(name: workflow.name)
+        jobProject.addAssets(from: inputs, role: .light)
+        for role in workflow.requiredCalibration {
+            jobProject.addAssets(from: plan.calibration[role, default: []], role: role.assetRole)
+        }
+        let cache = directory.appendingPathComponent("processing", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let worker = PhotonStackWorkspaceModel(project: jobProject, parameters: workflow.parameters,
+            language: language, autosaveEnabled: false, exportOptions: workflow.exportOptions,
+            processingService: processingService, previewDirectory: cache)
+        var input = first
+        for (index, step) in workflow.steps.enumerated() {
+            try Task.checkCancellation()
+            onStep(index, step.kind.rawValue)
+            var values = step.parameters
+            if step.deepSkyValues != nil {
+                let schema = try await processingService.deepSkySchema()
+                values = ["mode": "deepSkyRecipe", "recipe": try plan.deepSkyRecipe(for: step, schema: schema)]
+            } else if step.kind == .rawDecode {
+                guard let asset = jobProject.assets.first(where: { $0.originalURL == first }) else {
+                    throw PhotonStackAppCore.WorkflowError("无法绑定新原片 / Cannot bind new source")
+                }
+                values["assetID"] = asset.id.uuidString
+            } else if step.kind == .stack {
+                values["calibrationLightIDs"] = jobProject.assets.filter { $0.role == .light }.map { $0.id.uuidString }.joined(separator: ",")
+                values["calibrationApplied"] = String(!step.calibration.isEmpty)
+                for (key, role) in [("calibrationDarkIDs", WorkflowCalibrationRole.darks), ("calibrationBiasIDs", .biases), ("calibrationFlatIDs", .flats)] {
+                    values[key] = jobProject.assets.filter { $0.role == role.assetRole }.map { $0.id.uuidString }.joined(separator: ",")
+                }
+            }
+            input = try await worker.applyReplayOperation(EditOperation(kind: step.kind, parameters: values), input: input, mode: .fullResolutionExport)
+        }
+        try Task.checkCancellation()
+        onStep(workflow.steps.count, "export")
+        let output = directory.appendingPathComponent("result.tiff")
+        _ = try await processingService.convert(input: input, output: output, options: workflow.exportOptions,
+                                               rawOptions: workflow.parameters.rawProcessingOptions)
+        try Task.checkCancellation()
+        guard Self.isUsableCachedOutput(output) else { throw PhotonStackAppCore.WorkflowError("导出结果不存在 / Export did not produce a result") }
+        return output
+    }
+
+    func startReusableWorkflowBatch(_ batch: WorkflowBatchRun, workflow: ReusableWorkflow, folders: [URL], output: URL) {
+        guard !hasActiveProcessing else { return }
+        launch {
+            await self.runJob(title: "工作流 / Workflow: \(workflow.name)", kind: .stack) {
+                let progressScope = ProcessingProgressContext.progressScope
+                defer { progressScope?.update(lowerBound: 0, upperBound: 1) }
+                try await batch.run(workflow: workflow, folders: folders, output: output) { plan, inputs, directory, onStep in
+                    let jobIndex = batch.items.firstIndex(where: { $0.status == .running }) ?? 0
+                    let jobCount = Double(max(batch.items.count, 1))
+                    let stepCount = Double(workflow.steps.count + 1)
+                    return try await self.executeReusableWorkflow(workflow, plan: plan, inputs: inputs, directory: directory) { step, message in
+                        onStep(step, message)
+                        let lower = (Double(jobIndex) + Double(step) / stepCount) / jobCount
+                        let upper = (Double(jobIndex) + Double(step + 1) / stepCount) / jobCount
+                        progressScope?.update(lowerBound: lower, upperBound: upper)
+                        self.updateProgress(lower, message: "\(plan.title) · \(step + 1)/\(workflow.steps.count + 1) · \(message)")
+                    }
+                }
+                let failed = batch.items.filter { $0.status == .failed }.count
+                if failed > 0 { throw PhotonStackAppCore.WorkflowError("\(failed) 个任务失败，其余结果已保留；请在工作流窗口查看详情。 / Some jobs failed; completed results are retained.") }
+                return "\(batch.items.count) 个工作流任务完成 / Workflow jobs completed"
+            }
+        }
+    }
+
     private func fullResolutionExportReplayPlan() -> EditGraphReplayPlan? {
         if let previewOperationID,
            let plan = editGraphReplayPlan(

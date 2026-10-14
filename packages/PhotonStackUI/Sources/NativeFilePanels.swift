@@ -61,6 +61,18 @@ enum NativeFilePanels {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
+    static func workflowTargetFolders(message: String) -> [URL]? {
+        let panel = makeImportFolderPanel(message: message)
+        panel.allowsMultipleSelection = true
+        return panel.runModal() == .OK ? panel.urls : nil
+    }
+
+    static func exportWorkflowURL(message: String) -> URL? {
+        let panel = makeExportCurvePresetLibraryPanel(message: message)
+        panel.nameFieldStringValue = "photonstack-workflow.json"
+        return panel.runModal() == .OK ? panel.url : nil
+    }
+
     static func makeOpenProjectPanel(message: String) -> NSOpenPanel {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false

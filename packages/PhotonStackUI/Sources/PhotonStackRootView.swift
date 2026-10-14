@@ -221,6 +221,8 @@ public struct PhotonStackRootView: View {
     @State private var isImporting = false
     @State private var isCreatingProject = false
     @State private var isDeepSkyPresented = false
+    @State private var isWorkflowLibraryPresented = false
+    @StateObject private var workflowBatch = WorkflowBatchRun()
     @State private var newProjectName = ""
     @State private var newProjectTemplate: ProjectTemplate = .deepSky
     @State private var pendingProductManifestExport = false
@@ -267,6 +269,14 @@ public struct PhotonStackRootView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .automatic) {
+                Button {
+                    isWorkflowLibraryPresented = true
+                } label: {
+                    Label(model.language == .simplifiedChinese ? "工作流" : "Workflows", systemImage: "point.3.connected.trianglepath.dotted")
+                }
+                .help(model.language == .simplifiedChinese ? "保存处理步骤并批量复用" : "Save and reuse processing workflows")
+                .keyboardShortcut("w", modifiers: [.command, .option])
+                .accessibilityIdentifier("workspace.workflows")
                 Button {
                     presentNewProjectSheet()
                 } label: {
@@ -332,6 +342,9 @@ public struct PhotonStackRootView: View {
             DeepSkyRecipeSheet(model: model, presented: $isDeepSkyPresented, onImport: {
                 startImportFolder()
             })
+        }
+        .sheet(isPresented: $isWorkflowLibraryPresented) {
+            WorkflowLibrarySheet(model: model, batch: workflowBatch, presented: $isWorkflowLibraryPresented)
         }
         .sheet(isPresented: $isCreatingProject) {
             NewProjectSheet(

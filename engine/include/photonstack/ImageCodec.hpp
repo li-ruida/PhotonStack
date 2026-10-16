@@ -81,7 +81,7 @@ struct RawDecodeOptions {
     bool linearOutput = true;
 };
 
-enum class FitsDemosaic { Bilinear, Malvar, Menon, Ratio };
+enum class FitsDemosaic { Bilinear, Malvar, Menon, Ratio, MalvarGuarded };
 
 struct FitsDecodeOptions {
     FitsDecodeMode mode = FitsDecodeMode::DisplayNormalized;

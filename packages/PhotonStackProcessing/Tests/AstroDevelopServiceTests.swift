@@ -12,6 +12,7 @@ import Testing
     settings.shadowNeutralization = 0.65
     settings.starExposure = 0.2
     settings.starPeakThreshold = 0.75
+    settings.starColorCleanup = 0.65
     settings.toneCurve = "asinh"
     settings.toneScale = 20
     settings.whitePoint = 25000
@@ -34,6 +35,7 @@ import Testing
     var settings = AstroDevelopSettings()
     settings.starExposure = 0.35
     settings.starPeakThreshold = 0.75
+    settings.starColorCleanup = 0.65
     do {
         _ = try await service.develop(input: directory.appendingPathComponent("linear.fits"), output: output, settings: settings)
         Issue.record("Missing development output must fail")
@@ -47,6 +49,8 @@ import Testing
     #expect(args.contains("--star-exposure"))
     let thresholdIndex = try #require(args.firstIndex(of: "--star-peak-threshold"))
     #expect(args[thresholdIndex + 1] == "0.75")
+    let colorIndex = try #require(args.firstIndex(of: "--star-color-cleanup"))
+    #expect(args[colorIndex + 1] == "0.65")
 }
 
 @Test func legacyAstroDevelopKeepsOriginalCurve() {
@@ -54,6 +58,8 @@ import Testing
     #expect(old.toneCurve == "rational")
     #expect(old.starExposure == 0.25)
     #expect(old.starPeakThreshold == 0)
+    #expect(old.starColorCleanup == 0)
+    #expect(AstroDevelopSettings().starColorCleanup == 0.8)
     #expect(old.toneScale == 0)
     #expect(old.shadowNeutralization == 0)
     #expect(AstroDevelopSettings().toneCurve == "asinh")
@@ -78,6 +84,7 @@ func astroDevelopRealM31BrightStarThresholdMatchesReference() async throws {
     settings.background = 0.075
     settings.saturation = 0.55
     settings.shadowNeutralization = 0 // Preserve the historical reference rendering.
+    settings.starColorCleanup = 0
     settings.starExposure = 0.5
     settings.starPeakThreshold = 0.75
     settings.redGain = 0.644356

@@ -2,6 +2,7 @@
 #include "DisplayGamut.hpp"
 #include "MaskedImageSampling.hpp"
 #include "photonstack/StarDetector.hpp"
+#include "photonstack/StarColorCleanup.hpp"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -43,6 +44,7 @@ AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelop
         !std::isfinite(opt.starExposure) || opt.starExposure < .05F || opt.starExposure > 1 ||
         !std::isfinite(opt.starPeakThreshold) || opt.starPeakThreshold < 0 || opt.starPeakThreshold > 1 ||
         !std::isfinite(opt.shadowNeutralization) || opt.shadowNeutralization < 0 || opt.shadowNeutralization > 1 ||
+        !std::isfinite(opt.starColorCleanup) || opt.starColorCleanup < 0 || opt.starColorCleanup > 1 ||
         !std::isfinite(opt.whitePoint) || opt.whitePoint < 0)
         return error("ArgumentInvalid", "Invalid astronomical development options");
     for (float g : opt.gains)
@@ -287,6 +289,12 @@ AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelop
                         }
                     }
             }
+    }
+    if (opt.starColorCleanup > 0) {
+        auto cleaned = StarColorCleanup().apply(working, result.gains, opt.starColorCleanup);
+        if (!cleaned.ok) return error(cleaned.errorCode.c_str(), cleaned.message.c_str());
+        result.colorCleanedStars = cleaned.correctedStars;
+        working = std::move(cleaned.image);
     }
     result.image = im;
     for (std::size_t p = 0; p < im.pixelCount(); ++p) {

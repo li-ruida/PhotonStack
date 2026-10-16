@@ -11,6 +11,7 @@ public extension ProcessingService {
             "--tone-scale", String(settings.toneScale),
             "--white-point", String(settings.whitePoint),
             "--background", String(settings.background),
+            "--star-color-cleanup", String(settings.starColorCleanup),
             "--star-exposure", String(settings.starExposure),
             "--star-peak-threshold", String(settings.starPeakThreshold),
             "--saturation", String(settings.saturation),

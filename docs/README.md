@@ -6,6 +6,7 @@ This folder contains the public documentation for PhotonStack.
 
 - [`build.md`](build.md): environment setup, build, packaging, and local development
 - [`features.md`](features.md): current capabilities overview
+- [`reusable-workflows.md`](reusable-workflows.md): save processing steps and reuse them on new folders
 - [`cli.md`](cli.md): CLI scope and design notes
 - [`image-pipeline.md`](image-pipeline.md): processing pipeline overview
 - [`architecture.md`](architecture.md): repository architecture and shared-engine structure

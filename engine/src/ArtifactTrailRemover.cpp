@@ -1,4 +1,5 @@
 #include "photonstack/ArtifactTrailRemover.hpp"
+#include "ChromaticBeaconDetector.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10133,6 +10134,11 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
     }
     suppressWeakPathlessBlinkingRows(result.trails, image);
     suppressFaintLowHorizontalMeteorMimics(result.trails, image);
+    // Independent local red/green beacon evidence survives scene-level pruning:
+    // a rotational stellar field can contain genuine, faint aircraft traffic.
+    for (auto& trail : detail::detectChromaticBeaconChains(image)) {
+        if (!isDuplicateTrail(result.trails, trail)) result.trails.push_back(std::move(trail));
+    }
     profileStage("refining");
     result.protectedMeteors = static_cast<std::size_t>(std::count_if(
         result.trails.begin(), result.trails.end(), [](const ArtifactTrail& trail) {
@@ -10189,7 +10195,44 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
         return artifactError("ArgumentInvalid", "Selected artifact trail index is out of range");
     }
 
-    ImageBuffer output = image;
+    ImageBuffer output = std::move(result.image);
+    // Revalidate image-backed beacon identity after CLI/UI geometry round trips;
+    // no hidden flag or serialized-schema change is required.
+    const bool hasBeaconPaths = std::any_of(result.trails.begin(), result.trails.end(), [](const auto& t) {
+        return t.kind == ArtifactTrailKind::Airplane && t.path.size() >= 8;
+    });
+    const auto verifiedBeaconChains = hasBeaconPaths ? detail::detectChromaticBeaconChains(image)
+                                                   : std::vector<ArtifactTrail>{};
+    std::vector<ArtifactTrail> selectedBeaconChains;
+    const std::set<std::size_t> selected(options.selectedIndices.begin(), options.selectedIndices.end());
+    const auto shouldRemoveTrail = [&](const ArtifactTrail& trail) {
+        return (trail.kind == ArtifactTrailKind::Airplane && options.removeAirplanes) ||
+               (trail.kind == ArtifactTrailKind::Drone && options.removeDrones) ||
+               (trail.kind == ArtifactTrailKind::Satellite && options.removeSatellites) ||
+               (trail.kind == ArtifactTrailKind::Meteor && options.removeMeteors && !options.preserveMeteors);
+    };
+    std::vector<bool> useBeaconRepair(result.trails.size(), false);
+    bool hasLegacyRemoval = false;
+    for (std::size_t i = 0; i < result.trails.size(); ++i) {
+        if ((!selected.empty() && !selected.contains(i)) || !shouldRemoveTrail(result.trails[i])) continue;
+        useBeaconRepair[i] = std::any_of(verifiedBeaconChains.begin(), verifiedBeaconChains.end(), [&](const auto& verified) {
+            return detail::sameBeaconChain(result.trails[i], verified);
+        });
+        if (useBeaconRepair[i]) selectedBeaconChains.push_back(result.trails[i]);
+        else hasLegacyRemoval = true;
+    }
+    if (!hasLegacyRemoval) {
+        // Do not allocate full-frame legacy masks/luminance or run unrelated
+        // cleanup passes when the selected artifacts are all measured beacons.
+        progress.report(ArtifactTrailProgressStage::Masking, 0.60);
+        detail::repairChromaticBeaconChains(image, output, selectedBeaconChains, [&](double fraction) {
+            progress.report(ArtifactTrailProgressStage::Inpainting, 0.60 + fraction * 0.39);
+        });
+        result.removedTrails = selectedBeaconChains.size();
+        result.image = std::move(output);
+        progress.report(ArtifactTrailProgressStage::Cleaning, 1.0);
+        return result;
+    }
     std::vector<std::uint8_t> mask(image.pixelCount(), 0);
     std::vector<std::uint8_t> dottedDroneMask(image.pixelCount(), 0);
     TrailMaskMetadataMap maskMetadata;
@@ -10217,7 +10260,6 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
     }
     variance /= static_cast<float>(luminance.size());
     const float standardDeviation = std::sqrt(variance);
-    const std::set<std::size_t> selected(options.selectedIndices.begin(), options.selectedIndices.end());
     for (std::size_t trailIndex = 0; trailIndex < result.trails.size(); ++trailIndex) {
         const double maskFraction = result.trails.empty()
                                         ? 1.0
@@ -10228,11 +10270,12 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
         if (!selected.empty() && !selected.contains(trailIndex)) {
             continue;
         }
-        const bool shouldRemove = (detectedTrail.kind == ArtifactTrailKind::Airplane && options.removeAirplanes) ||
-                                  (detectedTrail.kind == ArtifactTrailKind::Drone && options.removeDrones) ||
-                                  (detectedTrail.kind == ArtifactTrailKind::Satellite && options.removeSatellites) ||
-                                  (detectedTrail.kind == ArtifactTrailKind::Meteor && options.removeMeteors && !options.preserveMeteors);
-        if (!shouldRemove) {
+        if (!shouldRemoveTrail(detectedTrail)) {
+            continue;
+        }
+
+        if (useBeaconRepair[trailIndex]) {
+            result.removedTrails += 1;
             continue;
         }
 
@@ -17282,6 +17325,9 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
         output = std::move(lowHorizonTextureRebalanced);
     }
 
+    detail::repairChromaticBeaconChains(image, output, selectedBeaconChains, [&](double fraction) {
+        progress.report(ArtifactTrailProgressStage::Cleaning, 0.986 + fraction * 0.014);
+    });
     progress.report(ArtifactTrailProgressStage::Cleaning, 1.0);
     result.image = std::move(output);
     return result;

@@ -29,6 +29,8 @@ struct AstroDevelopControl: View {
                 adjustment(chinese ? "恒星曝光" : "Star exposure", value: $settings.starExposure, range: 0.1...1)
                 adjustment(chinese ? "亮星门槛" : "Bright-star threshold", value: $settings.starPeakThreshold, range: 0...1)
                     .help(chinese ? "0 包括全部星点；越高越只调整亮星。1 不调整星点。" : "Zero includes all stars; higher values select brighter stars. One leaves stars unchanged.")
+                adjustment(chinese ? "星点彩边抑制" : "Star color fringes", value: $settings.starColorCleanup, range: 0...1)
+                    .help(chinese ? "减轻孤立星点内部的彩边，保留亮度和整体星色；0 关闭。" : "Reduce color fringes inside isolated stars while retaining luminance and overall stellar color; zero disables.")
                 adjustment(chinese ? "色彩浓度" : "Saturation", value: $settings.saturation, range: 0...1.5)
                 adjustment(chinese ? "背景彩噪抑制" : "Background color noise", value: $settings.shadowNeutralization, range: 0...1)
                     .help(chinese ? "降低低信噪比暗部的色彩，不改变亮度；0 关闭。" : "Reduce low-SNR shadow color without changing luminance; zero disables.")

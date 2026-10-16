@@ -2392,6 +2392,8 @@ public enum StackMethod: String, Codable, CaseIterable, Equatable, Sendable {
     case sigma
     case winsorized
     case percentile
+    case maximum
+    case minimum
 }
 
 public enum AlignmentMethod: String, Codable, CaseIterable, Equatable, Sendable {

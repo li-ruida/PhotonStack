@@ -43,7 +43,7 @@ struct DeepSkyWorkflowOverview: View {
                     Label(chinese ? "查看堆栈结果" : "View stack result", systemImage: "photo")
                 }
                 .accessibilityIdentifier("workspace.show-stack-result")
-                .disabled(!model.canModifyWorkspaceProducts)
+                .disabled(!model.canModifyProcessingConfiguration)
             }
         }
         .task { await model.loadDeepSkySchema() }

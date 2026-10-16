@@ -121,7 +121,8 @@ std::vector<Binding> fields(DeepSkyWorkflowOptions& o) {
         {{"unknown", CalibrationBiasState::Unknown}, {"included", CalibrationBiasState::Included}, {"removed", CalibrationBiasState::Removed}});
     f.boolean("selection.measure-trails", "Detect sampled transient lines", "检测采样中的瞬态线条", "selection", o.quality.measureTrails);
     f.choice<FitsDemosaic>("decode.demosaic", "FITS demosaic", "FITS 去马赛克", "decode", o.stack.fitsDemosaic,
-        {{"bilinear", FitsDemosaic::Bilinear}, {"malvar", FitsDemosaic::Malvar}, {"menon", FitsDemosaic::Menon}, {"ratio", FitsDemosaic::Ratio}});
+        {{"bilinear", FitsDemosaic::Bilinear}, {"malvar", FitsDemosaic::Malvar}, {"menon", FitsDemosaic::Menon},
+         {"ratio", FitsDemosaic::Ratio}, {"malvar-guarded", FitsDemosaic::MalvarGuarded}});
     f.boolean("decode.debayer", "Decode FITS CFA", "解码 FITS 彩色阵列", "decode", o.stack.debayerFits);
     f.choice<RawWhiteBalanceMode>("raw.white-balance", "RAW white balance", "RAW 白平衡", "decode", o.stack.raw.whiteBalanceMode,
         {{"camera", RawWhiteBalanceMode::Camera}, {"auto", RawWhiteBalanceMode::Auto}, {"daylight", RawWhiteBalanceMode::Daylight}, {"manual", RawWhiteBalanceMode::Manual}});
@@ -157,7 +158,8 @@ std::vector<Binding> fields(DeepSkyWorkflowOptions& o) {
     f.boolean("registration.refine-centroids", "Refine centroids", "细化星点中心", "registration", o.stack.registration.refineSimilarityCentroids);
     f.choice<StackMethod>("stack.method", "Stack method", "合成方法", "stack", o.stack.method,
         {{"average", StackMethod::Average}, {"weighted", StackMethod::WeightedAverage}, {"median", StackMethod::Median},
-         {"sigma", StackMethod::SigmaClip}, {"winsorized", StackMethod::WinsorizedSigmaClip}, {"percentile", StackMethod::PercentileClip}});
+         {"sigma", StackMethod::SigmaClip}, {"winsorized", StackMethod::WinsorizedSigmaClip}, {"percentile", StackMethod::PercentileClip},
+         {"maximum", StackMethod::Maximum}, {"minimum", StackMethod::Minimum}});
     f.boolean("stack.normalize-background", "Normalize frame sky", "逐帧背景归一化", "stack", o.stack.normalizeBackground);
     f.boolean("stack.median-mad", "Robust iterative MAD (sigma)", "迭代 MAD 剔除（Sigma）", "stack", o.stack.sigma.medianMad);
     f.numeric("stack.sigma-low", "Negative rejection sigma", "负向剔除阈值", "stack", o.stack.sigma.sigmaLow, .1, 20);
@@ -238,6 +240,7 @@ std::vector<Binding> fields(DeepSkyWorkflowOptions& o) {
     f.numeric("develop.brightness", "Brightness", "亮度", "develop", o.develop.brightness, .1, 10);
     f.numeric("develop.saturation", "Saturation", "色彩浓度", "develop", o.develop.saturation, 0, 2);
     f.numeric("develop.star-exposure", "Star exposure", "恒星曝光", "develop", o.develop.starExposure, .05, 1);
+    f.numeric("develop.star-color-cleanup", "Stellar color-fringe suppression (0 off)", "星点彩边抑制（0 关闭）", "develop", o.develop.starColorCleanup, 0, 1);
     f.numeric("develop.star-threshold", "Bright-star threshold", "亮星门槛", "develop", o.develop.starPeakThreshold, 0, 1);
     f.boolean("output.save-denoise-stages", "Save denoising stage images", "保存各阶段降噪过程图", "output", o.saveDenoiseStages);
     return std::move(f.bindings);
@@ -257,6 +260,10 @@ DeepSkyRecipe DeepSkyRecipe::parse(const std::string& text, const std::filesyste
     std::string line;
     if (!std::getline(stream, line) || line != "PHOTONSTACK_DEEP_SKY_RECIPE 1") throw std::invalid_argument("Unsupported deep-sky recipe version");
     DeepSkyRecipe recipe;
+    // An omitted decode field in an old recipe keeps its original algorithm.
+    recipe.options.stack.fitsDemosaic = FitsDemosaic::Malvar;
+    // Recipes saved before this display adjustment must replay identically.
+    recipe.options.develop.starColorCleanup = 0;
     auto bindings = fields(recipe.options);
     std::map<std::string, Binding*> lookup;
     for (auto& binding : bindings) lookup[binding.field.key] = &binding;
@@ -292,7 +299,9 @@ DeepSkyRecipe DeepSkyRecipe::parse(const std::string& text, const std::filesyste
     o.stack.winsorizedSigma = {o.stack.sigma.sigmaLow, o.stack.sigma.sigmaHigh};
     if (o.denoiseH < 0 && o.denoiseH != -1) throw std::invalid_argument("Denoise h must be -1, zero, or positive");
     if (o.stack.sigma.medianMad && o.stack.method != StackMethod::SigmaClip) throw std::invalid_argument("MAD rejection requires sigma method");
-    if (o.stack.collectRejectionMaps && (o.stack.method == StackMethod::Average || o.stack.method == StackMethod::WeightedAverage)) throw std::invalid_argument("Average stacking has no rejection maps");
+    const bool extrema = o.stack.method == StackMethod::Maximum || o.stack.method == StackMethod::Minimum;
+    if (o.stack.collectRejectionMaps && (o.stack.method == StackMethod::Average || o.stack.method == StackMethod::WeightedAverage || extrema)) throw std::invalid_argument("This stacking method has no rejection maps");
+    if (extrema && !o.stack.frameWeights.empty()) throw std::invalid_argument("Maximum/minimum stacking does not accept frame weights");
     if (o.stack.percentile.low >= o.stack.percentile.high) throw std::invalid_argument("Lower percentile must be smaller than upper percentile");
     if (o.stack.registration.refineSimilarityCentroids && !(o.stack.alignSimilarity || o.stack.alignAffine)) throw std::invalid_argument("Centroid refinement requires similarity or affine registration");
     if (!o.stack.frameWeights.empty() && o.stack.frameWeights.size() != recipe.inputs.size()) throw std::invalid_argument("One weight is required per input");

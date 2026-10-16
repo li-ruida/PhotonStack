@@ -279,12 +279,12 @@ expect_invalid_numeric(
 )
 expect_invalid_numeric(
   stack_invalid_fits_demosaic
-  "--fits-demosaic requires bilinear, malvar, menon or ratio"
+  "--fits-demosaic requires bilinear, malvar, menon, ratio or malvar-guarded"
   stack --output output.fits --fits-demosaic unknown missing.fits
 )
 expect_invalid_numeric(
   convert_invalid_fits_demosaic
-  "--fits-demosaic requires bilinear, malvar, menon or ratio"
+  "--fits-demosaic requires bilinear, malvar, menon, ratio or malvar-guarded"
   convert --input missing.fits --output output.fits --fits-demosaic unknown
 )
 expect_invalid_numeric(

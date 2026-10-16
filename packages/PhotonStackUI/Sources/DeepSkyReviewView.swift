@@ -192,7 +192,7 @@ struct DeepSkyReviewView: View {
     private func mark(_ value: String) {
         let frames = chosen.filter { value == "auto" || $0.usable }
         guard !frames.isEmpty else { return }
-        undo.append(Dictionary(uniqueKeysWithValues: frames.map { ($0.input, settings.overrides[$0.input] ?? "auto") }))
+        undo.append(Dictionary(uniqueKeysWithValues: frames.map { ($0.input, DeepSkyReview.decision($0, settings: settings)) }))
         if undo.count > 20 { undo.removeFirst() }
         model.updateDeepSkyOverrides(Dictionary(uniqueKeysWithValues: frames.map { ($0.input, value) }))
         notice = chinese ? "已更新 \(frames.count) 张，可撤销" : "Updated \(frames.count) frames; undo available"

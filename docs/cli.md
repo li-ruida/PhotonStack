@@ -13,6 +13,17 @@ tool.
 - share the same core processing behavior as the macOS app
 - expose machine-readable output for integration and tooling
 
+## Stack modes
+
+`photonstack stack --method maximum --output trails.fits frame1.fits frame2.fits`
+
+Supported methods: `average`, `weighted`, `median`, `sigma`, `winsorized`,
+`percentile`, `maximum` (Lighten), and `minimum` (Darken). Omit `--align` for
+fixed-camera star trails. Maximum/minimum work per color channel on finite,
+covered samples, without clamping scientific values. Neither accepts frame
+weights, MAD rejection, or rejection maps. Maximum retains aircraft lights too;
+minimum can remove genuine stars/trails and is not a general cleanup substitute.
+
 ## Experimental frequency coaddition
 
 `photonstack frequency-stack --plan prepared.psfreq --output linear.fits --threads 2`
@@ -327,7 +338,7 @@ accepting morphological reduction.
 
 ### FITS detail-preserving reconstruction
 
-`convert`, `fits convert`, and `stack` accept `--fits-demosaic bilinear|malvar|menon|ratio`.
+`convert`, `fits convert`, and `stack` accept `--fits-demosaic bilinear|malvar|menon|ratio|malvar-guarded`.
 The default remains `bilinear`. The option is used only when FITS debayering is
 on and the input is a tagged, single-channel Bayer image. `malvar` uses the
 5×5 gradient-corrected filters from
@@ -335,6 +346,15 @@ on and the input is a tagged, single-channel Bayer image. `malvar` uses the
 Measured sensor samples and signed scientific values are preserved. Borders and
 neighbourhoods containing invalid filter samples fall back to finite-neighbour
 bilinear interpolation. Calibration masters remain undecoded sensor mosaics.
+
+`malvar-guarded` adds a bright-star guard to those filters. It detects isolated
+stellar apertures, bounds significant undershoot relative to local measured
+sky and its noise, and redistributes the correction within interpolated samples
+to preserve each aperture's integrated RGB. Measured CFA sites are unchanged;
+negative scientific backgrounds remain valid. Blended, invalid or poorly fitted
+apertures are skipped. This reduces dark interpolation notches, not optical blur
+or clipped-core information loss. It is the default for **new deep-sky workflows**;
+old recipes with an omitted decode field retain `malvar` for reproducibility.
 
 `menon` is an optional directional reconstruction with a posteriori selection
 and colour-difference refinement (DDFAPD, Menon et al. 2007). The C++ adaptation
@@ -350,8 +370,8 @@ weights, signed-sample fallback, and a low-frequency correction relative to
 Malvar. Measured CFA samples remain unchanged. It can reduce interpolation
 colour artifacts, but does not guarantee increased resolution or replace
 noise reduction. It is a separate implementation, not the RCD algorithm.
-The deep-sky recipe also accepts `decode.demosaic "ratio"`; existing defaults
-remain unchanged. Compare native-scale results before selecting this method.
+The deep-sky recipe also accepts `decode.demosaic "ratio"` as an explicit choice.
+Compare native-scale results before selecting this method.
 
 
 `stack --interpolation bilinear|bicubic` selects the registration resampler.

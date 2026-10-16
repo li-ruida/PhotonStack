@@ -120,7 +120,7 @@
       "downloadUrl": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Tianhe%20CSS%20as%20seen%20from%20M.B%20Gonnet%2002.jpg?width=1920",
       "sourcePage": "https://commons.wikimedia.org/wiki/File:Tianhe_CSS_as_seen_from_M.B_Gonnet_02.jpg",
       "sha256": "cf5be7bdb7b521ad5b33b6d26a21e7dfd9993ceddb47725b6be02caad643a465",
-      "expectation": { "minimumArtifacts": 1 }
+      "expectation": { "minimumArtifacts": 1, "maximumArtifacts": 1 }
     }
   ]
 }

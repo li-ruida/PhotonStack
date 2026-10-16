@@ -216,7 +216,7 @@ void printUsage() {
     std::cout << "PhotonStack CLI\n\n"
               << "Usage:\n"
               << "  photonstack --version\n"
-              << "  photonstack review-preview --input <image> --output <new.tiff> [--fits-debayer on|off] [--fits-demosaic malvar|bilinear|menon]\n"
+              << "  photonstack review-preview --input <image> --output <new.tiff> [--fits-debayer on|off] [--fits-demosaic malvar|bilinear|menon|ratio|malvar-guarded]\n"
               << "  photonstack deep-sky schema\n"
               << "  photonstack deep-sky --recipe <recipe.txt> --output-dir <new-directory> [--analyze-only]\n"
               << "  photonstack deep-sky --write-default-recipe <new-recipe.txt> [--input <directory>]\n"
@@ -224,12 +224,12 @@ void printUsage() {
               << "  photonstack deep-sky --recipe <recipe.txt> --from-master <linear RGB FITS> --output-dir <new-directory>\n"
               << "  photonstack color-calibrate --input <linear.fits> --reference <linear.fits> [--reference-flip-y on|off] [--input-saturation <value>] [--reference-saturation <value>]\n"
               << "  photonstack develop --input <linear> --output <image> [--stellar-balance on|off] "
-                 "[--brightness 1] [--tone-scale 0] [--tone-curve rational|asinh] [--white-point 0] [--background 0.025] [--saturation 1] [--shadow-neutralization 0] [--star-exposure 1] [--star-peak-threshold 0] "
+                 "[--brightness 1] [--tone-scale 0] [--tone-curve rational|asinh] [--white-point 0] [--background 0.025] [--saturation 1] [--shadow-neutralization 0] [--star-exposure 1] [--star-peak-threshold 0] [--star-color-cleanup 0] "
                  "[--red-gain 1] [--green-gain 1] [--blue-gain 1]\n"
               << "  photonstack inspect <image>\n"
               << "  photonstack convert --input <image> --output <image> "
                  "[--bit-depth auto|8|16] [--color-space srgb|linear-srgb] [--quality 0.92] "
-                 "[--fits-values display|scientific] [--fits-debayer on|off] [--fits-demosaic bilinear|malvar|menon|ratio] [--fits-cfa-gains r,g,b] "
+                 "[--fits-values display|scientific] [--fits-debayer on|off] [--fits-demosaic bilinear|malvar|menon|ratio|malvar-guarded] [--fits-cfa-gains r,g,b] "
                  "[--raw-white-balance camera|auto|daylight|manual] [--raw-exposure-bias stops] "
                  "[--raw-temperature kelvin] [--raw-tint value] [--raw-black-value value] "
                  "[--raw-black-level camera|auto|manual] [--raw-demosaic fast|high] "
@@ -237,7 +237,7 @@ void printUsage() {
               << "  photonstack run <workflow-file>\n"
               << "  photonstack fits inspect <image>\n"
               << "  photonstack fits convert --input <fits> --output <image> "
-                 "[--fits-values display|scientific] [--fits-debayer on|off] [--fits-demosaic bilinear|malvar|menon|ratio] [--fits-cfa-gains r,g,b]\n"
+                 "[--fits-values display|scientific] [--fits-debayer on|off] [--fits-demosaic bilinear|malvar|menon|ratio|malvar-guarded] [--fits-cfa-gains r,g,b]\n"
               << "  photonstack raw inspect <raw>\n"
               << "  photonstack raw convert --input <raw> --output <image> "
                  "[--bit-depth auto|8|16] [--color-space srgb|linear-srgb] [--quality 0.92] "
@@ -309,10 +309,10 @@ void printUsage() {
                  "[--mode translation|similarity|affine|distortion] [--output-format tiff|png|fits] "
                  "[--include-reference on|off] <image>...\n"
               << "  photonstack stack --input <directory> --output <image> "
-                 "[--method average|weighted|median|sigma|winsorized|percentile] "
+                 "[--method average|weighted|median|sigma|winsorized|percentile|maximum|minimum] "
                  "[--align translation|similarity|affine|distortion] [--minimum-matches 3] "
-                 "[--fits-debayer on|off] [--fits-demosaic bilinear|malvar|menon|ratio] [--fits-cfa-gains r,g,b] [--normalize-background on|off] [--interpolation bilinear|bicubic] [--frame-weights w1,w2,...] [--alignment-reference image] [--refine-centroids on|off]\n"
-              << "  photonstack stack --output <image> [--method average|weighted|median|sigma|winsorized|percentile] "
+                 "[--fits-debayer on|off] [--fits-demosaic bilinear|malvar|menon|ratio|malvar-guarded] [--fits-cfa-gains r,g,b] [--normalize-background on|off] [--interpolation bilinear|bicubic] [--frame-weights w1,w2,...] [--alignment-reference image] [--refine-centroids on|off]\n"
+              << "  photonstack stack --output <image> [--method average|weighted|median|sigma|winsorized|percentile|maximum|minimum] "
                  "[--align translation|similarity|affine|distortion] [--minimum-matches 3] "
                  "<image>...\n"
               << "  photonstack drizzle --output <image> [--scale 2] [--pixfrac 1] "
@@ -1339,6 +1339,8 @@ int developImage(const std::vector<std::string>& args) {
                 target = &options.starExposure;
             else if (arg == "--star-peak-threshold")
                 target = &options.starPeakThreshold;
+            else if (arg == "--star-color-cleanup")
+                target = &options.starColorCleanup;
             else if (arg == "--shadow-neutralization")
                 target = &options.shadowNeutralization;
             else if (arg == "--saturation")
@@ -1387,6 +1389,7 @@ int developImage(const std::vector<std::string>& args) {
               << "  \"balanceMethod\": \"" << (options.stellarBalance ? "statistical-stars" : "manual") << "\",\n"
               << "  \"calibrationStars\": " << result.calibrationStars << ",\n"
               << "  \"adjustedStars\": " << result.adjustedStars << ",\n"
+              << "  \"colorCleanedStars\": " << result.colorCleanedStars << ",\n"
               << "  \"gains\": [" << result.gains[0] << ", " << result.gains[1] << ", " << result.gains[2] << "],\n"
               << "  \"sky\": [" << result.sky[0] << ", " << result.sky[1] << ", " << result.sky[2] << "],\n"
               << "  \"toneScale\": " << result.toneScale << ",\n"
@@ -1416,10 +1419,10 @@ int reviewPreviewImage(const std::vector<std::string>& args) {
             if (value != "on" && value != "off") { printError("ArgumentInvalid", "--fits-debayer requires on or off"); return 1; }
             readOptions.fits.debayer = value == "on";
         } else {
-            if (value != "bilinear" && value != "malvar" && value != "menon" && value != "ratio") {
-                printError("ArgumentInvalid", "--fits-demosaic requires bilinear, malvar, menon or ratio"); return 1;
+            if (value != "bilinear" && value != "malvar" && value != "menon" && value != "ratio" && value != "malvar-guarded") {
+                printError("ArgumentInvalid", "--fits-demosaic requires bilinear, malvar, menon, ratio or malvar-guarded"); return 1;
             }
-            readOptions.fits.demosaic = value == "ratio" ? photonstack::FitsDemosaic::Ratio : value == "menon" ? photonstack::FitsDemosaic::Menon :
+            readOptions.fits.demosaic = value == "malvar-guarded" ? photonstack::FitsDemosaic::MalvarGuarded : value == "ratio" ? photonstack::FitsDemosaic::Ratio : value == "menon" ? photonstack::FitsDemosaic::Menon :
                 value == "malvar" ? photonstack::FitsDemosaic::Malvar : photonstack::FitsDemosaic::Bilinear;
         }
     }
@@ -3366,11 +3369,11 @@ int convertImage(const std::vector<std::string>& args, const std::string& comman
         } else if (arg == "--fits-cfa-gains") {
             if (!parseCfaGains(args, i, readOptions.fits.cfaInterpolationGains)) return 1;
         } else if (arg == "--fits-demosaic") {
-            if (i + 1 >= args.size() || (args[i + 1] != "bilinear" && args[i + 1] != "malvar" && args[i + 1] != "menon" && args[i + 1] != "ratio")) {
-                printError("ArgumentInvalid", "--fits-demosaic requires bilinear, malvar, menon or ratio");
+            if (i + 1 >= args.size() || (args[i + 1] != "bilinear" && args[i + 1] != "malvar" && args[i + 1] != "menon" && args[i + 1] != "ratio" && args[i + 1] != "malvar-guarded")) {
+                printError("ArgumentInvalid", "--fits-demosaic requires bilinear, malvar, menon, ratio or malvar-guarded");
                 return 1;
             }
-            readOptions.fits.demosaic = args[++i] == "ratio" ? photonstack::FitsDemosaic::Ratio : args[i] == "menon" ? photonstack::FitsDemosaic::Menon : args[i] == "malvar" ? photonstack::FitsDemosaic::Malvar : photonstack::FitsDemosaic::Bilinear;
+            readOptions.fits.demosaic = args[++i] == "malvar-guarded" ? photonstack::FitsDemosaic::MalvarGuarded : args[i] == "ratio" ? photonstack::FitsDemosaic::Ratio : args[i] == "menon" ? photonstack::FitsDemosaic::Menon : args[i] == "malvar" ? photonstack::FitsDemosaic::Malvar : photonstack::FitsDemosaic::Bilinear;
         } else if (arg == "--fits-debayer") {
             if (i + 1 >= args.size() || (args[i + 1] != "on" && args[i + 1] != "off")) {
                 printError("ArgumentInvalid", "--fits-debayer requires on or off");
@@ -3965,11 +3968,11 @@ int stackImages(const std::vector<std::string>& args) {
         } else if (arg == "--fits-cfa-gains") {
             if (!parseCfaGains(args, i, stackOptions.cfaInterpolationGains)) return 1;
         } else if (arg == "--fits-demosaic") {
-            if (i + 1 >= args.size() || (args[i + 1] != "bilinear" && args[i + 1] != "malvar" && args[i + 1] != "menon" && args[i + 1] != "ratio")) {
-                printError("ArgumentInvalid", "--fits-demosaic requires bilinear, malvar, menon or ratio");
+            if (i + 1 >= args.size() || (args[i + 1] != "bilinear" && args[i + 1] != "malvar" && args[i + 1] != "menon" && args[i + 1] != "ratio" && args[i + 1] != "malvar-guarded")) {
+                printError("ArgumentInvalid", "--fits-demosaic requires bilinear, malvar, menon, ratio or malvar-guarded");
                 return 1;
             }
-            stackOptions.fitsDemosaic = args[++i] == "ratio" ? photonstack::FitsDemosaic::Ratio : args[i] == "menon" ? photonstack::FitsDemosaic::Menon : args[i] == "malvar" ? photonstack::FitsDemosaic::Malvar : photonstack::FitsDemosaic::Bilinear;
+            stackOptions.fitsDemosaic = args[++i] == "malvar-guarded" ? photonstack::FitsDemosaic::MalvarGuarded : args[i] == "ratio" ? photonstack::FitsDemosaic::Ratio : args[i] == "menon" ? photonstack::FitsDemosaic::Menon : args[i] == "malvar" ? photonstack::FitsDemosaic::Malvar : photonstack::FitsDemosaic::Bilinear;
         } else if (arg == "--fits-debayer" || arg == "--normalize-background") {
             if (i + 1 >= args.size() || (args[i + 1] != "on" && args[i + 1] != "off")) {
                 printError("ArgumentInvalid", arg + " requires on or off");
@@ -4107,9 +4110,9 @@ int stackImages(const std::vector<std::string>& args) {
         return 1;
     }
     if (method != "average" && method != "weighted" && method != "median" && method != "sigma" &&
-        method != "winsorized" && method != "percentile") {
+        method != "winsorized" && method != "percentile" && method != "maximum" && method != "minimum") {
         printError("MethodUnsupported",
-                   "Supported stack methods are average, weighted, median, sigma, winsorized, and percentile");
+                   "Supported stack methods are average, weighted, median, sigma, winsorized, percentile, maximum, and minimum");
         return 1;
     }
 
@@ -4132,6 +4135,10 @@ int stackImages(const std::vector<std::string>& args) {
         stackOptions.method = photonstack::StackMethod::Average;
     } else if (method == "weighted") {
         stackOptions.method = photonstack::StackMethod::WeightedAverage;
+    } else if (method == "maximum") {
+        stackOptions.method = photonstack::StackMethod::Maximum;
+    } else if (method == "minimum") {
+        stackOptions.method = photonstack::StackMethod::Minimum;
     } else if (method == "median") {
         stackOptions.method = photonstack::StackMethod::Median;
     } else if (method == "sigma") {
@@ -4216,7 +4223,7 @@ int stackImages(const std::vector<std::string>& args) {
               << "  \"command\": \"stack\",\n"
               << "  \"fitsValues\": \"scientific\",\n"
               << "  \"fitsDebayer\": " << (stackOptions.debayerFits ? "true" : "false") << ",\n"
-              << "  \"fitsDemosaic\": \"" << (stackOptions.fitsDemosaic == photonstack::FitsDemosaic::Ratio ? "ratio" : stackOptions.fitsDemosaic == photonstack::FitsDemosaic::Menon ? "menon" : stackOptions.fitsDemosaic == photonstack::FitsDemosaic::Malvar ? "malvar" : "bilinear") << "\",\n"
+              << "  \"fitsDemosaic\": \"" << (stackOptions.fitsDemosaic == photonstack::FitsDemosaic::MalvarGuarded ? "malvar-guarded" : stackOptions.fitsDemosaic == photonstack::FitsDemosaic::Ratio ? "ratio" : stackOptions.fitsDemosaic == photonstack::FitsDemosaic::Menon ? "menon" : stackOptions.fitsDemosaic == photonstack::FitsDemosaic::Malvar ? "malvar" : "bilinear") << "\",\n"
               << "  \"interpolation\": \"" << (stackOptions.interpolation == photonstack::RegistrationInterpolation::Bicubic ? "bicubic" : "bilinear") << "\",\n"
               << "  \"normalizeBackground\": " << (stackOptions.normalizeBackground ? "true" : "false") << ",\n"
               << "  \"method\": \"" << jsonEscape(method) << "\",\n"

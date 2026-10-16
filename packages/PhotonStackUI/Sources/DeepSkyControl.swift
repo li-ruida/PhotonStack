@@ -40,6 +40,7 @@ struct DeepSkyRecipeSheet: View {
     }
     private var minimumKept: Int { DeepSkyReview.minimumKept(settings: model.deepSkySettings, count: model.lightAssets.count) }
     private var tooFew: Bool { plannedCount < minimumKept }
+    private var resultIsCurrent: Bool { model.journeyResultIsCurrent }
     private var processingPresentation: DeepSkyProcessingPresentation {
         DeepSkyProcessingPresentation(job: model.jobs.last(where: { $0.status == .running }),
             message: model.progressMessage, fraction: model.progressFraction, chinese: chinese)
@@ -51,12 +52,17 @@ struct DeepSkyRecipeSheet: View {
                 Spacer()
                 Button(chinese ? "关闭" : "Close") { presented = false }.keyboardShortcut(.cancelAction)
             }
-            Text(chinese ? "先分析 → 检查异常原片 → 标记保留或排除 → 堆栈。局部轨迹通常交给像素剔除即可。" : "Analyze → inspect originals → keep or exclude → stack. Local trails usually need pixel rejection only.")
+            Text(chinese ? "2 分析与筛片 → 3 堆栈 → 4 后期调整。排除只影响这次堆栈，不会删除原片。" : "2 Review → 3 Stack → 4 Finish. Excluding frames never deletes originals.")
                 .font(.callout).foregroundStyle(.secondary)
+            if resultIsCurrent && !model.isProcessing {
+                Label(chinese ? "堆栈完成 · 使用 \(report?.selectedCount ?? 0) 张亮场。下一步进入后期调整。" : "Stack complete · \(report?.selectedCount ?? 0) lights. Continue to finishing.", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green).accessibilityIdentifier("deep-sky.stack-complete")
+            }
             Picker(chinese ? "工作区" : "Workspace", selection: $tab) {
                 Text(chinese ? "筛片工作台" : "Frame review").tag(1)
                 Text(chinese ? "处理参数" : "Processing settings").tag(0)
             }.pickerStyle(.segmented).labelsHidden()
+            StackModeControl(model: model)
             ZStack {
                 reviewContent
                     .opacity(tab == 1 ? 1 : 0)
@@ -82,14 +88,14 @@ struct DeepSkyRecipeSheet: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
                 Spacer()
-                if model.latestDeepSkyResultURL != nil {
+                if model.latestDeepSkyResultURL != nil && !resultIsCurrent {
                     ResultComparisonControl(model: model, context: "deep-sky")
                     Button(chinese ? "查看堆栈结果" : "View stack result") {
                         model.showLatestDeepSkyResult()
                         presented = false
                     }
                     .accessibilityIdentifier("deep-sky.show-result")
-                    .disabled(!model.canModifyWorkspaceProducts)
+                    .disabled(!model.canModifyProcessingConfiguration)
                 }
                 if model.isProcessing {
                     Button(chinese ? "取消处理" : "Cancel") { model.cancelCurrentTask() }
@@ -99,11 +105,30 @@ struct DeepSkyRecipeSheet: View {
                             .accessibilityIdentifier("deep-sky.refinish")
                             .help(chinese ? "复用线性母片，只更新裁边、背景、降噪和显影；素材和堆栈参数必须保持一致。" : "Reuse the linear master for crop, background, denoising and development. Inputs and stack settings must match.")
                     }
-                    Button(chinese ? (report == nil ? "开始分析" : "重新分析") : (report == nil ? "Analyze" : "Analyze again")) { tab = 1; model.startDeepSkyWorkflow(analyzeOnly: true) }
-                        .disabled(model.lightAssets.count < 3 || model.deepSkySchema == nil)
-                    Button(reportIsCurrent ? (chinese ? "堆栈 \(plannedCount) 张" : "Stack \(plannedCount) frames") : (chinese ? "分析并堆栈" : "Analyze & stack")) { tab = 1; model.startDeepSkyWorkflow(analyzeOnly: false) }
-                        .buttonStyle(.borderedProminent).disabled(model.lightAssets.count < 3 || model.deepSkySchema == nil || tooFew)
-                        .help(chinese ? "按当前标记运行；引擎会重新核验质量。" : "Run with current decisions; the engine rechecks quality.")
+                    if reportIsCurrent {
+                        Button(chinese ? "重新分析" : "Analyze again") { analyze() }
+                            .disabled(model.lightAssets.count < 3 || model.deepSkySchema == nil)
+                        if resultIsCurrent {
+                            Button(chinese ? "下一步：后期调整" : "Next: finish image") {
+                                model.showLatestDeepSkyResult()
+                                presented = false
+                                NotificationCenter.default.post(name: .photonStackOpenFinishing, object: nil)
+                            }.buttonStyle(.borderedProminent)
+                                .accessibilityIdentifier("deep-sky.continue-finishing")
+                        } else {
+                            Button(chinese ? "确认并堆栈 \(plannedCount) 张" : "Confirm & stack \(plannedCount) frames") {
+                                tab = 1; model.startDeepSkyWorkflow(analyzeOnly: false)
+                            }
+                            .buttonStyle(.borderedProminent).disabled(model.deepSkySchema == nil || tooFew)
+                            .accessibilityIdentifier("deep-sky.confirm-stack")
+                            .help(chinese ? "按当前标记运行；引擎会重新核验质量。" : "Run with current decisions; the engine rechecks quality.")
+                        }
+                    } else {
+                        Button(chinese ? "开始分析照片" : "Analyze photos") { analyze() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.lightAssets.count < 3 || model.deepSkySchema == nil)
+                            .accessibilityIdentifier("deep-sky.analyze")
+                    }
                 }
             }
         }.padding(16).frame(width: 1120, height: 700)
@@ -111,6 +136,11 @@ struct DeepSkyRecipeSheet: View {
             .sheet(isPresented: $protectionPresented) {
                 if let report { BackgroundProtectionEditor(model: model, report: report) }
             }
+    }
+
+    private func analyze() {
+        tab = 1
+        model.startDeepSkyWorkflow(analyzeOnly: true)
     }
 
     @ViewBuilder private var settingsContent: some View {
@@ -197,9 +227,15 @@ struct DeepSkyRecipeSheet: View {
             } else if field.type == "choice" {
                 Picker(title, selection: binding(field)) {
                     ForEach(field.choices, id: \.self) { choice in
-                        Text(field.key == "denoise.noise-model"
+                        Text(field.key == "stack.method"
+                            ? (StackMethod(rawValue: choice).map { model.language.stackMethodName($0) } ?? choice)
+                            : field.key == "denoise.noise-model"
                             ? (choice == "scene" ? (chinese ? "从图像估计" : "From image") : (chinese ? "从独立子堆栈估计（实验）" : "Independent sub-stacks (experimental)"))
+                            : field.key == "decode.demosaic" && choice == "malvar-guarded"
+                            ? (chinese ? "Malvar · 亮星暗环保护" : "Malvar · bright-star ringing guard")
                             : choice).tag(choice)
+                            .disabled(field.key == "denoise.noise-model" && choice == "independent-luminance" &&
+                                (model.deepSkySettings.values["stack.method"] ?? "sigma") != "sigma")
                     }
                 }.labelsHidden().frame(width: 260)
             } else {
@@ -210,9 +246,13 @@ struct DeepSkyRecipeSheet: View {
             }
             Spacer(minLength: 0)
         }.accessibilityIdentifier(field.key)
+            .disabled(model.deepSkySchema.map { !model.deepSkySettings.fieldIsApplicable(field.key, schema: $0) } ?? false)
             .help(field.key == "output.save-denoise-stages"
                 ? (chinese ? "默认关闭，节省磁盘空间。开启后额外保存各个已启用降噪阶段的全尺寸 FITS，供排查涂抹和噪点使用；不改变处理效果。线性母片、背景校正图和最终成片始终保留。"
                     : "Off by default to save disk space. Saves full-size FITS for each enabled denoising stage for diagnosis; does not change processing. The linear master, background-corrected image and final result are always retained.")
+                : field.key == "decode.demosaic"
+                ? (chinese ? "亮星暗环保护会约束去马赛克产生的异常暗凹，保留原始采样和单星 RGB 总通量。改变此项需要重新堆栈，无法通过更新显影修复已有母片。"
+                    : "The bright-star guard constrains demosaicing undershoot while retaining native samples and each star's integrated RGB. Rebuild the stack after changing this setting; finishing an existing master cannot apply it.")
                 : field.key == "calibration.sensor-pattern"
                 ? (chinese ? "在去马赛克前减去传感器固定细纹。需至少 36 张同设置的亮场及足够视场位移，暂不能与暗场、偏置、平场一起使用。默认关闭；请对比检查微弱结构。"
                     : "Subtract sensor-fixed fine texture before debayering. Requires at least 36 matching lights and sufficient field movement; cannot combine with calibration frames. Off by default; compare faint structures before adoption.")

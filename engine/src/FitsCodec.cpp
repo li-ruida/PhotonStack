@@ -1,6 +1,7 @@
 #include "photonstack/FitsCodec.hpp"
 #include "DemosaicMenon.hpp"
 #include "DemosaicRatio.hpp"
+#include "DemosaicStarGuard.hpp"
 #include "photonstack/ParallelRanges.hpp"
 
 #include <algorithm>
@@ -758,7 +759,8 @@ ImageReadResult FitsCodec::read(const std::filesystem::path& path, const FitsDec
                             // Malvar-He-Cutler (ICASSP 2004), Figure 2. Keep measured
                             // samples and signed scientific values. At borders or near
                             // invalid samples, use the finite-neighbour bilinear fallback.
-                            if ((options.demosaic == FitsDemosaic::Malvar || options.demosaic == FitsDemosaic::Ratio) && x >= 2 && y >= 2 &&
+                            if ((options.demosaic == FitsDemosaic::Malvar || options.demosaic == FitsDemosaic::Ratio ||
+                                 options.demosaic == FitsDemosaic::MalvarGuarded) && x >= 2 && y >= 2 &&
                                 x + 2 < static_cast<int>(result.image.width) &&
                                 y + 2 < static_cast<int>(result.image.height)) {
                                 const auto v = [&](int dx, int dy) -> double {
@@ -811,6 +813,14 @@ ImageReadResult FitsCodec::read(const std::filesystem::path& path, const FitsDec
                     }
                 }
         });
+        if (options.demosaic == FitsDemosaic::MalvarGuarded) {
+            try {
+                detail::guardDemosaicStars(result.image, mosaic,
+                    {colorAt(0, 0), colorAt(1, 0), colorAt(0, 1), colorAt(1, 1)}, options.cfaInterpolationGains);
+            } catch (const std::bad_alloc&) {
+                return readError("ImageAllocationFailed", "Could not allocate stellar interpolation guards");
+            }
+        }
         if (options.demosaic == FitsDemosaic::Ratio) {
             const std::array<int, 4> colors{colorAt(0, 0), colorAt(1, 0), colorAt(0, 1), colorAt(1, 1)};
             try {

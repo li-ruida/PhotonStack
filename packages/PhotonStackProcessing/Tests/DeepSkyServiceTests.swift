@@ -91,6 +91,31 @@ private func deepSkyTestSchema() throws -> DeepSkySchema {
 }
 
 @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func stackModeTransitionsProduceValidEngineRecipes() async throws {
+    let cli = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"]))
+    let service = CLIProcessingService(executableURL: cli)
+    let schema = try await service.deepSkySchema()
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackModes-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = root.appendingPathComponent("recipe.txt")
+    let inputs = (0..<3).map { root.appendingPathComponent("\($0).fits") }
+    #expect(schema.fields.first(where: { $0.key == "stack.method" })?.choices.contains("maximum") == true)
+    for method in StackMethod.allCases {
+        var settings = DeepSkySettings()
+        settings.setCompatibleValue(method.rawValue, for: "stack.method", schema: schema)
+        try settings.recipe(schema: schema, inputs: inputs).write(to: url, atomically: true, encoding: .utf8)
+        #expect(try await service.inspectDeepSkyRecipe(url).values["stack.method"] == method.rawValue)
+    }
+    var trails = DeepSkySettings()
+    trails.configureStarTrailComposition(schema: schema)
+    try trails.recipe(schema: schema, inputs: inputs).write(to: url, atomically: true, encoding: .utf8)
+    let inspected = try await service.inspectDeepSkyRecipe(url)
+    #expect(inspected.values["registration.mode"] == "none")
+    #expect(inspected.values["stack.method"] == "maximum")
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
 func deepSkyAppRecipeIsAcceptedAndCanonicalizedByRealEngine() async throws {
     let cli = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"]))
     let service = CLIProcessingService(executableURL: cli)

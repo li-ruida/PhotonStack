@@ -236,7 +236,7 @@ DeepSkyWorkflowOptions::DeepSkyWorkflowOptions() {
     stack.method = StackMethod::SigmaClip;
     stack.sigma = {.sigmaLow = 3, .sigmaHigh = 3, .medianMad = true, .iterations = 3};
     stack.alignSimilarity = true;
-    stack.fitsDemosaic = FitsDemosaic::Malvar;
+    stack.fitsDemosaic = FitsDemosaic::MalvarGuarded;
     stack.interpolation = RegistrationInterpolation::Bicubic;
     stack.normalizeBackground = true;
     stack.registration.minimumMatches = 30;
@@ -252,6 +252,7 @@ DeepSkyWorkflowOptions::DeepSkyWorkflowOptions() {
     multiscale.luminance = .6; multiscale.chroma = .8;
     develop.toneCurve = AstroToneCurve::Asinh;
     develop.shadowNeutralization = .8F;
+    develop.starColorCleanup = .8F;
     develop.background = .018F; develop.brightness = 1; develop.saturation = .8F;
 }
 

@@ -19,6 +19,8 @@ struct AstroDevelopOptions {
     // Display-only neutralization of color below three robust sky-noise sigmas.
     // Zero bypasses; the luminance transfer and scientific master are unchanged.
     float shadowNeutralization = 0.0F;
+    // Redistribute stellar chroma without smoothing luminance; zero bypasses.
+    float starColorCleanup = 0.0F;
     float starExposure = 1.0F; // Linear stellar flux multiplier, 0.05...1.
     // Display-mapped local-background-subtracted stellar peak at which
     // attenuation begins, ramping smoothly to full strength at white.
@@ -34,6 +36,7 @@ struct AstroDevelopResult {
     std::array<float, 3> sky = {};
     std::size_t calibrationStars = 0;
     std::size_t adjustedStars = 0;
+    std::size_t colorCleanedStars = 0;
     float toneScale = 0;
     float whitePoint = 0;
     double shadowNoise = 0;

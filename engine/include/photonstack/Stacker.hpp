@@ -73,6 +73,8 @@ enum class StackMethod {
     SigmaClip,
     WinsorizedSigmaClip,
     PercentileClip,
+    Maximum,
+    Minimum,
 };
 
 enum class StackProgressStage {
@@ -115,6 +117,7 @@ struct StackOptions {
     RegistrationInterpolation interpolation = RegistrationInterpolation::Bilinear;
     // Relative exposure weights in input order; empty means equal weights.
     // These multiply coverage (and automatic quality for WeightedAverage).
+    // Maximum/Minimum select unweighted finite samples; explicit weights are invalid.
     std::vector<float> frameWeights;
     // Optional coordinate/background reference; not automatically added as an input.
     // Requires alignment. Input weights still correspond only to inputs.

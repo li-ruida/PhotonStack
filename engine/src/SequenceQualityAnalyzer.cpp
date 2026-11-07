@@ -1,6 +1,7 @@
 #include "photonstack/SequenceQualityAnalyzer.hpp"
 
 #include "photonstack/ImageResizer.hpp"
+#include "photonstack/Registration.hpp"
 #include "photonstack/StarCentroid.hpp"
 #include "photonstack/StarDetector.hpp"
 
@@ -14,13 +15,17 @@ namespace photonstack {
 namespace {
 constexpr double madScale = 1.482602218505602;
 
-double median(std::vector<double> values) {
+double medianInPlace(std::vector<double>& values) {
     if (values.empty()) return 0;
     const auto mid = values.size() / 2;
     std::nth_element(values.begin(), values.begin() + mid, values.end());
     const double upper = values[mid];
     return values.size() % 2 ? upper
         : (upper + *std::max_element(values.begin(), values.begin() + mid)) * 0.5;
+}
+
+double median(std::vector<double> values) {
+    return medianInPlace(values);
 }
 
 double mad(const std::vector<double>& values, double center) {
@@ -41,6 +46,25 @@ bool validOptions(const SequenceQualityOptions& o) {
         between(o.minimumStarRatio, 0, 1) && between(o.maximumResidualFraction, 0, 1) &&
         o.minimumTemporalPeers >= 4 && o.minimumTemporalPeers <= 10000 &&
         o.minimumKeptFrames >= 1 && between(o.minimumKeptFraction, 0, 1);
+}
+
+// When packing a registered grid, consecutive native centers can share Haar
+// neighbors. Store each needed coordinate once, including the last edge pixel.
+std::vector<std::uint32_t> sampleCenters(std::uint32_t length, std::uint32_t cells,
+                                         std::vector<std::uint32_t>* packedAxis) {
+    std::vector<std::uint32_t> centers;
+    centers.reserve(cells);
+    for (std::uint32_t i = 0; i < cells; ++i) {
+        const auto coordinate = static_cast<std::uint32_t>((std::uint64_t(i) * 2 + 1) * length / (2 * cells));
+        if (!packedAxis) {
+            centers.push_back(coordinate);
+            continue;
+        }
+        if (packedAxis->empty() || packedAxis->back() != coordinate) packedAxis->push_back(coordinate);
+        centers.push_back(static_cast<std::uint32_t>(packedAxis->size() - 1));
+        if (coordinate + 1 < length) packedAxis->push_back(coordinate + 1);
+    }
+    return centers;
 }
 
 double coverageAt(const ImageBuffer& image, std::size_t pixel) {
@@ -117,9 +141,10 @@ std::vector<SequenceTransientTrail> detectResidualLines(const std::vector<std::s
 } // namespace
 
 SequenceFrameSample SequenceQualityAnalyzer::sample(const ImageBuffer& image,
-                                                    const SequenceQualityOptions& o) const {
+                                                    const SequenceQualityOptions& o,
+                                                    const RegisteredGridRenderer& renderer) const {
     SequenceFrameSample result;
-    if (!validOptions(o)) {
+    if (!validOptions(o) || (renderer && o.measureStars)) {
         result.errorCode = "ArgumentInvalid";
         result.message = "Invalid sequence quality options";
         return result;
@@ -135,17 +160,35 @@ SequenceFrameSample SequenceQualityAnalyzer::sample(const ImageBuffer& image,
     result.height = image.height;
     result.columns = std::min(o.sampleSide, image.width);
     result.rows = std::min(o.sampleSide, image.height);
+    RegistrationPixelGrid grid;
+    const auto centersX = sampleCenters(image.width, result.columns, renderer ? &grid.columns : nullptr);
+    const auto centersY = sampleCenters(image.height, result.rows, renderer ? &grid.rows : nullptr);
+    ImageBuffer registered;
+    if (renderer) {
+        registered = renderer(grid);
+        if (registered.width != grid.columns.size() || registered.height != grid.rows.size() ||
+            registered.channels != image.channels || registered.colorEncoding != ColorEncoding::Linear ||
+            registered.pixels.size() != registered.sampleCount()) {
+            result.errorCode = "ScientificImageRequired";
+            result.message = "Sequence assessment requires a valid linear image";
+            return result;
+        }
+    }
+    const auto& pixels = renderer ? registered : image;
     std::vector<double> skySamples, differences;
+    const auto gridSamples = static_cast<std::size_t>(result.columns) * result.rows;
+    // Grid dimensions are known. Exact capacity avoids geometric growth in two
+    // arrays retained for every exposure during temporal assessment.
+    result.luminance.reserve(gridSamples);
+    result.coverage.reserve(gridSamples);
+    skySamples.reserve(gridSamples);
+    differences.reserve(gridSamples);
     double valid = 0;
-    for (std::uint32_t row = 0; row < result.rows; ++row) {
-        const auto y = std::min(image.height - 1,
-            std::uint32_t((std::uint64_t(row) * 2 + 1) * image.height / (2 * result.rows)));
-        for (std::uint32_t column = 0; column < result.columns; ++column) {
-            const auto x = std::min(image.width - 1,
-                std::uint32_t((std::uint64_t(column) * 2 + 1) * image.width / (2 * result.columns)));
-            const auto p = std::size_t(y) * image.width + x;
-            const double c = coverageAt(image, p);
-            const double value = c > 0 ? luminanceAt(image, p) : 0;
+    for (const auto y : centersY) {
+        for (const auto x : centersX) {
+            const auto p = std::size_t(y) * pixels.width + x;
+            const double c = coverageAt(pixels, p);
+            const double value = c > 0 ? luminanceAt(pixels, p) : 0;
             const bool representable = std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max();
             result.luminance.push_back(representable ? float(value) : 0);
             result.coverage.push_back(representable ? float(c) : 0);
@@ -154,11 +197,11 @@ SequenceFrameSample SequenceQualityAnalyzer::sample(const ImageBuffer& image,
             skySamples.push_back(value);
             // 2x2 diagonal Haar detail: a planar sky gradient cancels; independent
             // equal-variance samples retain their noise sigma (norm of coefficients = 1).
-            if (x + 1 < image.width && y + 1 < image.height &&
-                coverageAt(image, p + 1) >= .99 && coverageAt(image, p + image.width) >= .99 &&
-                coverageAt(image, p + image.width + 1) >= .99) {
-                const double detail = (value - luminanceAt(image, p + 1) -
-                    luminanceAt(image, p + image.width) + luminanceAt(image, p + image.width + 1)) * .5;
+            if (x + 1 < pixels.width && y + 1 < pixels.height &&
+                coverageAt(pixels, p + 1) >= .99 && coverageAt(pixels, p + pixels.width) >= .99 &&
+                coverageAt(pixels, p + pixels.width + 1) >= .99) {
+                const double detail = (value - luminanceAt(pixels, p + 1) -
+                    luminanceAt(pixels, p + pixels.width) + luminanceAt(pixels, p + pixels.width + 1)) * .5;
                 if (std::isfinite(detail)) differences.push_back(detail);
             }
         }
@@ -284,27 +327,32 @@ SequenceQualityResult SequenceQualityAnalyzer::assess(const std::vector<Sequence
     std::vector<double> squares(frames.size());
     std::vector<std::vector<std::size_t>> positivePoints(frames.size()), negativePoints(frames.size());
     std::vector<std::pair<double, std::size_t>> values;
-    std::vector<double> pixelValues;
-    values.reserve(frames.size()); pixelValues.reserve(frames.size());
+    std::vector<double> deviations;
+    values.reserve(frames.size()); deviations.reserve(frames.size());
     for (std::size_t p = 0; p < grid->luminance.size(); ++p) {
-        values.clear(); pixelValues.clear();
+        values.clear();
         for (std::size_t i = 0; i < frames.size(); ++i) {
             const auto& f = frames[i];
             if (!result.frames[i].usable || f.coverage[p] < .99 || !std::isfinite(f.luminance[p])) continue;
             const double value = double(f.luminance[p]) - f.sky;
-            values.emplace_back(value, i); pixelValues.push_back(value);
+            values.emplace_back(value, i);
         }
         if (values.size() <= o.minimumTemporalPeers) continue;
         std::sort(values.begin(), values.end());
-        const double center = median(pixelValues);
-        const double scatter = mad(pixelValues, center);
+        const auto middle = values.size() / 2;
+        const double center = values.size() % 2 ? values[middle].first
+            : (values[middle].first + values[middle - 1].first) * .5;
+        deviations.clear();
+        for (const auto& sample : values) deviations.push_back(std::abs(sample.first - center));
+        const double scatter = medianInPlace(deviations) * madScale;
         const std::size_t peerCount = values.size() - 1;
+        const double peerNoise = result.medianNoise / std::sqrt(double(peerCount));
         for (std::size_t rank = 0; rank < values.size(); ++rank) {
             const auto [value, i] = values[rank];
             const auto peerAt = [&](std::size_t k) { return values[k >= rank ? k + 1 : k].first; };
             const double peerMedian = peerCount % 2 ? peerAt(peerCount / 2)
                 : (peerAt(peerCount / 2 - 1) + peerAt(peerCount / 2)) * .5;
-            const double noiseFloor = std::hypot(frames[i].noise, result.medianNoise / std::sqrt(double(peerCount)));
+            const double noiseFloor = std::hypot(frames[i].noise, peerNoise);
             const double threshold = o.residualSigma * std::max({scatter, noiseFloor, 1.e-6}) +
                 o.signalTolerance * std::abs(peerMedian);
             const double residual = value - peerMedian;
@@ -348,8 +396,15 @@ SequenceQualityResult SequenceQualityAnalyzer::assess(const std::vector<Sequence
         if (f.validFraction < o.minimumCoverage) a.reasons.push_back("low-coverage");
         if (a.noiseRatio > o.maximumNoiseRatio) a.reasons.push_back("high-noise");
         if (a.fwhmRatio > o.maximumFwhmRatio) a.reasons.push_back("broad-stars");
-        if (f.medianEccentricity > o.maximumEccentricity && f.medianEccentricity > medianEccentricity + .15)
-            a.reasons.push_back("elongated-stars");
+        if (f.medianEccentricity > o.maximumEccentricity) {
+            if (f.medianEccentricity > medianEccentricity + .15)
+                a.reasons.push_back("elongated-stars");
+            else
+                // The relative selection guard intentionally retains a uniformly
+                // elongated sequence. Retention is not evidence of round stars:
+                // expose the absolute threshold crossing for source inspection.
+                a.warnings.push_back("elongated-stars-absolute");
+        }
         if (f.starsMeasured && medianStars >= 20 && f.starCount < medianStars * o.minimumStarRatio)
             a.reasons.push_back("few-stars");
         if (!a.temporalAvailable) a.warnings.push_back("insufficient-temporal-peers");

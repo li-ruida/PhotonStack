@@ -537,8 +537,9 @@ ImageReadResult FitsCodec::read(const std::filesystem::path& path, const FitsDec
     return read(path, options, nullptr);
 }
 
-ImageReadResult FitsCodec::read(const std::filesystem::path& path, const FitsDecodeOptions& options,
-                               const CalibrationOptions* calibration, const ImageBuffer* sensorPattern) const {
+static ImageReadResult readFits(const std::filesystem::path& path, const FitsDecodeOptions& options,
+                                const CalibrationOptions* calibration, const ImageBuffer* sensorPattern,
+                                detail::GuardReplay* replay) {
     if (sensorPattern && (options.mode != FitsDecodeMode::Scientific ||
         (calibration && (calibration->bias || calibration->dark || calibration->flat))))
         return readError("SensorPatternConflict", "Sensor pattern requires scientific decoding without other calibration masters");
@@ -740,11 +741,17 @@ ImageReadResult FitsCodec::read(const std::filesystem::path& path, const FitsDec
                                 ? result.image.pixels[pixel * 4]
                                 : std::numeric_limits<float>::quiet_NaN();
         }
-        const auto colorAt = [&](int x, int y) {
-            const auto px = (x + (xOffset.value_or(0) % 2) + 2) % 2;
-            const auto py = (y + (yOffset.value_or(0) % 2) + 2) % 2;
-            const char color = pattern[static_cast<std::size_t>(py * 2 + px)];
-            return color == 'R' ? 0 : color == 'G' ? 1 : 2;
+        // FITS offsets shift the four CFA phases once for the entire exposure.
+        // The interpolation stencil reads these phases repeatedly for each pixel.
+        const unsigned originX = static_cast<unsigned>(xOffset.value_or(0)) & 1U;
+        const unsigned originY = static_cast<unsigned>(yOffset.value_or(0)) & 1U;
+        std::array<int, 4> colors;
+        for (unsigned phase = 0; phase < colors.size(); ++phase) {
+            const char color = pattern[phase ^ (2 * originY + originX)];
+            colors[phase] = color == 'R' ? 0 : color == 'G' ? 1 : 2;
+        }
+        const auto colorAt = [&](unsigned x, unsigned y) {
+            return colors[2 * (y & 1U) + (x & 1U)];
         };
         detail::parallelRanges(result.image.height, std::max<std::size_t>(1, 262144 / result.image.width),
             [&](std::size_t firstRow, std::size_t lastRow) noexcept {
@@ -815,14 +822,14 @@ ImageReadResult FitsCodec::read(const std::filesystem::path& path, const FitsDec
         });
         if (options.demosaic == FitsDemosaic::MalvarGuarded) {
             try {
-                detail::guardDemosaicStars(result.image, mosaic,
-                    {colorAt(0, 0), colorAt(1, 0), colorAt(0, 1), colorAt(1, 1)}, options.cfaInterpolationGains);
+                if (!detail::guardDemosaicStars(result.image, mosaic, colors, options.cfaInterpolationGains,
+                                               replay, options.maskNonFinitePixels))
+                    return readError("StarGuardReplayFailed", "Stellar repair could not be replayed");
             } catch (const std::bad_alloc&) {
                 return readError("ImageAllocationFailed", "Could not allocate stellar interpolation guards");
             }
         }
         if (options.demosaic == FitsDemosaic::Ratio) {
-            const std::array<int, 4> colors{colorAt(0, 0), colorAt(1, 0), colorAt(0, 1), colorAt(1, 1)};
             try {
                 const auto reconstructed = detail::demosaicRatio(mosaic,
                     static_cast<int>(result.image.width), static_cast<int>(result.image.height),
@@ -864,6 +871,25 @@ ImageReadResult FitsCodec::read(const std::filesystem::path& path, const FitsDec
     }
 
     result.ok = true;
+    return result;
+}
+
+ImageReadResult FitsCodec::read(const std::filesystem::path& path, const FitsDecodeOptions& options,
+                               const CalibrationOptions* calibration, const ImageBuffer* sensorPattern) const {
+    return readFits(path, options, calibration, sensorPattern, nullptr);
+}
+
+ImageReadResult detail::readAnalysisFits(const std::filesystem::path& path, const FitsDecodeOptions& options,
+                                         GuardReplay& replay) {
+    replay.use_ = GuardReplay::Use::unused;
+    auto result = readFits(path, options, nullptr, nullptr,
+                           options.mode == FitsDecodeMode::Scientific ? &replay : nullptr);
+    if (result.ok && replay.use_ != GuardReplay::Use::unused) return result;
+    const bool retry = replay.replayedLastRead();
+    replay.discard();
+    // A failed replay may have edited earlier apertures in its private image.
+    // Start again with a fresh source decode before using the complete guard.
+    if (retry) return FitsCodec().read(path, options);
     return result;
 }
 

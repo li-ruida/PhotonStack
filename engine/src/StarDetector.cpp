@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "MaskedImageSampling.hpp"
+#include "StarDetectionStatistics.hpp"
 
 namespace photonstack {
 namespace {
@@ -63,44 +64,44 @@ StarDetectionResult detectLuminanceBuffer(
         return std::isfinite(luminance[index]) && std::isfinite(coverageAt(index)) &&
                coverageAt(index) > 1.0e-6F;
     };
-    double sum = 0.0;
-    double totalCoverage = 0.0;
-    for (std::size_t index = 0; index < luminance.size(); ++index) {
-        if (!isValid(index)) {
-            continue;
-        }
-        const double weight = std::clamp(static_cast<double>(coverageAt(index)), 0.0, 1.0);
-        sum += static_cast<double>(luminance[index]) * weight;
-        totalCoverage += weight;
-    }
-    if (!(totalCoverage > 1.0e-6) || !std::isfinite(totalCoverage)) {
-        return detectionError("ImageCoverageEmpty", "Star detection requires at least one valid pixel");
-    }
-    double mean = sum / totalCoverage;
-    double variance = 0.0;
-    for (std::size_t index = 0; index < luminance.size(); ++index) {
-        if (!isValid(index)) {
-            continue;
-        }
-        const double delta = static_cast<double>(luminance[index]) - mean;
-        variance += delta * delta * std::clamp(static_cast<double>(coverageAt(index)), 0.0, 1.0);
-    }
-    variance /= totalCoverage;
-    double standardDeviation = std::sqrt(std::max(0.0, variance));
+    double mean = 0.0;
+    double standardDeviation = 0.0;
     if (options.robustStatistics) {
         std::vector<float> valid;
         valid.reserve(luminance.size());
-        for (std::size_t i = 0; i < luminance.size(); ++i)
-            if (isValid(i) && coverageAt(i) >= .99F) valid.push_back(luminance[i]);
+        bool anyCovered = false;
+        for (std::size_t i = 0; i < luminance.size(); ++i) {
+            if (!isValid(i)) continue;
+            anyCovered = true;
+            if (coverageAt(i) >= .99F) valid.push_back(luminance[i]);
+        }
+        if (!anyCovered) {
+            return detectionError("ImageCoverageEmpty", "Star detection requires at least one valid pixel");
+        }
         if (valid.size() < 16) return detectionError("ImageCoverageEmpty", "Robust stellar statistics need complete pixel coverage");
-        const auto median = [](std::vector<float>& values) {
-            auto mid = values.begin() + values.size() / 2;
-            std::nth_element(values.begin(), mid, values.end());
-            return values.size() % 2 ? double(*mid) : .5 * (double(*mid) + *std::max_element(values.begin(), mid));
-        };
-        mean = median(valid);
+        mean = detail::stellarMedian(valid);
         for (auto& value : valid) value = float(std::abs(value - mean));
-        standardDeviation = median(valid) * 1.482602218505602;
+        standardDeviation = detail::stellarMedian(valid) * 1.482602218505602;
+    } else {
+        double sum = 0.0;
+        double totalCoverage = 0.0;
+        for (std::size_t index = 0; index < luminance.size(); ++index) {
+            if (!isValid(index)) continue;
+            const double weight = std::clamp(static_cast<double>(coverageAt(index)), 0.0, 1.0);
+            sum += static_cast<double>(luminance[index]) * weight;
+            totalCoverage += weight;
+        }
+        if (!(totalCoverage > 1.0e-6) || !std::isfinite(totalCoverage)) {
+            return detectionError("ImageCoverageEmpty", "Star detection requires at least one valid pixel");
+        }
+        mean = sum / totalCoverage;
+        double variance = 0.0;
+        for (std::size_t index = 0; index < luminance.size(); ++index) {
+            if (!isValid(index)) continue;
+            const double delta = static_cast<double>(luminance[index]) - mean;
+            variance += delta * delta * std::clamp(static_cast<double>(coverageAt(index)), 0.0, 1.0);
+        }
+        standardDeviation = std::sqrt(std::max(0.0, variance / totalCoverage));
     }
     const double threshold = std::max(static_cast<double>(options.minPeak),
                                       mean + static_cast<double>(options.sigmaThreshold) * standardDeviation);
@@ -299,8 +300,14 @@ StarDetectionResult StarDetector::detect(const ImageBuffer& image, const StarDet
     if (options.maxStars == 0) {
         return detectionError("ArgumentInvalid", "maxStars must be greater than zero");
     }
+    if (image.channels == 1) {
+        if (!std::all_of(image.pixels.begin(), image.pixels.end(), [](float value) { return std::isfinite(value); })) {
+            return detectionError("ImageBufferInvalid", "Covered image colors must be finite");
+        }
+        return detectLuminanceBuffer(image.width, image.height, image.pixels, options);
+    }
     std::vector<float> luminance(image.pixelCount(), 0.0F);
-    std::vector<float> coverage(image.pixelCount(), 0.0F);
+    std::vector<float> coverage(image.channels == 4 ? image.pixelCount() : 0, 0.0F);
     for (std::uint32_t y = 0; y < image.height; ++y) {
         for (std::uint32_t x = 0; x < image.width; ++x) {
             const auto pixel = static_cast<std::size_t>(y) * image.width + x;
@@ -312,6 +319,7 @@ StarDetectionResult StarDetector::detect(const ImageBuffer& image, const StarDet
                     return detectionError("ImageBufferInvalid", "Input image alpha must be finite");
                 }
                 pixelCoverage = std::clamp(alpha, 0.0F, 1.0F);
+                coverage[pixel] = pixelCoverage;
             }
             if (pixelCoverage <= 1.0e-6F) {
                 continue;
@@ -326,7 +334,6 @@ StarDetectionResult StarDetector::detect(const ImageBuffer& image, const StarDet
                 return detectionError("ImageBufferInvalid", "Covered image luminance must be finite");
             }
             luminance[pixel] = value;
-            coverage[pixel] = pixelCoverage;
         }
     }
 

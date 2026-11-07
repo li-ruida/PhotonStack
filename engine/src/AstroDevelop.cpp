@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <random>
 #include <vector>
 
 namespace photonstack {
@@ -33,12 +34,14 @@ AstroDevelopResult error(const char* code, const char* message) {
 }
 } // namespace
 
-AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelopOptions& opt) const {
+AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelopOptions& opt,
+                                     const ImageBuffer* statisticsReference) const {
     if (im.empty() || (im.channels != 3 && im.channels != 4) || im.pixels.size() != im.sampleCount())
         return error("ImageBufferInvalid", "Develop requires a non-empty RGB image");
     if (im.colorEncoding != ColorEncoding::Linear)
         return error("ImageColorEncodingMismatch", "Develop requires linear data, before display stretching");
     if (!std::isfinite(opt.background) || opt.background < 0 || opt.background >= .5F ||
+        !std::isfinite(opt.skyPercentile) || opt.skyPercentile < .05F || opt.skyPercentile > .5F ||
         !std::isfinite(opt.brightness) || opt.brightness <= 0 || opt.brightness > 20 || !std::isfinite(opt.toneScale) ||
         opt.toneScale < 0 || !std::isfinite(opt.saturation) || opt.saturation < 0 || opt.saturation > 3 ||
         !std::isfinite(opt.starExposure) || opt.starExposure < .05F || opt.starExposure > 1 ||
@@ -52,83 +55,129 @@ AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelop
             return error("ArgumentInvalid", "Color gains must be positive and at most 20");
     if (detail::imageHasInvalidCoveredColor(im))
         return error("ImageBufferInvalid", "Covered colors and coverage must be finite");
+    if (statisticsReference && (statisticsReference->width != im.width || statisticsReference->height != im.height ||
+        statisticsReference->channels != im.channels || statisticsReference->pixels.size() != im.sampleCount() ||
+        statisticsReference->colorEncoding != ColorEncoding::Linear ||
+        detail::imageHasInvalidCoveredColor(*statisticsReference)))
+        return error("ArgumentInvalid", "Development statistics reference requires matching finite linear RGB geometry");
+    const auto& statistics = statisticsReference ? *statisticsReference : im;
     AstroDevelopResult result;
     result.gains = opt.gains;
     std::array<std::vector<float>, 3> samples;
-    const std::size_t stride = std::max<std::size_t>(1, im.pixelCount() / 100000);
-    for (std::size_t p = 0; p < im.pixelCount(); p += stride) {
-        if (!covered(im, p))
+    constexpr std::size_t sampleLimit = 100000;
+    for (auto& channel : samples) channel.reserve(std::min(sampleLimit, statistics.pixelCount()));
+    std::array<float, 3> maxima;
+    maxima.fill(std::numeric_limits<float>::lowest());
+    std::mt19937_64 generator(13831);
+    std::size_t coveredCount = 0;
+    // A regular stride can sample just one column phase, giving a colored
+    // sky pedestal. A fixed-seed reservoir samples covered pixels evenly and
+    // bounds the memory used by the percentiles.
+    for (std::size_t p = 0; p < statistics.pixelCount(); ++p) {
+        if (!covered(statistics, p))
             continue;
-        for (int c = 0; c < 3; ++c)
-            samples[c].push_back(im.pixels[p * im.channels + c]);
+        const auto* rgb = &statistics.pixels[p * statistics.channels];
+        if (opt.stellarBalance) {
+            // The bright-star exclusion depends on actual peaks. Missing a
+            // stellar core in the sky sample must not disqualify other stars.
+            for (int c = 0; c < 3; ++c) maxima[c] = std::max(maxima[c], rgb[c]);
+        }
+        ++coveredCount;
+        if (coveredCount <= sampleLimit) {
+            for (int c = 0; c < 3; ++c) samples[c].push_back(rgb[c]);
+        } else {
+            const auto slot = std::uniform_int_distribution<std::size_t>(0, coveredCount - 1)(generator);
+            if (slot < sampleLimit)
+                for (int c = 0; c < 3; ++c) samples[c][slot] = rgb[c];
+        }
     }
     if (samples[0].empty())
         return error("ImageCoverageEmpty", "No valid covered pixels");
     for (int c = 0; c < 3; ++c)
-        result.sky[c] = quantile(samples[c], .5F);
+        result.sky[c] = quantile(samples[c], opt.skyPercentile);
 
     if (opt.stellarBalance) {
+        // Sky-reference styling must not change which stars calibrate color.
+        // Keep the historical saturation rejection pedestal independent of
+        // the user-selected display black point.
+        std::array<float, 3> calibrationSky;
+        for (int c = 0; c < 3; ++c)
+            calibrationSky[c] = quantile(samples[c], .5F);
         StarDetectionOptions detection;
-        detection.minPeak = 0;
+        // Scientific samples can be negative after pedestal subtraction.
+        // Detection already applies a sky-relative threshold; an absolute zero
+        // floor would discard the same stars solely because the offset changed.
+        detection.minPeak = -std::numeric_limits<float>::max();
         detection.sigmaThreshold = 3;
         detection.maxStars = 1500;
-        const auto stars = StarDetector().detect(im, detection);
-        if (!stars.ok)
-            return error("StarDetectionFailed", "Cannot estimate stellar color balance");
         std::vector<float> redRatios, blueRatios;
         std::vector<Star> accepted;
-        std::array<float, 3> maxima;
-        for (int c = 0; c < 3; ++c)
-            maxima[c] = *std::max_element(samples[c].begin(), samples[c].end());
-        for (const auto& s : stars.stars) {
-            const int x = std::lround(s.x), y = std::lround(s.y);
-            if (x < 10 || y < 10 || x >= static_cast<int>(im.width) - 10 || y >= static_cast<int>(im.height) - 10)
-                continue;
-            if (s.fwhm < 1 || s.eccentricity > .6F)
-                continue;
-            if (std::any_of(accepted.begin(), accepted.end(),
-                            [&](const Star& t) { return std::hypot(t.x - s.x, t.y - s.y) < 12; }))
-                continue;
-            std::array<std::vector<float>, 3> annulus;
-            std::array<double, 3> flux{};
-            std::array<float, 3> peak{};
-            bool valid = true;
-            int area = 0;
-            for (int dy = -9; dy <= 9; ++dy)
-                for (int dx = -9; dx <= 9; ++dx) {
-                    const int rr = dx * dx + dy * dy;
-                    const auto p = static_cast<std::size_t>(y + dy) * im.width + x + dx;
-                    if (!covered(im, p)) {
-                        valid = false;
-                        continue;
-                    }
-                    if (rr <= 25) {
-                        ++area;
-                        for (int c = 0; c < 3; ++c) {
-                            float v = im.pixels[p * im.channels + c];
-                            flux[c] += v;
-                            peak[c] = std::max(peak[c], v);
+        // A few very bright stars can raise the global detection threshold
+        // above every unsaturated calibrator. Retry against the sky noise
+        // only if needed; require strong local aperture flux in all bands.
+        for (const bool backgroundThreshold : {false, true}) {
+            if (accepted.size() >= 8) break;
+            detection.robustStatistics = backgroundThreshold;
+            const auto stars = StarDetector().detect(statistics, detection);
+            if (!stars.ok)
+                return error("StarDetectionFailed", "Cannot estimate stellar color balance");
+            for (const auto& s : stars.stars) {
+                const int x = std::lround(s.x), y = std::lround(s.y);
+                if (x < 10 || y < 10 || x >= static_cast<int>(statistics.width) - 10 || y >= static_cast<int>(statistics.height) - 10)
+                    continue;
+                if (s.fwhm < 1 || s.eccentricity > .6F)
+                    continue;
+                if (std::any_of(accepted.begin(), accepted.end(),
+                                [&](const Star& t) { return std::hypot(t.x - s.x, t.y - s.y) < 12; }))
+                    continue;
+                std::array<std::vector<float>, 3> annulus;
+                std::array<double, 3> flux{};
+                std::array<float, 3> peak;
+                peak.fill(-std::numeric_limits<float>::max());
+                bool valid = true;
+                int area = 0;
+                for (int dy = -9; dy <= 9; ++dy)
+                    for (int dx = -9; dx <= 9; ++dx) {
+                        const int rr = dx * dx + dy * dy;
+                        const auto p = static_cast<std::size_t>(y + dy) * statistics.width + x + dx;
+                        if (!covered(statistics, p)) {
+                            valid = false;
+                            continue;
                         }
-                    } else if (rr >= 49 && rr <= 81) {
-                        for (int c = 0; c < 3; ++c)
-                            annulus[c].push_back(im.pixels[p * im.channels + c]);
+                        if (rr <= 25) {
+                            ++area;
+                            for (int c = 0; c < 3; ++c) {
+                                float v = statistics.pixels[p * statistics.channels + c];
+                                flux[c] += v;
+                                peak[c] = std::max(peak[c], v);
+                            }
+                        } else if (rr >= 49 && rr <= 81) {
+                            for (int c = 0; c < 3; ++c)
+                                annulus[c].push_back(statistics.pixels[p * statistics.channels + c]);
+                        }
                     }
+                if (!valid)
+                    continue;
+                for (int c = 0; c < 3; ++c) {
+                    const float sky = quantile(annulus[c], .5F);
+                    flux[c] -= area * sky;
+                    if (backgroundThreshold) {
+                        for (float& v : annulus[c]) v = std::abs(v - sky);
+                        const double noise = 1.4826 * quantile(annulus[c], .5F);
+                        if (flux[c] <= 8 * noise * std::sqrt(area)) valid = false;
+                    }
+                    if (flux[c] <= 0 || peak[c] - calibrationSky[c] >= (maxima[c] - calibrationSky[c]) * .75F)
+                        valid = false;
                 }
-            if (!valid)
-                continue;
-            for (int c = 0; c < 3; ++c) {
-                flux[c] -= area * quantile(annulus[c], .5F);
-                if (flux[c] <= 0 || peak[c] - result.sky[c] >= (maxima[c] - result.sky[c]) * .75F)
-                    valid = false;
+                if (!valid)
+                    continue;
+                const double rg = flux[0] / flux[1], bg = flux[2] / flux[1];
+                if (rg < .1 || rg > 10 || bg < .1 || bg > 10)
+                    continue;
+                redRatios.push_back(static_cast<float>(rg));
+                blueRatios.push_back(static_cast<float>(bg));
+                accepted.push_back(s);
             }
-            if (!valid)
-                continue;
-            const double rg = flux[0] / flux[1], bg = flux[2] / flux[1];
-            if (rg < .1 || rg > 10 || bg < .1 || bg > 10)
-                continue;
-            redRatios.push_back(static_cast<float>(rg));
-            blueRatios.push_back(static_cast<float>(bg));
-            accepted.push_back(s);
         }
         result.calibrationStars = accepted.size();
         if (accepted.size() < 8)
@@ -147,19 +196,28 @@ AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelop
             return error("ImageValueInvalid", "Scene dynamic range exceeds Float32 statistics");
         luminance.push_back(static_cast<float>(value));
     }
-    if (opt.shadowNeutralization > 0) {
+    double skyVariation = 0;
+    if (opt.shadowNeutralization > 0 || opt.toneScale == 0) {
         // Include correlated sky fluctuations: a differenced/high-pass noise
         // estimator misses the low-frequency chroma that this control targets.
         std::vector<float> deviations;
         const double center=quantile(luminance,.5F);
         for(float v:luminance)deviations.push_back(float(std::abs(v-center)));
-        result.shadowNoise=1.4826*quantile(deviations,.5F);
-        if (!std::isfinite(result.shadowNoise))
+        skyVariation=1.4826*quantile(deviations,.5F);
+        if (!std::isfinite(skyVariation))
             return error("ImageValueInvalid", "Shadow noise exceeds finite statistics");
+        if (opt.shadowNeutralization > 0) result.shadowNoise = skyVariation;
     }
     // Choose a physical half-response from extended/stellar signal, not its maximum.
     const float white = quantile(luminance, .995F);
-    result.toneScale = (opt.toneScale > 0 ? opt.toneScale : std::max(1.e-6F, white * (opt.toneCurve == AstroToneCurve::Asinh ? .012F : .18F))) / opt.brightness;
+    // A signal-only percentile can put the half-response below sky noise in
+    // short/sparse exposures. That makes positive fluctuations bright while
+    // negative ones collapse to black. Keep automatic stretching conservative
+    // in physical data units; explicit tone scale and brightness remain user
+    // controls. This is a scene-variation guard, not a detector-noise estimate.
+    const double autoScale = std::max({1.e-6, double(white) *
+        (opt.toneCurve == AstroToneCurve::Asinh ? .012 : .18), 12 * skyVariation});
+    result.toneScale = (opt.toneScale > 0 ? opt.toneScale : autoScale) / opt.brightness;
     if (!std::isfinite(result.toneScale) || result.toneScale <= 0)
         return error("ImageValueInvalid", "Tone scale is outside the supported range");
     result.whitePoint = opt.whitePoint > 0 ? opt.whitePoint : std::max(result.toneScale, quantile(luminance, .9999F));
@@ -297,6 +355,9 @@ AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelop
         working = std::move(cleaned.image);
     }
     result.image = im;
+    const bool useAsinh = opt.toneCurve == AstroToneCurve::Asinh;
+    const double slope = (1 - opt.background) / (result.toneScale * (useAsinh ? asinhNorm : 1));
+    const double skyLight = detail::decodeSRGB(opt.background);
     for (std::size_t p = 0; p < im.pixelCount(); ++p) {
         const auto o = p * im.channels;
         bool valid = im.channels != 4 || (std::isfinite(im.pixels[o + 3]) && im.pixels[o + 3] > 0);
@@ -311,18 +372,29 @@ AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelop
         for (int c = 0; c < 3; ++c)
             color[c] = (static_cast<double>(working.pixels[o + c]) - result.sky[c]) * result.gains[c];
         const double lum = color[0] * .2126 + color[1] * .7152 + color[2] * .0722;
-        const double denominator = result.toneScale + std::max(0.0, lum);
-        const bool useAsinh = opt.toneCurve == AstroToneCurve::Asinh;
-        const double slope = (1 - opt.background) / (result.toneScale * (useAsinh ? asinhNorm : 1));
         double mapped;
         if (lum >= 0) {
             mapped = mapPositiveLuminance(lum);
         } else {
             mapped = opt.background > 0 ? opt.background * std::exp(slope * lum / opt.background) : 0;
         }
-        const double colorSlope = useAsinh ? (lum > 0 ? (mapped - opt.background) / lum : slope)
-                                          : (1 - opt.background) / denominator;
-        const double shadowChroma = lum < 0 ? (opt.background > 0 ? mapped / opt.background : 0) : 1;
+        // The tone curve always sets neutral brightness in sRGB code values.
+        // Older renders applied stellar color ratios directly in that space.
+        const double neutral = opt.linearDisplayColor ? detail::decodeSRGB(mapped) : mapped;
+        double colorSlope;
+        double shadowChroma = 1;
+        if (!opt.linearDisplayColor) {
+            const double denominator = result.toneScale + std::max(0.0, lum);
+            colorSlope = useAsinh ? (lum > 0 ? (mapped - opt.background) / lum : slope)
+                                  : (1 - opt.background) / denominator;
+            if (lum < 0) shadowChroma = opt.background > 0 ? mapped / opt.background : 0;
+        } else if (lum > 0 && mapped > opt.background) {
+            colorSlope = (neutral - skyLight) / lum;
+        } else {
+            const double decodeSlope = mapped <= .04045 ? 1 / 12.92 : 2.4 * neutral / (mapped + .055);
+            const double shadow = lum < 0 && opt.background > 0 ? mapped / opt.background : 1;
+            colorSlope = slope * decodeSlope * shadow;
+        }
         // A gradual highlight chroma rolloff keeps bright cores from turning
         // into flat, saturated color patches while retaining middle-tone color.
         const double signal=std::max(0.0,lum), limit=3*result.shadowNoise;
@@ -330,7 +402,7 @@ AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelop
         const double neutralization=1-opt.shadowNeutralization*(1-confidence);
         const double highlightChroma = 1 - .65 * mapped * mapped * mapped * mapped;
         for (int c = 0; c < 3; ++c)
-            color[c] = mapped + (color[c] - lum) * colorSlope * opt.saturation * shadowChroma *
+            color[c] = neutral + (color[c] - lum) * colorSlope * opt.saturation * shadowChroma *
                                     highlightChroma * neutralization;
         // Compress chroma smoothly near the gamut boundary. Merely scaling an
         // out-of-gamut color to the boundary makes a channel exactly 0 or 1,
@@ -340,15 +412,20 @@ AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelop
         // more endpoint headroom than an exponentially saturating shoulder.
         double availableChroma = std::numeric_limits<double>::infinity();
         for (double c : color) {
-            if (c > mapped)
-                availableChroma = std::min(availableChroma, (1 - mapped) / (c - mapped));
-            if (c < mapped)
-                availableChroma = std::min(availableChroma, mapped / (mapped - c));
+            if (c > neutral)
+                availableChroma = std::min(availableChroma, (1 - neutral) / (c - neutral));
+            if (c < neutral)
+                availableChroma = std::min(availableChroma, neutral / (neutral - c));
         }
         const double chroma = detail::softGamutScale(availableChroma);
-        for (int c = 0; c < 3; ++c)
-            result.image.pixels[o + c] =
-                static_cast<float>(std::clamp(mapped + (color[c] - mapped) * chroma, 0.0, 1.0));
+        for (int c = 0; c < 3; ++c) {
+            const double value = std::clamp(neutral + (color[c] - neutral) * chroma, 0.0, 1.0);
+            result.image.pixels[o + c] = static_cast<float>(opt.linearDisplayColor ? detail::encodeSRGB(value) : value);
+        }
+        ++result.displayPixels;
+        const auto* rgb = result.image.pixels.data() + o;
+        result.nearBlackPixels += *std::max_element(rgb, rgb + 3) <= 1.0F / 255;
+        result.nearWhitePixels += *std::min_element(rgb, rgb + 3) >= .995F;
     }
     result.image.colorEncoding = ColorEncoding::SRGB;
     result.ok = true;

@@ -12,7 +12,7 @@ struct WorkspaceFITSPreview: View {
     @State private var preview: URL?
     @State private var failure: String?
     private var chinese: Bool { model.language == .simplifiedChinese }
-    private var requestKey: String { input.path + "|" + model.deepSkyReviewDecodeKey }
+    private var requestKey: String { input.path + "|" + model.deepSkyReviewDecodeKey(for: input) }
 
     var body: some View {
         VStack(spacing: 6) {

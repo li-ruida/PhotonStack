@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "photonstack/ImageBuffer.hpp"
 #include "photonstack/StarDetector.hpp"
@@ -100,6 +101,30 @@ struct RegistrationResult {
     std::string message;
 };
 
+// Owns the exact image and detection options used to prepare the star list.
+// Multiple moving frames may match this reference concurrently.
+class PreparedRegistrationReference {
+  public:
+    PreparedRegistrationReference(PreparedRegistrationReference&&) = default;
+    PreparedRegistrationReference& operator=(PreparedRegistrationReference&&) = default;
+    const ImageBuffer& image() const { return image_; }
+
+  private:
+    friend class Registration;
+    PreparedRegistrationReference() = default;
+    ImageBuffer image_;
+    RegistrationOptions options_;
+    StarDetectionResult detection_;
+    std::size_t detectionLimit_ = 0;
+};
+
+// Coordinates must be strictly increasing and in bounds on each axis. The
+// compact image at (i,j) equals the full warp at (columns[i],rows[j]).
+// Row consumers receive the packed row index j.
+struct RegistrationPixelGrid {
+    std::vector<std::uint32_t> columns, rows;
+};
+
 // The sample pointer remains valid only for the duration of each callback.
 using RegistrationRowConsumer = std::function<bool(std::uint32_t row, const float* samples, std::size_t sampleCount)>;
 // Coordinates are emitted as interleaved target x/y pairs for each source pixel in the row.
@@ -110,6 +135,15 @@ class Registration {
   public:
     explicit Registration(RegistrationInterpolation interpolation = RegistrationInterpolation::Bilinear)
         : interpolation_(interpolation) {}
+    // forDistortion also prepares the denser local star list. Preparation
+    // errors are reported on matching, like the single-image-pair overloads.
+    PreparedRegistrationReference prepareReference(ImageBuffer&& reference, const RegistrationOptions& options,
+                                                    bool forDistortion = false) const;
+    RegistrationResult estimateTranslation(const PreparedRegistrationReference& reference, const ImageBuffer& moving) const;
+    RegistrationResult estimateSimilarity(const PreparedRegistrationReference& reference, const ImageBuffer& moving) const;
+    RegistrationResult estimateAffine(const PreparedRegistrationReference& reference, const ImageBuffer& moving) const;
+    RegistrationResult estimateDistortion(const PreparedRegistrationReference& reference, const ImageBuffer& moving,
+                                          DistortionTransform& transform) const;
     RegistrationResult estimateTranslation(const ImageBuffer& reference, const ImageBuffer& moving,
                                            const RegistrationOptions& options = {}) const;
     RegistrationResult estimateSimilarity(const ImageBuffer& reference, const ImageBuffer& moving,
@@ -119,18 +153,22 @@ class Registration {
     RegistrationResult estimateDistortion(const ImageBuffer& reference, const ImageBuffer& moving,
                                           DistortionTransform& transform,
                                           const RegistrationOptions& options = {}) const;
-    ImageBuffer applyTranslation(const ImageBuffer& image, Translation translation) const;
-    ImageBuffer applySimilarity(const ImageBuffer& image, SimilarityTransform transform) const;
-    ImageBuffer applyAffine(const ImageBuffer& image, AffineTransform transform) const;
-    ImageBuffer applyDistortion(const ImageBuffer& image, const DistortionTransform& transform) const;
+    ImageBuffer applyTranslation(const ImageBuffer& image, Translation translation,
+                                 const RegistrationPixelGrid* grid = nullptr) const;
+    ImageBuffer applySimilarity(const ImageBuffer& image, SimilarityTransform transform,
+                                const RegistrationPixelGrid* grid = nullptr) const;
+    ImageBuffer applyAffine(const ImageBuffer& image, AffineTransform transform,
+                            const RegistrationPixelGrid* grid = nullptr) const;
+    ImageBuffer applyDistortion(const ImageBuffer& image, const DistortionTransform& transform,
+                                const RegistrationPixelGrid* grid = nullptr) const;
     bool renderTranslationRows(const ImageBuffer& image, Translation translation,
-                               const RegistrationRowConsumer& consumer) const;
+                               const RegistrationRowConsumer& consumer, const RegistrationPixelGrid* grid = nullptr) const;
     bool renderSimilarityRows(const ImageBuffer& image, SimilarityTransform transform,
-                              const RegistrationRowConsumer& consumer) const;
+                              const RegistrationRowConsumer& consumer, const RegistrationPixelGrid* grid = nullptr) const;
     bool renderAffineRows(const ImageBuffer& image, AffineTransform transform,
-                          const RegistrationRowConsumer& consumer) const;
+                          const RegistrationRowConsumer& consumer, const RegistrationPixelGrid* grid = nullptr) const;
     bool renderDistortionRows(const ImageBuffer& image, const DistortionTransform& transform,
-                              const RegistrationRowConsumer& consumer) const;
+                              const RegistrationRowConsumer& consumer, const RegistrationPixelGrid* grid = nullptr) const;
     bool renderDistortionForwardRows(const ImageBuffer& image, const DistortionTransform& transform,
                                      const RegistrationCoordinateConsumer& consumer) const;
 

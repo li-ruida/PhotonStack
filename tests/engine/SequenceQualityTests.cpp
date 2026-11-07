@@ -1,4 +1,5 @@
 #include "photonstack/SequenceQualityAnalyzer.hpp"
+#include "photonstack/Registration.hpp"
 #include "photonstack/StarDetector.hpp"
 
 #include <cmath>
@@ -38,6 +39,55 @@ ImageBuffer scene(unsigned seed, double noise = 2, double offset = 0, double gra
 
 int main() {
     const SequenceQualityAnalyzer analyzer;
+    // Sampling only grid centers and their Haar neighbors must reproduce a
+    // dense warp, even where adjacent grid footprints overlap or meet a mask.
+    {
+        auto source = scene(4321);
+        source.height = 109;
+        source.pixels.resize(source.sampleCount());
+        for (std::size_t p = 0; p < source.pixelCount(); p += 19) {
+            source.pixels[p * 4 + 3] = .72F;
+            source.pixels[p * 4 + 1] = -55;
+        }
+        source.pixels[9 * source.width * 4] = 1.e8F;
+        source.pixels[9 * source.width * 4 + 3] = 0;
+        for (auto interpolation : {RegistrationInterpolation::Bilinear, RegistrationInterpolation::Bicubic}) {
+            const Registration registration(interpolation);
+            const auto verify = [&](auto warp) {
+                const auto dense = warp(nullptr);
+                for (const auto side : {11U, 80U, 160U}) {
+                    SequenceQualityOptions options;
+                    options.sampleSide = side;
+                    options.measureStars = false;
+                    const auto expected = analyzer.sample(dense, options);
+                    const auto sampled = analyzer.sample(source, options, [&](const RegistrationPixelGrid& grid) {
+                        if (side == 11) require(grid.columns.size() == 22 && grid.rows.size() == 22);
+                        return warp(&grid);
+                    });
+                    if (!expected.ok || !sampled.ok) throw std::runtime_error("grid " + std::to_string(side) +
+                        ", dense " + expected.errorCode + ", sparse " + sampled.errorCode);
+                    require(sampled.width == dense.width && sampled.height == dense.height);
+                    require(sampled.columns == expected.columns && sampled.rows == expected.rows);
+                    require(sampled.luminance == expected.luminance && sampled.coverage == expected.coverage);
+                    require(sampled.sky == expected.sky && sampled.noise == expected.noise &&
+                            sampled.validFraction == expected.validFraction);
+                }
+            };
+            verify([&](const RegistrationPixelGrid* grid) { return registration.applyTranslation(source, {.75F, -1.2F}, grid); });
+            verify([&](const RegistrationPixelGrid* grid) { return registration.applySimilarity(source, {1.003F, .018F, .41F, -1.3F}, grid); });
+            verify([&](const RegistrationPixelGrid* grid) { return registration.applyAffine(source, {1.01F, .03F, -.02F, .99F, 1.4F, -.2F}, grid); });
+            DistortionTransform distortion;
+            distortion.useProjective = true;
+            distortion.projective.h21 = .0001F;
+            distortion.usePolynomial = true;
+            distortion.polynomialDx[0] = .53F;
+            distortion.polynomialDy[1] = -.42F;
+            verify([&](const RegistrationPixelGrid* grid) { return registration.applyDistortion(source, distortion, grid); });
+            for (int y = 10; y < 100; y += 20) for (int x = 10; x < 120; x += 20)
+                distortion.controlPoints.push_back({float(x), float(y), .01F * x, -.005F * y});
+            verify([&](const RegistrationPixelGrid* grid) { return registration.applyDistortion(source, distortion, grid); });
+        }
+    }
     // Rich fields must not all report the return-list cap. Preserve the same
     // brightest samples for registration and native shape fitting.
     {
@@ -173,6 +223,33 @@ int main() {
     const auto unknownResult = analyzer.assess(partlyMeasured, blurOptions);
     require(unknownResult.ok && unknownResult.medianFwhm > 0);
     require(has(unknownResult.frames[2].warnings, "stellar-shapes-unavailable"));
+
+    // A sequence-wide tracking/optical problem is not a relative outlier.
+    // Preserve inclusion while making its absolute elongation visible, rather
+    // than presenting all retained frames as evidence of round stars.
+    auto elongated = sharpStars;
+    elongated.medianEccentricity = .9;
+    std::vector<SequenceFrameSample> elongatedFrames(8, elongated);
+    auto elongationOptions = starOptions;
+    elongationOptions.applySelection = true;
+    elongationOptions.maximumEccentricity = .8;
+    const auto uniformElongation = analyzer.assess(elongatedFrames, elongationOptions);
+    require(uniformElongation.ok && uniformElongation.selectedCount == elongatedFrames.size());
+    for (const auto& f : uniformElongation.frames) {
+        require(f.selected && f.recommendedKeep);
+        require(!has(f.reasons, "elongated-stars"));
+        require(has(f.warnings, "elongated-stars-absolute"));
+    }
+    for (auto& f : elongatedFrames) f.medianEccentricity = .8;
+    const auto atThreshold = analyzer.assess(elongatedFrames, elongationOptions);
+    require(atThreshold.ok && atThreshold.selectedCount == elongatedFrames.size());
+    for (const auto& f : atThreshold.frames) require(!has(f.warnings, "elongated-stars-absolute"));
+    for (auto& f : elongatedFrames) f.medianEccentricity = .6;
+    elongatedFrames.front().medianEccentricity = .9;
+    const auto relativeOutlier = analyzer.assess(elongatedFrames, elongationOptions);
+    require(relativeOutlier.ok && !relativeOutlier.frames.front().selected);
+    require(has(relativeOutlier.frames.front().reasons, "elongated-stars"));
+    require(!has(relativeOutlier.frames.front().warnings, "elongated-stars-absolute"));
 
     std::vector<SequenceFrameSample> frames;
     for (unsigned i = 0; i < 12; ++i) frames.push_back(analyzer.sample(scene(i + 3, 2, i * 30), options));

@@ -12,6 +12,11 @@ struct AstroDevelopOptions {
     bool stellarBalance = true;
     std::array<float, 3> gains = {1, 1, 1};
     float background = 0.025F;
+    // Per-channel sky-reference quantile. Lower values retain diffuse signal
+    // that a whole-frame median can mistake for sky. Remove gradients first;
+    // this is a display black-point control, not a measured sky calibration.
+    // 0.5 preserves historical rendering and recipe replay.
+    float skyPercentile = 0.5F;
     // Half-response in input physical units; zero estimates it from the scene.
     float toneScale = 0.0F;
     float brightness = 1.0F;
@@ -28,6 +33,8 @@ struct AstroDevelopOptions {
     float starPeakThreshold = 0.0F;
     AstroToneCurve toneCurve = AstroToneCurve::Rational;
     float whitePoint = 0; // Asinh normalization in physical units, zero estimates it.
+    // Mix calibrated RGB in linear display light. False replays the earlier sRGB-code transfer.
+    bool linearDisplayColor = true;
 };
 struct AstroDevelopResult {
     bool ok = false;
@@ -40,12 +47,22 @@ struct AstroDevelopResult {
     float toneScale = 0;
     float whitePoint = 0;
     double shadowNoise = 0;
+    // Display-domain counts before export quantization; exclude masked pixels.
+    // Near black: all RGB <= 1/255; near white: all RGB >= 0.995.
+    // These describe rendering, not acquisition clipping or a quality grade.
+    std::size_t displayPixels = 0, nearBlackPixels = 0, nearWhitePixels = 0;
     std::string errorCode;
     std::string message;
 };
 class AstroDevelop {
   public:
     // Statistical stellar white balance, not catalog-based photometric calibration.
-    AstroDevelopResult apply(const ImageBuffer&, const AstroDevelopOptions& = {}) const;
+    // Optional same-geometry linear reference supplies sky, stellar gains,
+    // noise and tone statistics only. Pixels still come from the input. Use
+    // matching units/calibration/crop and identical options for before/after
+    // denoise comparisons. Local star operations are still input-dependent;
+    // disable those for a strictly pointwise shared transfer.
+    AstroDevelopResult apply(const ImageBuffer&, const AstroDevelopOptions& = {},
+                             const ImageBuffer* statisticsReference = nullptr) const;
 };
 } // namespace photonstack

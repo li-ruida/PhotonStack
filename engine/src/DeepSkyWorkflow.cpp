@@ -5,6 +5,8 @@
 #include "photonstack/SensorPatternBuilder.hpp"
 #include "photonstack/DeepSkyRecipe.hpp"
 #include "DeepSkyNoiseReference.hpp"
+#include "DeepSkyAnalysisScheduling.hpp"
+#include "DemosaicStarGuard.hpp"
 #include <fstream>
 #include <iomanip>
 
@@ -17,10 +19,41 @@
 #include <numeric>
 #include <set>
 #include <stdexcept>
+#include <optional>
+#if defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
+#endif
+#ifdef __APPLE__
+#include <mach/mach.h>
+#endif
 
 namespace photonstack {
 namespace fs = std::filesystem;
 namespace {
+std::uint64_t analysisMemoryBudget() {
+#if defined(_SC_PHYS_PAGES) && defined(_SC_PAGESIZE)
+    const auto pages = sysconf(_SC_PHYS_PAGES), pageBytes = sysconf(_SC_PAGESIZE);
+    if (pages <= 0 || pageBytes <= 0) return 0;
+    auto budget = std::min<std::uint64_t>(3ULL << 30, std::uint64_t(pages) * pageBytes / 4);
+#ifdef __APPLE__
+    vm_statistics64_data_t stats{};
+    mach_msg_type_number_t length = HOST_VM_INFO64_COUNT;
+    const auto host = mach_host_self();
+    const auto status = host_statistics64(host, HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&stats), &length);
+    mach_port_deallocate(mach_task_self(), host);
+    if (status != KERN_SUCCESS) return 0;
+    const auto available = std::uint64_t(stats.free_count) + stats.inactive_count;
+    budget = std::min(budget, available * pageBytes / 2);
+#elif defined(_SC_AVPHYS_PAGES)
+    const auto available = sysconf(_SC_AVPHYS_PAGES);
+    if (available <= 0) return 0;
+    budget = std::min(budget, std::uint64_t(available) * pageBytes / 2);
+#endif
+    return budget;
+#else
+    return 0;
+#endif
+}
 struct WorkflowFailure : std::runtime_error {
     std::string code;
     WorkflowFailure(std::string code, std::string message) : std::runtime_error(message), code(std::move(code)) {}
@@ -171,6 +204,11 @@ void finishImage(ImageBuffer stacked, const fs::path& directory, const DeepSkyWo
             ensure(background.ok, background.errorCode, background.message); image = std::move(background.image);
         }
         result.backgroundMaster = directory / "stack-background.fits"; write(image, result.backgroundMaster);
+        // The reference is this run's own background-corrected image: matching
+        // calibration, units, channel alignment and crop, never an unrelated
+        // file. Keep one optional full-size RGB copy; no extra disk snapshot.
+        ImageBuffer developmentReference;
+        if (o.lockDenoiseStretch) developmentReference = image;
         if (o.denoiseH != 0) {
             emit("denoise", .91);
             auto q = o.quality; q.measureStars = false;
@@ -225,7 +263,9 @@ void finishImage(ImageBuffer stacked, const fs::path& directory, const DeepSkyWo
             if (o.saveDenoiseStages) write(image, directory / "stack-background-denoised.fits");
         }
         emit("develop", .95);
-        result.development = AstroDevelop().apply(image, o.develop);
+        result.development = AstroDevelop().apply(image, o.develop,
+            o.lockDenoiseStretch ? &developmentReference : nullptr);
+        result.denoiseStretchLocked = o.lockDenoiseStretch && result.development.ok;
         ensure(result.development.ok, result.development.errorCode, result.development.message);
         result.developed = directory / "developed.tiff"; write(result.development.image, result.developed);
         result.development.image = {};
@@ -233,8 +273,9 @@ void finishImage(ImageBuffer stacked, const fs::path& directory, const DeepSkyWo
 } // namespace
 
 DeepSkyWorkflowOptions::DeepSkyWorkflowOptions() {
-    stack.method = StackMethod::SigmaClip;
-    stack.sigma = {.sigmaLow = 3, .sigmaHigh = 3, .medianMad = true, .iterations = 3};
+    stack.method = StackMethod::WinsorizedSigmaClip;
+    stack.winsorizedSigma = {.sigmaLow = 3, .sigmaHigh = 3};
+    stack.sigma = {.sigmaLow = 3, .sigmaHigh = 3, .medianMad = false, .iterations = 3};
     stack.alignSimilarity = true;
     stack.fitsDemosaic = FitsDemosaic::MalvarGuarded;
     stack.interpolation = RegistrationInterpolation::Bicubic;
@@ -333,7 +374,21 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         calibration.bias = masterBias.empty() ? nullptr : &masterBias;
         calibration.flat = masterFlat.empty() ? nullptr : &masterFlat;
         const bool calibrated = calibration.dark || calibration.bias || calibration.flat;
-        const auto readLight = [&](const fs::path& path) {
+        const bool alignFrames = o.stack.alignTranslation || o.stack.alignSimilarity ||
+                                 o.stack.alignAffine || o.stack.alignDistortion;
+        std::vector<detail::GuardReplay> guardReplay;
+        constexpr std::size_t replayBudget = 64 * 1024 * 1024;
+        if (o.analysisOnly && alignFrames && !calibrated && readOptions.fits.debayer &&
+            readOptions.fits.demosaic == FitsDemosaic::MalvarGuarded) {
+            const auto perFrame = std::min<std::size_t>(5000,
+                replayBudget / inputs.size() / std::max<std::size_t>(80, sizeof(detail::GuardAperture)));
+            guardReplay.reserve(inputs.size());
+            for (std::size_t i = 0; i < inputs.size(); ++i) guardReplay.emplace_back(perFrame);
+        }
+        const auto readLight = [&](std::size_t index) {
+            const auto& path = result.frames[index].input;
+            if (!guardReplay.empty() && isFitsPath(path))
+                return detail::readAnalysisFits(path, readOptions.fits, guardReplay[index]);
             if (!calibrated) return codec.read(path, readOptions);
             if (isFitsPath(path)) return FitsCodec().read(path, readOptions.fits, &calibration);
             auto read = codec.read(path, readOptions);
@@ -344,9 +399,41 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             return read;
         };
         const SequenceQualityAnalyzer analyzer;
+        const bool assessNativeGrid = o.analysisOnly && !alignFrames;
+        // Analysis ends after assessment. Reserve the stack/finish range only
+        // for full runs, so the review progress bar uses its full scale.
+        const double measureEnd = assessNativeGrid ? .96 : (o.analysisOnly ? .40 : .20);
+        const double alignEnd = o.analysisOnly ? .98 : .55;
+        std::vector<SequenceFrameSample> samples(inputs.size());
         std::size_t reference = 0;
         double best = -1;
-        for (std::size_t i = 0; i < inputs.size(); ++i) {
+        const bool eligible = o.analysisOnly && !calibrated && !o.sensorPattern && !o.stack.alignDistortion &&
+            o.stack.registration.starDetection.maxStars <= 1000 && o.stack.fitsDemosaic != FitsDemosaic::Menon &&
+            o.stack.fitsDemosaic != FitsDemosaic::Ratio;
+        const auto cpuLimit = std::min<std::size_t>(std::thread::hardware_concurrency(),
+            o.analysisWorkers == 0 ? 4 : o.analysisWorkers);
+        const auto available = eligible && cpuLimit > 1 ? analysisMemoryBudget() : 0;
+        const auto reserved = guardReplay.empty() ? 0 : replayBudget;
+        const auto memoryBudget = available > reserved ? available - reserved : 0;
+        const auto frameCapacity = [&](std::size_t i, std::uint64_t referencePixels) -> std::size_t {
+            const auto& f = result.frames[i];
+            if (!memoryBudget || !isFitsPath(f.input)) return 1;
+            auto width = f.native.width, height = f.native.height;
+            if (!width || !height) {
+                // Admission uses the header, not compressed/file byte size.
+                // Unsupported geometry retains the normal serial decode/error path.
+                const auto header = FitsCodec().inspect(f.input);
+                if (!header.ok) return 1;
+                width = header.metadata.width;
+                height = header.metadata.height;
+            }
+            // Extremely narrow images can be enlarged by the detector's
+            // minimum proxy width. Their scratch use is outside this estimate.
+            if (width < 16 || height < 16) return 1;
+            return detail::analysisFrameCapacity(std::uint64_t(width) * height, referencePixels, inputs.size(), o.quality.sampleSide,
+                                                  memoryBudget, cpuLimit);
+        };
+        const auto prepareMeasurement = [&](std::size_t i) {
             auto& f = result.frames[i];
             f.input = fs::canonical(inputs[i]);
             ensure(unique.insert(f.input).second, "DuplicateInput", "A light was supplied more than once");
@@ -363,12 +450,34 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                 ensure(sourceDigests.insert(f.sha256).second,"DuplicateInput","Identical source bytes cannot be independent samples");
                 checkIdentity(f);
             }
-            emit("measure", .20 * i / inputs.size(), i + 1);
-            const auto decoded = readLight(f.input);
+            emit("measure", measureEnd * i / inputs.size(), i + 1);
+            return true;
+        };
+        struct Measurement {
+            SequenceFrameSample native;
+            std::string readError, readMessage;
+        };
+        const auto measure = [&](std::size_t i) -> Measurement {
+            const auto decoded = readLight(i);
+            if (!decoded.ok) return {{}, decoded.errorCode, decoded.message};
+            return {analyzer.sample(decoded.image, o.quality), {}, {}};
+        };
+        const auto recordMeasurement = [&](std::size_t i, Measurement measured) {
+            auto& f = result.frames[i];
             checkIdentity(f);
-            if (!decoded.ok) { f.errorCode = decoded.errorCode; f.message = decoded.message; continue; }
-            f.native = analyzer.sample(decoded.image, o.quality);
-            if (!f.native.ok) { f.errorCode = f.native.errorCode; f.message = f.native.message; continue; }
+            if (!measured.readError.empty()) { f.errorCode = measured.readError; f.message = measured.readMessage; return; }
+            f.native = std::move(measured.native);
+            // Reports retain scalar evidence only. With alignment disabled,
+            // this is already the final temporal grid; move it into assessment.
+            std::vector<float> luminance, coverage;
+            luminance.swap(f.native.luminance);
+            coverage.swap(f.native.coverage);
+            if (assessNativeGrid && f.native.ok) {
+                samples[i] = f.native;
+                samples[i].luminance = std::move(luminance);
+                samples[i].coverage = std::move(coverage);
+            }
+            if (!f.native.ok) { f.errorCode = f.native.errorCode; f.message = f.native.message; return; }
             // Missing shape measurements must not win by looking like a zero-
             // width star. Keep a coverage-only fallback when all are unknown.
             const double score = f.native.medianFwhm > 0
@@ -376,46 +485,108 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                     (1 - .5 * f.native.medianEccentricity) / std::max(1.0, f.native.medianFwhm * f.native.medianFwhm)
                 : f.native.validFraction;
             if (score > best) { best = score; reference = i; }
-        }
+        };
+        detail::orderedAnalysisFrames(inputs.size(), prepareMeasurement,
+            [&](std::size_t i) { return frameCapacity(i, 0); }, measure, recordMeasurement);
         ensure(best >= 0, "NoUsableFrames", "None of the inputs has usable scientific samples");
         if (o.referenceIndex >= 0) reference = std::size_t(o.referenceIndex);
         ensure(result.frames[reference].native.ok, "ReferenceInvalid", "Selected reference is not usable");
         result.referenceIndex = reference; result.frames[reference].reference = true;
-        auto ref = readLight(result.frames[reference].input);
-        ensure(ref.ok, ref.errorCode, ref.message);
+        ImageReadResult ref;
+        if (!assessNativeGrid) {
+            ref = readLight(reference);
+            ensure(ref.ok, ref.errorCode, ref.message);
+        }
         checkIdentity(result.frames[reference]);
         const Registration registration(o.stack.interpolation);
-        std::vector<SequenceFrameSample> samples(inputs.size());
+        std::optional<PreparedRegistrationReference> prepared;
+        if (o.analysisOnly && alignFrames && std::any_of(result.frames.begin(), result.frames.end(),
+                [&](const auto& f) { return f.native.ok && !f.reference; }))
+            prepared.emplace(registration.prepareReference(std::move(ref.image), o.stack.registration, o.stack.alignDistortion));
+        const auto& referenceImage = prepared ? prepared->image() : ref.image;
         std::vector<double> registeredVariances(inputs.size(),0);
         std::vector<fs::path> aligned(inputs.size());
         std::vector<DistortionTransform> distortions(inputs.size());
-        for (std::size_t i = 0; i < inputs.size(); ++i) {
+        const auto prepareAlignment = [&](std::size_t i) {
             auto& f = result.frames[i];
-            if (!f.native.ok) { samples[i].errorCode = f.errorCode; continue; }
-            emit("align", .20 + .35 * i / inputs.size(), i + 1);
+            if (!f.native.ok) { samples[i].errorCode = f.errorCode; return false; }
+            emit("align", measureEnd + (alignEnd - measureEnd) * i / inputs.size(), i + 1);
             checkIdentity(f);
-            auto decoded = readLight(f.input);
-            ensure(decoded.ok, decoded.errorCode, decoded.message);
-            ImageBuffer image;
-            const bool needsAlignment = i != reference && (o.stack.alignTranslation || o.stack.alignSimilarity || o.stack.alignAffine || o.stack.alignDistortion);
+            if (assessNativeGrid) {
+                f.registration.ok = true;
+                f.alignedCoverage = samples[i].validFraction;
+                return false;
+            }
+            return true;
+        };
+        struct AlignedMeasurement {
+            RegistrationResult registration;
+            DistortionTransform distortion;
+            SequenceFrameSample sample;
+            ImageBuffer pixelsToWrite;
+        };
+        const auto align = [&](std::size_t i) {
+            AlignedMeasurement measured;
+            ImageReadResult decoded;
+            if (i != reference) {
+                decoded = readLight(i);
+                ensure(decoded.ok, decoded.errorCode, decoded.message);
+            }
+            const auto& source = i == reference ? referenceImage : decoded.image;
+            ImageBuffer registeredImage;
+            auto sampleOptions = o.quality;
+            sampleOptions.measureStars = false;
+            const bool needsAlignment = i != reference && alignFrames;
             if (needsAlignment) {
-                auto& distortion = distortions[i];
-                if (o.stack.alignDistortion) f.registration = registration.estimateDistortion(ref.image, decoded.image, distortion, o.stack.registration);
-                else if (o.stack.alignAffine) f.registration = registration.estimateAffine(ref.image, decoded.image, o.stack.registration);
-                else if (o.stack.alignSimilarity) f.registration = registration.estimateSimilarity(ref.image, decoded.image, o.stack.registration);
-                else f.registration = registration.estimateTranslation(ref.image, decoded.image, o.stack.registration);
-                if (!f.registration.ok || f.registration.usedFallback || f.registration.matches < o.stack.registration.minimumMatches) {
-                    f.errorCode = "RegistrationRejected"; f.message = f.registration.message.empty() ? "Registration lacks reliable star matches" : f.registration.message;
-                    samples[i].errorCode = f.errorCode; continue;
+                auto& distortion = measured.distortion;
+                if (o.stack.alignDistortion) measured.registration = prepared
+                    ? registration.estimateDistortion(*prepared, source, distortion)
+                    : registration.estimateDistortion(referenceImage, source, distortion, o.stack.registration);
+                else if (o.stack.alignAffine) measured.registration = prepared
+                    ? registration.estimateAffine(*prepared, source)
+                    : registration.estimateAffine(referenceImage, source, o.stack.registration);
+                else if (o.stack.alignSimilarity) measured.registration = prepared
+                    ? registration.estimateSimilarity(*prepared, source)
+                    : registration.estimateSimilarity(referenceImage, source, o.stack.registration);
+                else measured.registration = prepared ? registration.estimateTranslation(*prepared, source)
+                    : registration.estimateTranslation(referenceImage, source, o.stack.registration);
+                if (!measured.registration.ok || measured.registration.usedFallback || measured.registration.matches < o.stack.registration.minimumMatches) {
+                    return measured;
                 }
-                if (o.stack.alignDistortion) image = registration.applyDistortion(decoded.image, distortion);
-                else if (o.stack.alignAffine) image = registration.applyAffine(decoded.image, f.registration.affine);
-                else if (o.stack.alignSimilarity) image = registration.applySimilarity(decoded.image, f.registration.transform);
-                else image = registration.applyTranslation(decoded.image, f.registration.translation);
-            } else { f.registration.ok = true; image = std::move(decoded.image); }
+                const auto render = [&](const RegistrationPixelGrid* grid) {
+                    if (o.stack.alignDistortion) return registration.applyDistortion(source, distortion, grid);
+                    if (o.stack.alignAffine) return registration.applyAffine(source, measured.registration.affine, grid);
+                    if (o.stack.alignSimilarity) return registration.applySimilarity(source, measured.registration.transform, grid);
+                    return registration.applyTranslation(source, measured.registration.translation, grid);
+                };
+                if (o.analysisOnly || o.sensorPattern) {
+                    measured.sample = analyzer.sample(source, sampleOptions,
+                        [&](const RegistrationPixelGrid& grid) { return render(&grid); });
+                } else {
+                    registeredImage = render(nullptr);
+                    measured.sample = analyzer.sample(registeredImage, sampleOptions);
+                }
+            } else {
+                measured.registration.ok = true;
+                measured.sample = analyzer.sample(source, sampleOptions);
+            }
+            if (!o.analysisOnly && !o.sensorPattern && i != reference)
+                measured.pixelsToWrite = needsAlignment ? std::move(registeredImage) : std::move(decoded.image);
+            return measured;
+        };
+        const auto recordAlignment = [&](std::size_t i, AlignedMeasurement measured) {
+            auto& f = result.frames[i];
+            f.registration = std::move(measured.registration);
+            distortions[i] = std::move(measured.distortion);
+            if (!f.registration.ok || f.registration.usedFallback ||
+                (i != reference && alignFrames && f.registration.matches < o.stack.registration.minimumMatches)) {
+                f.errorCode = "RegistrationRejected";
+                f.message = f.registration.message.empty() ? "Registration lacks reliable star matches" : f.registration.message;
+                samples[i].errorCode = f.errorCode;
+                return;
+            }
+            samples[i] = std::move(measured.sample);
             checkIdentity(f);
-            auto sampleOptions = o.quality; sampleOptions.measureStars = false;
-            samples[i] = analyzer.sample(image, sampleOptions);
             if(independentNoise) registeredVariances[i]=samples[i].noise*samples[i].noise;
             f.alignedCoverage = samples[i].validFraction;
             // Native PSF/noise metrics remain comparable before interpolation.
@@ -425,18 +596,26 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             samples[i].starCount = f.native.starCount;
             samples[i].medianFwhm = f.native.medianFwhm;
             samples[i].medianEccentricity = f.native.medianEccentricity;
-            if (!samples[i].ok) { f.errorCode = samples[i].errorCode; f.message = samples[i].message; continue; }
+            if (!samples[i].ok) { f.errorCode = samples[i].errorCode; f.message = samples[i].message; return; }
             if (!o.analysisOnly && !o.sensorPattern) {
                 aligned[i] = work.path / (std::to_string(i) + ".fits");
-                write(image, aligned[i]);
+                write(i == reference ? referenceImage : measured.pixelsToWrite, aligned[i]);
             }
-        }
-        ref.image.pixels.clear(); ref.image.pixels.shrink_to_fit();
-        emit("assess", .56);
+        };
+        detail::orderedAnalysisFrames(inputs.size(), prepareAlignment,
+            [&](std::size_t i) { return frameCapacity(i, referenceImage.pixelCount()); }, align, recordAlignment);
+        prepared.reset();
+        ref.image = {};
+        std::vector<detail::GuardReplay>().swap(guardReplay);
+        emit("assess", o.analysisOnly ? .99 : .56);
         const auto assessment = analyzer.assess(samples, o.quality);
         for (const auto& frame : calibrationIdentities) checkIdentity(frame);
         result.selectedCount = assessment.selectedCount;
         for (std::size_t i = 0; i < assessment.frames.size(); ++i) result.frames[i].assessment = assessment.frames[i];
+        // Pixel grids have served their last consumer. Releasing them before
+        // stack/finishing prevents sequence-size memory from overlapping the
+        // full-resolution rejection maps and denoising buffers.
+        std::vector<SequenceFrameSample>().swap(samples);
         ensure(assessment.ok, assessment.errorCode, assessment.message);
         if (o.analysisOnly) {
             for (const auto& frame : result.frames) checkIdentity(frame);
@@ -622,6 +801,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         result.ok = true; emit("complete", 1);
     } catch (const WorkflowFailure& e) { result.errorCode = e.code; result.message = e.what(); }
       catch (const std::exception& e) { result.errorCode = "WorkflowFailed"; result.message = e.what(); }
+    if (!result.ok) result.denoiseStretchLocked = false;
     return result;
 }
 DeepSkyWorkflowResult DeepSkyWorkflow::finishMaster(const fs::path& master, const fs::path& directory,
@@ -663,6 +843,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::finishMaster(const fs::path& master, cons
         result.ok = true;
     } catch (const WorkflowFailure& e) { result.errorCode = e.code; result.message = e.what(); }
       catch (const std::exception& e) { result.errorCode = "WorkflowFailed"; result.message = e.what(); }
+    if (!result.ok) result.denoiseStretchLocked = false;
     return result;
 }
 } // namespace photonstack

@@ -59,16 +59,6 @@ public struct RegistrationReport: Equatable, Sendable {
     public var outputURL: URL
 }
 
-private struct ParsedRegistrationMetrics {
-    var mode: AlignmentMethod
-    var dx: Double
-    var dy: Double
-    var scale: Double
-    var rotationRadians: Double
-    var matches: Int
-    var usedFallback: Bool
-}
-
 struct ArtifactMarkerLabelPlacement: Equatable {
     var rect: CGRect
     var anchor: CGPoint
@@ -259,6 +249,7 @@ public struct MaskBrushStroke: Codable, Equatable, Sendable {
 
 public enum PendingProjectTransition: Equatable, Sendable {
     case create(template: ProjectTemplate, name: String?, importAfterCreate: Bool)
+    case createUsingCurrentAssets(template: ProjectTemplate, name: String?)
     case open(directory: URL)
     case closeWindow
     case terminateApplication
@@ -2098,20 +2089,19 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     public func requestCreateProject(
         template: ProjectTemplate,
         name: String? = nil,
-        importAfterCreate: Bool = false
+        importAfterCreate: Bool = false,
+        reuseCurrentAssets: Bool = false
     ) -> Bool {
         guard hasActiveProcessing == false else {
             return false
         }
         guard hasUnsavedChanges else {
-            createProject(template: template, name: name)
+            createProject(template: template, name: name, reuseCurrentAssets: reuseCurrentAssets)
             return true
         }
-        pendingProjectTransition = .create(
-            template: template,
-            name: name,
-            importAfterCreate: importAfterCreate
-        )
+        pendingProjectTransition = reuseCurrentAssets
+            ? .createUsingCurrentAssets(template: template, name: name)
+            : .create(template: template, name: name, importAfterCreate: importAfterCreate)
         return false
     }
 
@@ -2226,6 +2216,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         switch transition {
         case let .create(template, name, _):
             createProject(template: template, name: name)
+        case let .createUsingCurrentAssets(template, name):
+            createProject(template: template, name: name, reuseCurrentAssets: true)
         case let .open(directory):
             await loadProject(from: directory)
         case .closeWindow:
@@ -2240,6 +2232,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         switch transition {
         case let .create(template, name, _):
             createProject(template: template, name: name)
+        case let .createUsingCurrentAssets(template, name):
+            createProject(template: template, name: name, reuseCurrentAssets: true)
         case let .open(directory):
             startLoadProject(from: directory)
         case .closeWindow:
@@ -2249,28 +2243,41 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
-    public func createProject(template: ProjectTemplate, name: String? = nil) {
+    public func createProject(
+        template: ProjectTemplate,
+        name: String? = nil,
+        reuseCurrentAssets: Bool = false
+    ) {
         guard hasActiveProcessing == false else {
             return
         }
         cancelMetadataRefresh()
         clearPendingAssetImports()
+        // A new workspace may reference the same originals, but never inherits
+        // asset identity, result provenance or a saved destination from its source.
+        let initialAssets = reuseCurrentAssets ? project.assets.map { asset in
+            PhotonStackAsset(originalURL: asset.originalURL, kind: asset.kind,
+                role: asset.role, metadata: asset.metadata)
+        } : []
         let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines)
         clearProjectTransientState()
         project = template.makeProject(name: trimmedName?.isEmpty == false ? trimmedName : nil)
+        project.assets = initialAssets
+        parameters = ProcessingParameters()
         if usesManagedPreviewDirectory {
             previewDirectory = Self.managedPreviewDirectory(for: project.id)
         }
         selectedTemplate = template
-        selectedAssetID = nil
+        selectedAssetID = initialAssets.first?.id
         activeLayerID = nil
         currentProjectDirectory = nil
-        previewURL = nil
+        previewURL = initialAssets.first?.originalURL
         previewOperationID = nil
         editGraphNeedsReplay = false
         canvasMode = .sourcePreview
         jobs.removeAll()
         batchQueue.removeAll()
+        isBatchPaused = false
         project.replaceBatchQueue([])
         resetBatchRegistrationSelection(selectAll: true)
         commandOutput = ""
@@ -2549,88 +2556,22 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         clearPreviewCache(plan)
     }
 
-    private func buildPreviewCacheCleanupPlan() throws -> PreviewCacheCleanupPlan {
-        guard FileManager.default.fileExists(atPath: previewDirectory.path) else {
-            return PreviewCacheCleanupPlan(fileURLs: [], totalBytes: 0)
-        }
-
+    public func storageSnapshot() async throws -> WorkspaceStorageSnapshot {
+        let root = previewDirectory
         let protectedPaths = previewCacheProtectedPaths()
-        let resourceKeys: Set<URLResourceKey> = [
-            .isDirectoryKey,
-            .isRegularFileKey,
-            .isSymbolicLinkKey,
-            .fileSizeKey,
-        ]
-        let contents = try FileManager.default.contentsOfDirectory(
-            at: previewDirectory,
-            includingPropertiesForKeys: Array(resourceKeys),
-            options: []
-        )
-        var fileURLs: [URL] = []
-        var totalBytes: Int64 = 0
-        for url in contents.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            let standardizedURL = url.standardizedFileURL
-            let values = try standardizedURL.resourceValues(forKeys: resourceKeys)
-            guard values.isSymbolicLink != true else {
-                continue
-            }
-            if values.isDirectory == true {
-                guard Self.isManagedPreviewDirectoryName(standardizedURL.lastPathComponent) else {
-                    continue
-                }
-                try collectPreviewCacheFiles(
-                    in: standardizedURL,
-                    protectedPaths: protectedPaths,
-                    resourceKeys: resourceKeys,
-                    fileURLs: &fileURLs,
-                    totalBytes: &totalBytes
-                )
-                continue
-            }
-            guard values.isRegularFile == true,
-                  Self.isManagedPreviewFileName(standardizedURL.lastPathComponent),
-                  protectedPaths.contains(standardizedURL.path) == false
-            else {
-                continue
-            }
-            fileURLs.append(standardizedURL)
-            totalBytes += Int64(values.fileSize ?? 0)
+        let scan = Task.detached(priority: .utility) {
+            try WorkspaceStorageScanner.scan(root: root, protectedPaths: protectedPaths).snapshot
         }
-        return PreviewCacheCleanupPlan(fileURLs: fileURLs, totalBytes: totalBytes)
+        return try await withTaskCancellationHandler {
+            try await scan.value
+        } onCancel: {
+            scan.cancel()
+        }
     }
 
-    private func collectPreviewCacheFiles(
-        in directory: URL,
-        protectedPaths: Set<String>,
-        resourceKeys: Set<URLResourceKey>,
-        fileURLs: inout [URL],
-        totalBytes: inout Int64
-    ) throws {
-        let contents = try FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: Array(resourceKeys),
-            options: []
-        )
-        for url in contents.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            let standardizedURL = url.standardizedFileURL
-            let values = try standardizedURL.resourceValues(forKeys: resourceKeys)
-            guard values.isSymbolicLink != true else {
-                continue
-            }
-            if values.isDirectory == true {
-                try collectPreviewCacheFiles(
-                    in: standardizedURL,
-                    protectedPaths: protectedPaths,
-                    resourceKeys: resourceKeys,
-                    fileURLs: &fileURLs,
-                    totalBytes: &totalBytes
-                )
-            } else if values.isRegularFile == true,
-                      protectedPaths.contains(standardizedURL.path) == false {
-                fileURLs.append(standardizedURL)
-                totalBytes += Int64(values.fileSize ?? 0)
-            }
-        }
+    private func buildPreviewCacheCleanupPlan() throws -> PreviewCacheCleanupPlan {
+        let scan = try WorkspaceStorageScanner.scan(root: previewDirectory, protectedPaths: previewCacheProtectedPaths(), includeUnknownFiles: false)
+        return PreviewCacheCleanupPlan(fileURLs: scan.reclaimableURLs, totalBytes: scan.snapshot.reclaimableBytes)
     }
 
     private func pruneEmptyManagedPreviewDirectories() throws {
@@ -2669,27 +2610,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     private static func isManagedPreviewFileName(_ name: String) -> Bool {
-        [
-            "cache-",
-            "artifact-marked-",
-            "cloud-marked-",
-            "export-layer-stack-",
-            "layer-stack-",
-            "mask-brush-",
-            "meteor-layer-",
-            "replay-",
-            "restore-meteors-",
-        ].contains { name.hasPrefix($0) }
+        WorkspaceStorageScanner.isManagedFileName(name)
     }
 
     private static func isManagedPreviewDirectoryName(_ name: String) -> Bool {
-        [
-            "clean-sequence-",
-            "mosaic-",
-            "registered-batch-",
-            "replay-",
-            "workflow-",
-        ].contains { name.hasPrefix($0) }
+        WorkspaceStorageScanner.isManagedDirectoryName(name)
     }
 
     private func previewCacheProtectedPaths() -> Set<String> {
@@ -2711,8 +2636,14 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
         func add(_ graph: EditGraph) {
             for operation in graph.operations {
-                add(operation.parameters["output"].map(URL.init(fileURLWithPath:)))
-                add(operation.parameters["previewOutput"].map(URL.init(fileURLWithPath:)))
+                // Includes report/sourceMaster/inputPath provenance, not just the
+                // displayed output. History retains these references as well.
+                for path in operation.parameters.values where path.hasPrefix("/") && !path.contains("\n") {
+                    add(URL(fileURLWithPath: path))
+                }
+                if let report = operation.parameters["report"] {
+                    add(URL(fileURLWithPath: report).deletingLastPathComponent().appendingPathComponent(DeepSkyResultReuse.receiptFileName))
+                }
             }
         }
 
@@ -2728,9 +2659,23 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         add(project.workspaceState?.previewURL)
         add(project.editGraph)
         add(project.layers)
+        // Imported products can live inside an app-managed cache directory.
+        // Once imported, their source bytes are originals regardless of name.
+        project.assets.forEach { add($0.originalURL) }
+        if let report = project.deepSkySettings?.lastReport {
+            for path in [report.master, report.backgroundMaster, report.developed,
+                         report.rejectionLow, report.rejectionHigh, report.sensorPatternReport ?? ""]
+                + report.noiseReferencePaths where !path.isEmpty {
+                add(URL(fileURLWithPath: path))
+            }
+            report.frames.forEach { add(URL(fileURLWithPath: $0.input)) }
+        }
         for artifact in project.artifacts {
             artifact.outputURLs.forEach { add($0) }
-            artifact.frames.forEach { add($0.outputURL) }
+            artifact.frames.forEach { add($0.sourceURL); add($0.outputURL) }
+            for path in artifact.parameters.values where path.hasPrefix("/") && !path.contains("\n") {
+                add(URL(fileURLWithPath: path))
+            }
         }
         for item in batchQueue {
             add(item.inputURL)
@@ -3594,6 +3539,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     private func clearProjectTransientState() {
+        // Interactive previews do not count as foreground processing. Invalidate
+        // their tasks and base inputs before replacing either project or cache root.
+        cancelCurvePreview(restoreBasePreview: false)
+        cancelHistogramRefresh()
+        rawDecodeStatus = nil
         pendingAssetRemovalIDs.removeAll()
         pendingArtifactRemovalID = nil
         pendingPreviewCacheCleanupPlan = nil
@@ -3816,6 +3766,14 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
     @Published public private(set) var deepSkySchema: DeepSkySchema?
 
+    public var deepSkyWorkingDirectory: URL {
+        currentProjectDirectory?.appendingPathComponent("processing", isDirectory: true) ?? previewDirectory
+    }
+
+    public func inspectDeepSkyResources(recipe: String, destination: URL) async throws -> DeepSkyResourcePlan {
+        try await processingService.preflightDeepSky(recipeText: recipe, destination: destination)
+    }
+
     public var deepSkySettings: DeepSkySettings {
         var settings = project.deepSkySettings ?? DeepSkySettings()
         for (key, assets) in [("calibration.darks", darkAssets), ("calibration.biases", biasAssets), ("calibration.flats", flatAssets)] {
@@ -3881,16 +3839,49 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         triggerAutosave()
     }
 
-    var deepSkyReviewDecodeKey: String {
-        "\(deepSkySettings.values["decode.debayer"] ?? "on")|\(deepSkySettings.values["decode.demosaic"] ?? "malvar")"
+    private func deepSkyReviewDecodeArguments(for input: URL) -> [String] {
+        // Inspection normalizes old recipes, including their legacy Malvar
+        // default. A new project follows the bundled schema; its first canvas
+        // preview may be requested before the processing panel loads it.
+        let overrides = project.deepSkySettings?.values ?? [:]
+        func value(_ key: String, initialDefault: String) -> String {
+            overrides[key] ?? deepSkySchema?.fields.first { $0.key == key }?.defaultValue ?? initialDefault
+        }
+        switch AssetKind.detect(from: input) {
+        case .fits:
+            let gains = ["decode.cfa-red", "decode.cfa-green", "decode.cfa-blue"].map {
+                value($0, initialDefault: "1")
+            }
+            return [
+                "--fits-debayer", value("decode.debayer", initialDefault: "on"),
+                "--fits-demosaic", value("decode.demosaic", initialDefault: "malvar-guarded"),
+                "--fits-cfa-gains", gains.joined(separator: ",")
+            ]
+        case .raw:
+            // The stack decodes linear sensor values before its display render.
+            return [
+                "--raw-white-balance", value("raw.white-balance", initialDefault: "camera"),
+                "--raw-temperature", value("raw.temperature", initialDefault: "6500"),
+                "--raw-tint", value("raw.tint", initialDefault: "0"),
+                "--raw-exposure-bias", value("raw.exposure", initialDefault: "0"),
+                "--raw-black-level", value("raw.black-level", initialDefault: "camera"),
+                "--raw-black-value", value("raw.manual-black", initialDefault: "0"),
+                "--raw-demosaic", value("raw.demosaic", initialDefault: "high"),
+                "--raw-linear", "on"
+            ]
+        default:
+            return []
+        }
+    }
+
+    func deepSkyReviewDecodeKey(for input: URL) -> String {
+        deepSkyReviewDecodeArguments(for: input).joined(separator: "|")
     }
 
     /// Independent review preview. Never replaces the editor's stack or adds history.
     func makeDeepSkyReviewPreview(input: URL, output: URL) async throws {
-        let demosaic = deepSkySettings.values["decode.demosaic"] ?? "malvar"
-        let debayer = deepSkySettings.values["decode.debayer"] ?? "on"
         _ = try await processingService.runCLI(arguments: ["review-preview", "--input", input.path,
-            "--output", output.path, "--fits-debayer", debayer, "--fits-demosaic", demosaic])
+            "--output", output.path] + deepSkyReviewDecodeArguments(for: input))
         try Task.checkCancellation()
     }
 
@@ -4018,7 +4009,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try recipe.write(to: recipeURL, atomically: true, encoding: .utf8)
             defer { try? FileManager.default.removeItem(at: recipeURL) }
             let report = try await self.processingService.finishDeepSky(recipe: recipeURL,
-                master: URL(fileURLWithPath: previous.master), outputDirectory: directory, previous: previous)
+                master: URL(fileURLWithPath: previous.master), outputDirectory: directory, previous: previous,
+                buildIdentity: self.cacheBuildIdentity)
             try Task.checkCancellation()
             var settings = self.deepSkySettings; settings.lastReport = report
             self.project.deepSkySettings = settings
@@ -4055,7 +4047,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             defer { try? FileManager.default.removeItem(at: recipeURL) }
             let report: DeepSkyReport
             do {
-                report = try await self.processingService.deepSky(recipe: recipeURL, outputDirectory: directory, analyzeOnly: analyzeOnly)
+                report = try await self.processingService.deepSky(recipe: recipeURL, outputDirectory: directory, analyzeOnly: analyzeOnly,
+                    buildIdentity: self.cacheBuildIdentity)
             } catch {
                 // Even selection safeguards return a reviewable report. Never
                 // interpret process failure as a successful stack.
@@ -5147,6 +5140,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public func exportCurrentImage(to output: URL) async {
+        do { try validateExportDestination(output) }
+        catch { errorMessage = error.localizedDescription; return }
         guard editGraphNeedsReplay == false else {
             errorMessage = localized(.editGraphNeedsReplay)
             return
@@ -5185,6 +5180,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             guard let input else {
                 throw LayerStackPreviewError.noVisibleLayers
             }
+            try self.validateExportDestination(output, additionalSource: input)
             let result = try await self.processingService.convert(
                 input: input,
                 output: output,
@@ -5193,6 +5189,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             )
             try Task.checkCancellation()
             do {
+                try self.validateExportDestination(output, additionalSource: input)
                 try self.writeExportSidecar(
                     input: input,
                     output: output,
@@ -5205,6 +5202,37 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             }
             return result
         }
+    }
+
+    private func validateExportDestination(_ output: URL, additionalSource: URL? = nil) throws {
+        var paths = previewCacheProtectedPaths()
+        if let currentProjectDirectory {
+            paths.insert(currentProjectDirectory.appendingPathComponent(ProjectRepository.projectFileName).path)
+        }
+        func addSourcePath(_ path: String) {
+            if path.hasPrefix("/") { paths.insert(path) }
+            else {
+                // Engine recipes resolve relative inputs from the recipe's
+                // working directory, including export replay's temporary recipe.
+                paths.insert(deepSkyWorkingDirectory.appendingPathComponent(path).standardizedFileURL.path)
+                paths.insert(previewDirectory.appendingPathComponent(path).standardizedFileURL.path)
+            }
+        }
+        func addRecipe(_ recipe: String?) throws {
+            guard let recipe, recipe.hasPrefix("PHOTONSTACK_DEEP_SKY_RECIPE ") else { return }
+            for path in try DeepSkyResultReuse.sourcePaths(inRecipe: recipe) { addSourcePath(path) }
+        }
+        if let settings = project.deepSkySettings {
+            for path in try DeepSkyResultReuse.calibrationSourcePaths(values: settings.values) { addSourcePath(path) }
+            try addRecipe(settings.lastReport?.recipe)
+        }
+        for graph in [project.editGraph] + previewHistory.map(\.editGraph) + (editGraphUndoStack + editGraphRedoStack).map(\.editGraph) {
+            for operation in graph.operations { try addRecipe(operation.parameters["recipe"]) }
+        }
+        if let additionalSource { paths.insert(additionalSource.path) }
+        let sources = paths.map { URL(fileURLWithPath: $0) }
+        try WorkspaceExportProtection.validate(output, sources: sources)
+        try WorkspaceExportProtection.validate(exportSidecarURL(for: output), sources: sources)
     }
 
     public func exportProductManifest(to output: URL) async {
@@ -7671,7 +7699,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             ]
         case .stretch:
             if operation.parameters["mode"] == "astro-v1" {
-                return ["mode": .options(["astro-v1"]), "stellarBalance": .toggle,
+                return ["mode": .options(["astro-v1"]), "linearDisplayColor": .toggle, "stellarBalance": .toggle,
                         "toneCurve": .options(["rational", "asinh"]), "toneScale": .decimal(0...1_000_000_000), "whitePoint": .decimal(0...1_000_000_000),
                         "brightness": .decimal(0.3...4), "background": .decimal(0.01...0.12), "starExposure": .decimal(0.1...1), "starPeakThreshold": .decimal(0...1), "starColorCleanup": .decimal(0...1),
                         "saturation": .decimal(0...1.5), "redGain": .decimal(0.6...1.4), "blueGain": .decimal(0.6...1.4)]
@@ -8906,6 +8934,12 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             return output
         case .stack:
             if operation.parameters["mode"] == "deepSkyRecipe", let recipe = operation.parameters["recipe"] {
+                if let reportPath = operation.parameters["report"], let outputPath = operation.parameters["output"],
+                   let verified = try await processingService.reusableDeepSkyResult(
+                    reportURL: URL(fileURLWithPath: reportPath), recipe: recipe,
+                    output: URL(fileURLWithPath: outputPath), buildIdentity: cacheBuildIdentity) {
+                    return verified
+                }
                 let directory = trackReplayTemporaryDirectory(previewDirectory.appendingPathComponent("replay-deep-sky-\(UUID().uuidString)"))
                 let recipeURL = previewDirectory.appendingPathComponent("recipe-\(UUID().uuidString).txt")
                 try recipe.write(to: recipeURL, atomically: true, encoding: .utf8)
@@ -10905,6 +10939,154 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try? FileManager.default.removeItem(at: directory)
         }
         replayTemporaryDirectories.removeAll()
+    }
+
+    /// Capture only the current result's lineage, never the project's unrelated history.
+    public func captureReusableWorkflow(name: String, redetectSelections: Bool = false) async throws -> ReusableWorkflow {
+        guard !hasActiveProcessing, !editGraphNeedsReplay else {
+            throw PhotonStackAppCore.WorkflowError("请等待处理结束并应用当前修改后再保存 / Finish processing and apply pending edits first")
+        }
+        var capturedPlan = fullResolutionExportReplayPlan()
+        if canvasMode == .layerComposite {
+            let layers = visiblePreviewLayers
+            // Normal, opaque successive adjustment results cover earlier layers. This is
+            // the editor's ordinary finishing path, not a custom multi-image composite.
+            guard let top = layers.last, let topURL = top.inputURL,
+                  layers.allSatisfy({ $0.inputURL != nil && $0.maskArtifactID == nil && $0.blendMode == .normal && $0.opacity >= 0.999 }) else {
+                throw PhotonStackAppCore.WorkflowError("当前结果包含多图层混合或手工蒙版，不能自动移植到新目标。请选择单一处理结果后保存。 / Select a single unmasked result before saving a reusable workflow.")
+            }
+            let size = try await workflowPixelSize(at: topURL)
+            for url in Set(layers.compactMap(\.inputURL)) {
+                guard try await workflowPixelSize(at: url) == size else {
+                    throw PhotonStackAppCore.WorkflowError("图层尺寸不同，当前画布不是单一处理结果。请隐藏其他图层再保存。 / Hide differently sized layers before saving a single result.")
+                }
+            }
+            capturedPlan = editGraphReplayPlan(targetURL: topURL, finalOperationIsEligible: isFullResolutionExportOperation)
+        }
+        guard let plan = capturedPlan else {
+            throw PhotonStackAppCore.WorkflowError("当前图片没有可保存的处理历史。请先堆栈或应用后期调整；导入的成品无法反推出操作。 / Process a result first; a flattened image has no recoverable workflow.")
+        }
+        var operations = plan.operations.filter { $0.isEnabled }
+        // Sequence macros replay their own decoding/calibration. Earlier preview operations
+        // are not a per-frame pipeline and must not be applied to just the first exposure.
+        if let sequenceIndex = operations.lastIndex(where: { $0.kind == .stack || $0.kind == .drizzle }) {
+            var sequence = operations[sequenceIndex]
+            if sequence.kind == .stack, sequence.parameters["mode"] != "deepSkyRecipe",
+               let calibration = calibrationOperation(before: sequence), calibration.isEnabled {
+                sequence.parameters.merge(calibration.parameters) { value, _ in value }
+                sequence.parameters["calibrationApplied"] = "true"
+            }
+            operations = [sequence] + Array(operations.dropFirst(sequenceIndex + 1))
+        }
+        var steps: [WorkflowStep] = []
+        var notices: [String] = []
+        for operation in operations {
+            guard isFullResolutionExportOperation(operation) else { continue }
+            if operation.kind == .stack, operation.parameters["mode"] == "deepSkyRecipe" {
+                guard let recipe = operation.parameters["recipe"] else { throw PhotonStackAppCore.WorkflowError("缺少原始堆栈配方 / Missing stack recipe") }
+                try FileManager.default.createDirectory(at: previewDirectory, withIntermediateDirectories: true)
+                let recipeURL = previewDirectory.appendingPathComponent("workflow-capture-\(UUID().uuidString).txt")
+                try recipe.write(to: recipeURL, atomically: true, encoding: .utf8)
+                defer { try? FileManager.default.removeItem(at: recipeURL) }
+                let inspected = try await processingService.inspectDeepSkyRecipe(recipeURL)
+                let captured = try WorkflowStep.deepSky(values: inspected.values)
+                steps.append(captured.step)
+                notices += captured.notices
+            } else {
+                steps.append(try WorkflowStep.capture(operation, redetectSelections: redetectSelections))
+            }
+        }
+        if redetectSelections, operations.contains(where: { $0.kind == .artifactRemove || $0.kind == .cloudRemove }) {
+            notices.append("飞机线和云区会在新图上自动重新检测，不复用原图的手工圈选。 / Trails and clouds are re-detected on each new image.")
+        }
+        let workflow = ReusableWorkflow(name: name, steps: steps, parameters: parameters,
+                                        exportOptions: exportOptions, notices: notices)
+        try workflow.validate()
+        return workflow
+    }
+
+    private func workflowPixelSize(at url: URL) async throws -> (width: Double, height: Double) {
+        if let size = imagePixelSize(at: url) { return size }
+        // FITS is not an ImageIO format. Inspect its header with the same engine
+        // used for processing; do not reject an ordinary scientific source layer.
+        let result = try await processingService.inspect(PhotonStackAsset(originalURL: url, kind: AssetKind.detect(from: url)))
+        let metadata = try parseInspectMetadata(result)
+        guard let width = metadata.width, let height = metadata.height else {
+            throw PhotonStackAppCore.WorkflowError("无法读取图层尺寸 / Cannot inspect layer dimensions")
+        }
+        return (5...8).contains(metadata.orientation ?? 1) ? (Double(height), Double(width)) : (Double(width), Double(height))
+    }
+
+    /// Each job gets an isolated editor/cache; the user's open project is never replaced.
+    func executeReusableWorkflow(_ workflow: ReusableWorkflow, plan: WorkflowInputPlan, inputs: [URL],
+                                 directory: URL, onStep: @MainActor (Int, String) -> Void) async throws -> URL {
+        try workflow.validate()
+        guard let first = inputs.first else { throw PhotonStackAppCore.WorkflowError("没有输入照片 / No input images") }
+        var jobProject = PhotonStackProject(name: workflow.name)
+        jobProject.addAssets(from: inputs, role: .light)
+        for role in workflow.requiredCalibration {
+            jobProject.addAssets(from: plan.calibration[role, default: []], role: role.assetRole)
+        }
+        let cache = directory.appendingPathComponent("processing", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        let worker = PhotonStackWorkspaceModel(project: jobProject, parameters: workflow.parameters,
+            language: language, autosaveEnabled: false, exportOptions: workflow.exportOptions,
+            processingService: processingService, previewDirectory: cache)
+        var input = first
+        for (index, step) in workflow.steps.enumerated() {
+            try Task.checkCancellation()
+            onStep(index, step.kind.rawValue)
+            var values = step.parameters
+            if step.deepSkyValues != nil {
+                let schema = try await processingService.deepSkySchema()
+                values = ["mode": "deepSkyRecipe", "recipe": try plan.deepSkyRecipe(for: step, schema: schema)]
+            } else if step.kind == .rawDecode {
+                guard let asset = jobProject.assets.first(where: { $0.originalURL == first }) else {
+                    throw PhotonStackAppCore.WorkflowError("无法绑定新原片 / Cannot bind new source")
+                }
+                values["assetID"] = asset.id.uuidString
+            } else if step.kind == .stack {
+                values["calibrationLightIDs"] = jobProject.assets.filter { $0.role == .light }.map { $0.id.uuidString }.joined(separator: ",")
+                values["calibrationApplied"] = String(!step.calibration.isEmpty)
+                for (key, role) in [("calibrationDarkIDs", WorkflowCalibrationRole.darks), ("calibrationBiasIDs", .biases), ("calibrationFlatIDs", .flats)] {
+                    values[key] = jobProject.assets.filter { $0.role == role.assetRole }.map { $0.id.uuidString }.joined(separator: ",")
+                }
+            }
+            input = try await worker.applyReplayOperation(EditOperation(kind: step.kind, parameters: values), input: input, mode: .fullResolutionExport)
+        }
+        try Task.checkCancellation()
+        onStep(workflow.steps.count, "export")
+        let output = directory.appendingPathComponent("result.tiff")
+        _ = try await processingService.convert(input: input, output: output, options: workflow.exportOptions,
+                                               rawOptions: workflow.parameters.rawProcessingOptions)
+        try Task.checkCancellation()
+        guard Self.isUsableCachedOutput(output) else { throw PhotonStackAppCore.WorkflowError("导出结果不存在 / Export did not produce a result") }
+        return output
+    }
+
+    func startReusableWorkflowBatch(_ batch: WorkflowBatchRun, workflow: ReusableWorkflow, folders: [URL], output: URL) {
+        guard !hasActiveProcessing else { return }
+        launch {
+            await self.runJob(title: "工作流 / Workflow: \(workflow.name)", kind: .stack) {
+                let progressScope = ProcessingProgressContext.progressScope
+                defer { progressScope?.update(lowerBound: 0, upperBound: 1) }
+                try await batch.run(workflow: workflow, folders: folders, output: output) { plan, inputs, directory, onStep in
+                    let jobIndex = batch.items.firstIndex(where: { $0.status == .running }) ?? 0
+                    let jobCount = Double(max(batch.items.count, 1))
+                    let stepCount = Double(workflow.steps.count + 1)
+                    return try await self.executeReusableWorkflow(workflow, plan: plan, inputs: inputs, directory: directory) { step, message in
+                        onStep(step, message)
+                        let lower = (Double(jobIndex) + Double(step) / stepCount) / jobCount
+                        let upper = (Double(jobIndex) + Double(step + 1) / stepCount) / jobCount
+                        progressScope?.update(lowerBound: lower, upperBound: upper)
+                        self.updateProgress(lower, message: "\(plan.title) · \(step + 1)/\(workflow.steps.count + 1) · \(message)")
+                    }
+                }
+                let failed = batch.items.filter { $0.status == .failed }.count
+                if failed > 0 { throw PhotonStackAppCore.WorkflowError("\(failed) 个任务失败，其余结果已保留；请在工作流窗口查看详情。 / Some jobs failed; completed results are retained.") }
+                return "\(batch.items.count) 个工作流任务完成 / Workflow jobs completed"
+            }
+        }
     }
 
     private func fullResolutionExportReplayPlan() -> EditGraphReplayPlan? {
@@ -13022,143 +13204,31 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         _ result: ProcessingCommandResult,
         expectedBins: Int
     ) throws -> HistogramSnapshot {
-        guard let object = try parseJSONObject(from: result.standardOutput),
-              object["type"] as? String == "complete",
-              object["command"] as? String == "histogram",
-              expectedBins > 0,
-              let rawBins = object["bins"] as? [NSNumber],
-              rawBins.count == expectedBins,
-              rawBins.allSatisfy({
-                  let value = $0.doubleValue
-                  return CFGetTypeID($0) != CFBooleanGetTypeID()
-                      && value.isFinite
-                      && value >= 0
-              }),
-              let minimum = jsonFiniteDouble(object["minimum"]),
-              let maximum = jsonFiniteDouble(object["maximum"]),
-              let mean = jsonFiniteDouble(object["mean"])
-        else {
-            throw ProcessingServiceError.invalidReport(command: "histogram")
-        }
-
-        guard maximum >= minimum,
-              mean >= minimum,
-              mean <= maximum
-        else {
-            throw ProcessingServiceError.invalidReport(command: "histogram")
-        }
-
-        return HistogramSnapshot(
-            bins: rawBins.map(\.doubleValue),
-            minimum: minimum,
-            maximum: maximum,
-            mean: mean
-        )
+        try WorkspaceReportDecoder.parseHistogram(result, expectedBins: expectedBins)
     }
 
     private func parseRawDecodeStatus(_ result: ProcessingCommandResult) throws -> RawDecodeStatus? {
-        guard let object = try parseJSONObject(from: result.standardOutput) else {
-            return nil
-        }
-        let decodeKeys = [
-            "decodeBackend",
-            "decodeFallback",
-            "decodeFallbackCode",
-            "decodeFallbackMessage",
-        ]
-        guard decodeKeys.contains(where: { object[$0] != nil }) else {
-            return nil
-        }
-        guard object["type"] as? String == "complete",
-              object["command"] as? String == "preview",
-              let backendName = object["decodeBackend"] as? String,
-              let backend = RawDecodeBackend(rawValue: backendName),
-              let usedFallback = jsonBoolean(object["decodeFallback"]),
-              let fallbackErrorCode = object["decodeFallbackCode"] as? String,
-              let fallbackMessage = object["decodeFallbackMessage"] as? String,
-              (usedFallback && backend == .imageIO && fallbackErrorCode.isEmpty == false &&
-                  fallbackMessage.isEmpty == false) ||
-                  (usedFallback == false && backend == .appleRaw && fallbackErrorCode.isEmpty &&
-                      fallbackMessage.isEmpty)
-        else {
-            throw ProcessingServiceError.invalidReport(command: "preview")
-        }
-        return RawDecodeStatus(
-            backend: backend,
-            usedFallback: usedFallback,
-            fallbackErrorCode: fallbackErrorCode,
-            fallbackMessage: fallbackMessage
-        )
+        try WorkspaceReportDecoder.parseRawDecodeStatus(result)
     }
 
     private func parseInspectMetadata(_ result: ProcessingCommandResult) throws -> AssetMetadata {
-        guard let object = try parseJSONObject(from: result.standardOutput),
-              let width = jsonInteger(object["width"]),
-              let height = jsonInteger(object["height"]),
-              let channels = jsonInteger(object["channels"]),
-              let bitsPerChannel = jsonInteger(object["bitsPerChannel"]),
-              let format = object["format"] as? String,
-              width > 0,
-              height > 0,
-              channels > 0,
-              bitsPerChannel > 0,
-              format.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        else {
-            throw ProcessingServiceError.invalidReport(command: "inspect")
-        }
-
-        let exposureTimeSeconds = try positiveMetadataDouble("exposureTimeSeconds", in: object)
-        let fNumber = try positiveMetadataDouble("fNumber", in: object)
-        let focalLengthMM = try positiveMetadataDouble("focalLengthMM", in: object)
-        let iso = try positiveMetadataInteger("iso", in: object)
-        let orientation = try metadataInteger("orientation", in: object, range: 1...8)
-
-        return AssetMetadata(
-            width: width,
-            height: height,
-            channels: channels,
-            bitsPerChannel: bitsPerChannel,
-            formatDescription: format,
-            cameraMake: metadataString("cameraMake", in: object),
-            cameraModel: metadataString("cameraModel", in: object),
-            lensModel: metadataString("lensModel", in: object),
-            captureDate: metadataString("captureDate", in: object),
-            colorModel: metadataString("colorModel", in: object),
-            colorProfile: metadataString("colorProfile", in: object),
-            rawDecoder: metadataString("rawDecoder", in: object),
-            whiteBalance: metadataString("whiteBalance", in: object),
-            exposureBias: metadataString("exposureBias", in: object),
-            exposureTimeSeconds: exposureTimeSeconds,
-            fNumber: fNumber,
-            focalLengthMM: focalLengthMM,
-            iso: iso,
-            orientation: orientation
-        )
+        try WorkspaceReportDecoder.parseInspectMetadata(result)
     }
 
     private func metadataObject(in object: [String: Any]) -> [String: Any] {
-        object["metadata"] as? [String: Any] ?? object
+        WorkspaceReportDecoder.metadataObject(in: object)
     }
 
     private func metadataString(_ key: String, in object: [String: Any]) -> String? {
-        let metadata = metadataObject(in: object)
-        let value = (metadata[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return value?.isEmpty == false ? value : nil
+        WorkspaceReportDecoder.metadataString(key, in: object)
     }
 
     private func positiveMetadataDouble(_ key: String, in object: [String: Any]) throws -> Double? {
-        let metadata = metadataObject(in: object)
-        guard let rawValue = metadata[key] else {
-            return nil
-        }
-        guard let value = jsonFiniteDouble(rawValue), value > 0 else {
-            throw ProcessingServiceError.invalidReport(command: "inspect")
-        }
-        return value
+        try WorkspaceReportDecoder.positiveMetadataDouble(key, in: object)
     }
 
     private func positiveMetadataInteger(_ key: String, in object: [String: Any]) throws -> Int? {
-        try metadataInteger(key, in: object, range: 1...Int.max)
+        try WorkspaceReportDecoder.positiveMetadataInteger(key, in: object)
     }
 
     private func metadataInteger(
@@ -13166,94 +13236,14 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         in object: [String: Any],
         range: ClosedRange<Int>
     ) throws -> Int? {
-        let metadata = metadataObject(in: object)
-        guard let rawValue = metadata[key] else {
-            return nil
-        }
-        guard let value = jsonInteger(rawValue), range.contains(value) else {
-            throw ProcessingServiceError.invalidReport(command: "inspect")
-        }
-        return value
+        try WorkspaceReportDecoder.metadataInteger(key, in: object, range: range)
     }
 
     private func parseMosaicQualityReport(
         _ result: ProcessingCommandResult,
         expectedPanelCount: Int
     ) throws -> MosaicQualityReport {
-        guard let object = try parseJSONObject(from: result.standardOutput),
-              object["type"] as? String == "complete",
-              object["command"] as? String == "mosaic",
-              let autoAligned = jsonBoolean(object["autoAligned"]),
-              let matches = jsonInteger(object["matches"]),
-              let fallbackPanels = jsonInteger(object["fallbackPanels"]),
-              let exposureMatched = jsonBoolean(object["exposureMatched"]),
-              let blend = object["blend"] as? String,
-              blend.isEmpty == false,
-              let rawPlacements = object["placements"] as? [[String: Any]],
-              rawPlacements.count == expectedPanelCount,
-              matches >= 0,
-              fallbackPanels >= 0,
-              fallbackPanels <= expectedPanelCount
-        else {
-            throw ProcessingServiceError.invalidReport(command: "mosaic")
-        }
-
-        let placements = try rawPlacements.map { placement in
-            guard let index = jsonInteger(placement["index"]),
-                  let x = jsonFiniteDouble(placement["x"]),
-                  let y = jsonFiniteDouble(placement["y"]),
-                  let a = jsonFiniteDouble(placement["a"]),
-                  let b = jsonFiniteDouble(placement["b"]),
-                  let c = jsonFiniteDouble(placement["c"]),
-                  let d = jsonFiniteDouble(placement["d"]),
-                  let dx = jsonFiniteDouble(placement["dx"]),
-                  let dy = jsonFiniteDouble(placement["dy"]),
-                  let model = placement["model"] as? String,
-                  model.isEmpty == false,
-                  let placementMatches = jsonInteger(placement["matches"]),
-                  let references = jsonInteger(placement["references"]),
-                  let placementAutoAligned = jsonBoolean(placement["autoAligned"]),
-                  let fallback = jsonBoolean(placement["fallback"]),
-                  let reducedModel = jsonBoolean(placement["reducedModel"]),
-                  let coarseAlignment = jsonBoolean(placement["coarseAlignment"]),
-                  index >= 0,
-                  index < expectedPanelCount,
-                  placementMatches >= 0,
-                  references >= 0
-            else {
-                throw ProcessingServiceError.invalidReport(command: "mosaic")
-            }
-            return MosaicPlacementReport(
-                index: index,
-                x: x,
-                y: y,
-                a: a,
-                b: b,
-                c: c,
-                d: d,
-                dx: dx,
-                dy: dy,
-                model: model,
-                matches: placementMatches,
-                references: references,
-                autoAligned: placementAutoAligned,
-                fallback: fallback,
-                reducedModel: reducedModel,
-                coarseAlignment: coarseAlignment
-            )
-        }
-        guard Set(placements.map(\.index)).count == expectedPanelCount else {
-            throw ProcessingServiceError.invalidReport(command: "mosaic")
-        }
-
-        return MosaicQualityReport(
-            autoAligned: autoAligned,
-            matches: matches,
-            fallbackPanels: fallbackPanels,
-            exposureMatched: exposureMatched,
-            blend: blend,
-            placements: placements
-        )
+        try WorkspaceReportDecoder.parseMosaicQualityReport(result, expectedPanelCount: expectedPanelCount)
     }
 
     private func parseArtifactTrailReport(_ result: ProcessingCommandResult) throws -> ArtifactTrailReport {
@@ -14923,67 +14913,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     private func parseJSONObject(from output: String) throws -> [String: Any]? {
-        var objects: [[String: Any]] = []
-        var searchIndex = output.startIndex
-
-        while searchIndex < output.endIndex,
-              let startIndex = output[searchIndex...].firstIndex(of: "{") {
-            var depth = 0
-            var inString = false
-            var isEscaping = false
-            var endIndex: String.Index?
-
-            for index in output.indices[startIndex...] {
-                let character = output[index]
-                if inString {
-                    if isEscaping {
-                        isEscaping = false
-                    } else if character == "\\" {
-                        isEscaping = true
-                    } else if character == "\"" {
-                        inString = false
-                    }
-                    continue
-                }
-
-                if character == "\"" {
-                    inString = true
-                } else if character == "{" {
-                    depth += 1
-                } else if character == "}" {
-                    depth -= 1
-                    if depth == 0 {
-                        endIndex = index
-                        break
-                    }
-                }
-            }
-
-            if let endIndex, depth == 0, inString == false {
-                let jsonText = String(output[startIndex...endIndex])
-                if let data = jsonText.data(using: .utf8),
-                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    objects.append(object)
-                }
-                searchIndex = output.index(after: endIndex)
-            } else {
-                searchIndex = output.index(after: startIndex)
-            }
-        }
-
-        var selectedObject: [String: Any]?
-        var selectedRank = -1
-        for object in objects {
-            let isComplete = object["type"] as? String == "complete"
-            let isLegacyInspect = object["width"] != nil && object["height"] != nil &&
-                object["channels"] != nil && object["bitsPerChannel"] != nil && object["format"] != nil
-            let rank = isComplete ? 2 : (isLegacyInspect ? 1 : 0)
-            if rank >= selectedRank {
-                selectedObject = object
-                selectedRank = rank
-            }
-        }
-        return selectedObject
+        try WorkspaceReportDecoder.parseJSONObject(from: output)
     }
 
     private func registeredSequenceArtifact(
@@ -15131,73 +15061,19 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         mode: AlignmentMethod,
         output: URL
     ) throws -> ParsedRegistrationMetrics {
-        guard let object = try parseJSONObject(from: result.standardOutput),
-              object["type"] as? String == "complete",
-              object["command"] as? String == "register",
-              let reportedMode = object["mode"] as? String,
-              let parsedMode = AlignmentMethod(rawValue: reportedMode),
-              let dx = jsonFiniteDouble(object["dx"]),
-              let dy = jsonFiniteDouble(object["dy"]),
-              let scale = jsonFiniteDouble(object["scale"]),
-              let rotationRadians = jsonFiniteDouble(object["rotationRadians"]),
-              let matches = jsonInteger(object["matches"]),
-              let detectedReferenceStars = jsonInteger(object["detectedReferenceStars"]),
-              let detectedMovingStars = jsonInteger(object["detectedMovingStars"]),
-              let inlierRatio = jsonFiniteDouble(object["inlierRatio"]),
-              let usedFallback = jsonBoolean(object["usedFallback"]),
-              let reportedOutput = object["output"] as? String,
-              parsedMode == mode,
-              scale > 0,
-              matches >= 0,
-              detectedReferenceStars >= 0,
-              detectedMovingStars >= 0,
-              inlierRatio.isFinite,
-              (0...1).contains(inlierRatio),
-              reportedOutput.isEmpty == false,
-              URL(fileURLWithPath: reportedOutput).standardizedFileURL == output.standardizedFileURL
-        else {
-            throw ProcessingServiceError.invalidReport(command: "register")
-        }
-
-        return ParsedRegistrationMetrics(
-            mode: parsedMode,
-            dx: dx,
-            dy: dy,
-            scale: scale,
-            rotationRadians: rotationRadians,
-            matches: matches,
-            usedFallback: usedFallback
-        )
+        try WorkspaceReportDecoder.parseRegistrationMetrics(result, mode: mode, output: output)
     }
 
     private func jsonFiniteDouble(_ value: Any?) -> Double? {
-        guard let number = value as? NSNumber,
-              CFGetTypeID(number) != CFBooleanGetTypeID()
-        else {
-            return nil
-        }
-        let result = number.doubleValue
-        return result.isFinite ? result : nil
+        WorkspaceReportDecoder.jsonFiniteDouble(value)
     }
 
     private func jsonInteger(_ value: Any?) -> Int? {
-        guard let number = jsonFiniteDouble(value),
-              number.rounded() == number,
-              number >= Double(Int.min),
-              number < Double(Int.max)
-        else {
-            return nil
-        }
-        return Int(number)
+        WorkspaceReportDecoder.jsonInteger(value)
     }
 
     private func jsonBoolean(_ value: Any?) -> Bool? {
-        guard let number = value as? NSNumber,
-              CFGetTypeID(number) == CFBooleanGetTypeID()
-        else {
-            return nil
-        }
-        return number.boolValue
+        WorkspaceReportDecoder.jsonBoolean(value)
     }
 
     private func runProcessingJob(

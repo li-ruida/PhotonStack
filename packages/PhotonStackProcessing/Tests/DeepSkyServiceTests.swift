@@ -7,6 +7,76 @@ private func deepSkyTestSchema() throws -> DeepSkySchema {
     try JSONDecoder().decode(DeepSkySchema.self, from: Data(#"{"version":1,"fields":[{"key":"decode.demosaic","label":"Demosaic","chineseLabel":"去马赛克","group":"decode","type":"choice","defaultValue":"malvar","minimum":0,"maximum":0,"choices":["bilinear","malvar"]},{"key":"selection.overrides","label":"Overrides","chineseLabel":"逐帧选择","group":"selection","type":"text","defaultValue":"","minimum":0,"maximum":0,"choices":[]}]}"#.utf8))
 }
 
+private func writeDeepSkyProductStub(_ root: URL, output: URL, master: URL? = nil, developed: URL? = nil, linkDeveloped: Bool = false) throws -> CLIProcessingService {
+    let report: [String: Any] = [
+        "version": 1, "success": true, "analysisOnly": false,
+        "inputCount": 0, "selectedCount": 0, "referenceIndex": 0,
+        "recipe": "PHOTONSTACK_DEEP_SKY_RECIPE 1\n", "errorCode": "", "message": "",
+        "master": (master ?? output.appendingPathComponent("stack-linear.fits")).path,
+        "backgroundMaster": output.appendingPathComponent("stack-background.fits").path,
+        "developed": (developed ?? output.appendingPathComponent("developed.tiff")).path,
+        "rejectionLow": "", "rejectionHigh": "", "frames": [],
+    ]
+    try JSONSerialization.data(withJSONObject: report).write(to: root.appendingPathComponent("reply.json"))
+    let executable = root.appendingPathComponent("fake-engine")
+    let script = """
+    #!/bin/sh
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--output-dir" ]; then output="$2"; shift; fi
+      shift
+    done
+    mkdir -p "$output"
+    printf master > "$output/stack-linear.fits"
+    printf background > "$output/stack-background.fits"
+    \(linkDeveloped ? "ln -s \"$PWD/outside.tiff\" \"$output/developed.tiff\"" : "printf developed > \"$output/developed.tiff\"")
+    cat "$PWD/reply.json"
+    """
+    try script.write(to: executable, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+    return CLIProcessingService(executableURL: executable)
+}
+
+@Test(arguments: [false, true])
+func deepSkyProductsAcceptBothDirectoryURLRepresentations(directoryHint: Bool) async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackDeepSkyPaths-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let recipe = root.appendingPathComponent("recipe.txt")
+    try "PHOTONSTACK_DEEP_SKY_RECIPE 1\n".write(to: recipe, atomically: true, encoding: .utf8)
+    let output = root.appendingPathComponent("stack", isDirectory: directoryHint)
+    let service = try writeDeepSkyProductStub(root, output: output)
+    let report = try await service.deepSky(recipe: recipe, outputDirectory: output, analyzeOnly: false)
+    #expect(report.masterSHA256?.count == 64 && report.developedSHA256?.count == 64)
+    #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent("app-report.json").path))
+    let master = URL(fileURLWithPath: report.master)
+    let original = try Data(contentsOf: master)
+    let finish = root.appendingPathComponent("finish", isDirectory: directoryHint)
+    _ = try writeDeepSkyProductStub(root, output: finish, master: master)
+    let refined = try await service.finishDeepSky(recipe: recipe, master: master, outputDirectory: finish, previous: report)
+    #expect(refined.masterSHA256 == report.masterSHA256)
+    #expect(refined.developed == finish.appendingPathComponent("developed.tiff").path)
+    #expect(try Data(contentsOf: master) == original)
+}
+
+@Test(arguments: ["outside", "traversal", "symlink"])
+func deepSkyProductsRejectEscapedOrLinkedOutputs(escape: String) async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackDeepSkyEscape-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let output = root.appendingPathComponent("stack", isDirectory: false)
+    let outside = root.appendingPathComponent("outside.tiff")
+    try Data("unrelated product".utf8).write(to: outside)
+    let developed = escape == "symlink" ? output.appendingPathComponent("developed.tiff")
+        : escape == "traversal" ? output.appendingPathComponent("../outside.tiff") : outside
+    let service = try writeDeepSkyProductStub(root, output: output, developed: developed, linkDeveloped: escape == "symlink")
+    do {
+        _ = try await service.deepSky(recipe: root.appendingPathComponent("recipe.txt"), outputDirectory: output, analyzeOnly: false)
+        Issue.record("Engine products must remain regular files inside the owned output directory")
+    } catch DeepSkyRecipeError.invalidReport { }
+    #expect(!FileManager.default.fileExists(atPath: output.appendingPathComponent("app-report.json").path))
+    #expect(try String(contentsOf: outside, encoding: .utf8) == "unrelated product")
+}
+
 @Test func deepSkySettingsKeepOverridesAttachedToOriginalPaths() throws {
     let schema = try deepSkyTestSchema()
     let first = URL(fileURLWithPath: "/tmp/first 亮场.fit"), second = URL(fileURLWithPath: "/tmp/quoted\".fit")
@@ -25,6 +95,7 @@ private func deepSkyTestSchema() throws -> DeepSkySchema {
     var project = PhotonStackProject()
     var settings = DeepSkySettings()
     settings.values["develop.saturation"] = "0.72"
+    settings.values["develop.lock-denoise-stretch"] = "on"
     settings.overrides["/tmp/a.fit"] = "keep"
     project.deepSkySettings = settings
     let data = try JSONEncoder().encode(project)
@@ -63,21 +134,43 @@ private func deepSkyTestSchema() throws -> DeepSkySchema {
     mkdir -p "$output/.aligned-work"
     echo partial > "$output/.aligned-work/frame.fits"
     echo retained > "$output/diagnostic.txt"
-    exec /bin/sleep 60
+    printf '%s\\n' '{"type":"progress","task":"deep-sky","command":"deep-sky","stage":"ready","progress":0}'
+    exec /bin/sleep 15
     """
     try script.write(to: executable, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
     let service = CLIProcessingService(executableURL: executable)
     let output = root.appendingPathComponent("run")
-    let task = Task { try await service.deepSky(recipe: root.appendingPathComponent("recipe.txt"), outputDirectory: output, analyzeOnly: false) }
-    for _ in 0..<100 {
-        if FileManager.default.fileExists(atPath: output.appendingPathComponent("diagnostic.txt").path) { break }
-        try await Task.sleep(for: .milliseconds(20))
+    let jobID = UUID()
+    let ready = AsyncStream<Void>.makeStream()
+    let observer = NotificationCenter.default.addObserver(forName: .photonStackProcessingProgress, object: nil, queue: nil) { notification in
+        if let event = notification.object as? ProcessingProgressEvent,
+           event.jobID == jobID, event.stage == "ready" {
+            ready.continuation.yield(())
+        }
+    }
+    defer {
+        ready.continuation.finish()
+        NotificationCenter.default.removeObserver(observer)
+    }
+    let task = Task {
+        try await ProcessingProgressContext.$jobID.withValue(jobID) {
+            try await service.deepSky(recipe: root.appendingPathComponent("recipe.txt"), outputDirectory: output, analyzeOnly: false)
+        }
+    }
+    defer { task.cancel() }
+    guard await waitForEngineTestSignal(ready.stream) else {
+        task.cancel()
+        _ = try? await task.value
+        Issue.record("Engine did not create intermediates and signal readiness")
+        return
     }
     #expect(FileManager.default.fileExists(atPath: output.appendingPathComponent("diagnostic.txt").path))
+    let cancelledAt = ContinuousClock.now
     task.cancel()
     do { _ = try await task.value; Issue.record("Cancelled processing must throw") }
     catch is CancellationError { }
+    #expect(cancelledAt.duration(to: .now) < .seconds(3))
     #expect(!FileManager.default.fileExists(atPath: output.appendingPathComponent(".aligned-work").path))
     #expect(try String(contentsOf: output.appendingPathComponent("diagnostic.txt"), encoding: .utf8) == "retained\n")
     // A later run cannot replace the diagnostic or take ownership of this directory.
@@ -120,6 +213,8 @@ func deepSkyAppRecipeIsAcceptedAndCanonicalizedByRealEngine() async throws {
     let cli = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"]))
     let service = CLIProcessingService(executableURL: cli)
     let schema = try await service.deepSkySchema()
+    let toneReference = try #require(schema.fields.first { $0.key == "develop.lock-denoise-stretch" })
+    #expect(toneReference.type == "bool" && toneReference.defaultValue == "off" && toneReference.group == "develop")
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackRecipeTest-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -128,12 +223,14 @@ func deepSkyAppRecipeIsAcceptedAndCanonicalizedByRealEngine() async throws {
     settings.values["develop.saturation"] = "0.72"
     settings.overrides[inputs[1].path] = "reject"
     settings.values["calibration.sensor-pattern"] = "on"
+    settings.values["develop.lock-denoise-stretch"] = "on"
     let url = root.appendingPathComponent("recipe.txt")
     try settings.recipe(schema: schema, inputs: inputs).write(to: url, atomically: true, encoding: .utf8)
     let imported = try await service.inspectDeepSkyRecipe(url)
     #expect(imported.inputs == inputs.map(\.path))
     #expect(imported.values["selection.overrides"] == "auto,reject,auto")
     #expect(imported.values["calibration.sensor-pattern"] == "on")
+    #expect(imported.values["develop.lock-denoise-stretch"] == "on")
     #expect(Double(imported.values["develop.saturation"] ?? "0")! > 0.7199)
     #expect(Set(imported.values.keys) == Set(schema.fields.map(\.key)))
 }

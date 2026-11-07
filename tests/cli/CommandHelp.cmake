@@ -1,0 +1,40 @@
+if(NOT DEFINED CLI)
+  message(FATAL_ERROR "CLI executable path is required")
+endif()
+
+# Help must be discoverable without any input images, valid recipe or output.
+# Keep aliases consistent and ensure diagnostics are not mistaken for help.
+foreach(command deep-sky develop)
+  unset(first_output)
+  foreach(flag --help -h help)
+    execute_process(COMMAND "${CLI}" "${command}" "${flag}"
+      RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+    if(NOT status EQUAL 0 OR NOT error STREQUAL "" OR NOT output MATCHES "Usage:")
+      message(FATAL_ERROR "${command} ${flag} did not show successful help: ${status}\n${output}\n${error}")
+    endif()
+    if(NOT output MATCHES "photonstack ${command} --input")
+      message(FATAL_ERROR "${command} help does not explain how to supply images: ${output}")
+    endif()
+    if(DEFINED first_output AND NOT output STREQUAL first_output)
+      message(FATAL_ERROR "${command} help aliases returned inconsistent instructions")
+    endif()
+    set(first_output "${output}")
+  endforeach()
+  if(command STREQUAL "deep-sky" AND NOT first_output MATCHES "--analyze-only")
+    message(FATAL_ERROR "Deep-sky help must expose analysis before stacking")
+  endif()
+  if(command STREQUAL "develop" AND NOT first_output MATCHES "--statistics-reference")
+    message(FATAL_ERROR "Develop help must describe shared tone references")
+  endif()
+endforeach()
+
+# Command-specific help must not replace the machine-readable schema endpoint.
+execute_process(COMMAND "${CLI}" deep-sky schema
+  RESULT_VARIABLE status OUTPUT_VARIABLE output ERROR_VARIABLE error)
+if(NOT status EQUAL 0 OR NOT error STREQUAL "")
+  message(FATAL_ERROR "Deep-sky schema failed after help routing change: ${status}\n${error}")
+endif()
+string(JSON schema_version ERROR_VARIABLE json_error GET "${output}" version)
+if(NOT json_error STREQUAL "NOTFOUND" OR NOT schema_version EQUAL 1)
+  message(FATAL_ERROR "Deep-sky schema must remain valid versioned JSON: ${output}")
+endif()

@@ -1,7 +1,9 @@
 #include "photonstack/FitsCodec.hpp"
+#include "../../engine/src/DemosaicStarGuard.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -31,10 +33,93 @@ struct Temporary {
         ("photonstack-star-guard-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".fits");
     ~Temporary() { std::error_code ignored; std::filesystem::remove(path, ignored); }
 };
+bool samePixels(const ImageReadResult& lhs, const ImageReadResult& rhs) {
+    return lhs.ok && rhs.ok && lhs.image.pixels.size() == rhs.image.pixels.size() &&
+        std::memcmp(lhs.image.pixels.data(), rhs.image.pixels.data(),
+                    lhs.image.pixels.size() * sizeof(float)) == 0;
+}
+
+void checkAnalysisReplay(const std::filesystem::path& path) {
+    const FitsCodec codec;
+    const int width = 256;
+    ImageBuffer raw;
+    raw.width = raw.height = width;
+    raw.channels = 1; raw.format = PixelFormat::Float32Gray;
+    raw.pixels.resize(raw.pixelCount());
+    const std::array<int, 4> colors{1, 0, 2, 1};
+    const std::array<float, 3> gains{.68F, 1, 1.03F};
+    for (int y = 0; y < width; ++y) for (int x = 0; x < width; ++x) {
+        const int c = colors[(y % 2) * 2 + x % 2];
+        const double dx = x % 64 - 32.3, dy = y % 64 - 31.7;
+        raw.pixels[y * width + x] = (-100 + 20000 * std::exp(-(dx * dx + dy * dy) / 2.88)) / gains[c];
+    }
+    raw.pixels[96 * width + 96] = std::numeric_limits<float>::quiet_NaN();
+    auto write = [&](const std::string& pattern) {
+        require(codec.write(raw, path).ok);
+        tag(path, pattern, 0, 0);
+    };
+    write("GRBG");
+    FitsDecodeOptions options{.mode = FitsDecodeMode::Scientific, .maskNonFinitePixels = true,
+        .debayer = true, .demosaic = FitsDemosaic::MalvarGuarded, .cfaInterpolationGains = gains};
+
+    detail::GuardReplay replay(100);
+    const auto reference = codec.read(path, options);
+    require(samePixels(reference, detail::readAnalysisFits(path, options, replay)));
+    require(replay.ready() && !replay.replayedLastRead() && replay.apertureCount() > 1);
+    require(samePixels(reference, detail::readAnalysisFits(path, options, replay)));
+    require(replay.replayedLastRead());
+    detail::GuardReplay moved(std::move(replay));
+    require(moved.ready() && !replay.ready());
+    require(samePixels(reference, detail::readAnalysisFits(path, options, replay)));
+    require(replay.ready() && !replay.replayedLastRead());
+
+    // Neither an incomplete list nor a zero capture budget may skip the guard.
+    for (std::size_t limit : {0, 1}) {
+        detail::GuardReplay limited(limit);
+        for (int read = 0; read < 2; ++read) {
+            require(samePixels(reference, detail::readAnalysisFits(path, options, limited)));
+            require(!limited.ready() && limited.apertureCount() == 0 && !limited.replayedLastRead());
+        }
+    }
+
+    const auto recapture = [&] {
+        const auto fresh = codec.read(path, options);
+        require(samePixels(fresh, detail::readAnalysisFits(path, options, replay)));
+        require(replay.ready() && !replay.replayedLastRead());
+        require(samePixels(fresh, detail::readAnalysisFits(path, options, replay)));
+        require(replay.replayedLastRead());
+    };
+    options.cfaInterpolationGains[0] = .81F;
+    recapture();
+    options.maskNonFinitePixels = false;
+    recapture();
+    write("BGGR");
+    recapture();
+    // Same header, dimensions, length, path and filesystem timestamp.
+    const auto timestamp = std::filesystem::last_write_time(path);
+    const auto bytes = std::filesystem::file_size(path);
+    raw.pixels[32 * width + 32] += 200;
+    write("BGGR");
+    require(std::filesystem::file_size(path) == bytes);
+    std::filesystem::last_write_time(path, timestamp);
+    recapture();
+
+    require(!detail::readAnalysisFits(path / "missing", options, replay).ok);
+    require(!replay.ready() && !replay.replayedLastRead());
+    std::fill(raw.pixels.begin(), raw.pixels.end(), 123.F);
+    write("GRBG");
+    recapture();
+    require(replay.apertureCount() == 0);
+    options.demosaic = FitsDemosaic::Malvar;
+    require(samePixels(codec.read(path, options), detail::readAnalysisFits(path, options, replay)));
+    require(!replay.ready());
+}
+
 }
 
 int main() {
     Temporary temporary;
+    checkAnalysisReplay(temporary.path);
     const FitsCodec codec;
     double error[2]{}, undershoot[2]{};
     std::size_t changed = 0;

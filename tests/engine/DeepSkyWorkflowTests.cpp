@@ -1,6 +1,7 @@
 #include "photonstack/DeepSkyWorkflow.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/FileDigest.hpp"
+#include "../../engine/src/DeepSkyAnalysisScheduling.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -20,6 +21,88 @@ int main() {
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     fs::create_directory(root);
     struct Cleanup { fs::path p; ~Cleanup() { std::error_code e; fs::remove_all(p, e); } } cleanup{root};
+    {
+        const auto megapixel = 1024ULL * 1024;
+        const auto gib = 1024ULL * megapixel;
+        require(detail::analysisFrameCapacity(8 * megapixel, 8 * megapixel, 711, 192, 3 * gib, 12) == 4);
+        require(detail::analysisFrameCapacity(32 * megapixel, 0, 711, 192, 3 * gib, 12) == 1);
+        require(detail::analysisFrameCapacity(8 * megapixel, 8 * megapixel, 711, 192, gib, 12) == 1);
+        require(detail::analysisFrameCapacity(0, 0, 20, 192, 3 * gib, 12) == 1);
+
+        // Frame 0 waits for frame 1 to finish. Results must nevertheless
+        // be committed in source order, on the thread issuing progress.
+        const auto caller = std::this_thread::get_id();
+        std::promise<void> later;
+        auto finished = later.get_future();
+        std::vector<std::size_t> committed;
+        detail::orderedAnalysisFrames(5,
+            [&](std::size_t) { require(std::this_thread::get_id() == caller); return true; },
+            [](std::size_t i) -> std::size_t { return i < 2 ? 2 : 1; },
+            [&](std::size_t i) {
+                if (i == 0) require(finished.wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+                if (i == 1) later.set_value();
+                if (i >= 2) require(std::this_thread::get_id() == caller);
+                return i;
+            },
+            [&](std::size_t i, std::size_t result) {
+                require(std::this_thread::get_id() == caller && result == i);
+                committed.push_back(i);
+            });
+        require(committed == std::vector<std::size_t>({0, 1, 2, 3, 4}));
+        std::atomic<unsigned> ended{0};
+        try {
+            detail::orderedAnalysisFrames(4,
+                [](std::size_t i) { if (i == 2) throw std::runtime_error("later input"); return true; },
+                [](std::size_t) { return 2U; },
+                [&](std::size_t i) {
+                    ++ended;
+                    if (i == 0) throw std::runtime_error("first input");
+                    return i;
+                }, [](std::size_t, std::size_t) {});
+            require(false);
+        } catch (const std::runtime_error& e) {
+            require(std::string(e.what()) == "first input" && ended == 2);
+        }
+    }
+    {
+        std::vector<fs::path> stars;
+        for (unsigned frame = 0; frame < 6; ++frame) {
+            ImageBuffer image;
+            image.width = 131; image.height = 119; image.channels = 1;
+            image.pixels.assign(image.sampleCount(), 100 + frame);
+            std::mt19937 rng(51);
+            for (unsigned k = 0; k < 42; ++k) {
+                const int cx = 10 + rng() % 106 + frame % 3, cy = 10 + rng() % 95 + frame / 2;
+                for (int dy = -4; dy <= 4; ++dy) for (int dx = -4; dx <= 4; ++dx)
+                    image.pixels[(cy + dy) * image.width + cx + dx] += float((100 + k) * std::exp(-(dx*dx + dy*dy) / 3.));
+            }
+            stars.push_back(root / ("stars-" + std::to_string(frame) + ".fits"));
+            require(FitsCodec().write(image, stars.back()).ok);
+        }
+        DeepSkyWorkflowOptions o;
+        o.analysisOnly = true;
+        o.quality.sampleSide = 32;
+        o.stack.registration.minimumMatches = 4;
+        o.analysisWorkers = 1;
+        const auto serial = DeepSkyWorkflow().run(stars, root / "serial-stars", o);
+        o.analysisWorkers = 4;
+        std::vector<std::size_t> measureSteps, alignSteps;
+        const auto parallel = DeepSkyWorkflow().run(stars, root / "parallel-stars", o,
+            [&](const auto& stage, double, std::size_t step, std::size_t) {
+                if (stage == "measure") measureSteps.push_back(step);
+                if (stage == "align") alignSteps.push_back(step);
+            });
+        require(serial.ok && parallel.ok && serial.referenceIndex == parallel.referenceIndex);
+        require(serial.selectedCount == parallel.selectedCount && serial.selectedCount >= 3);
+        require(measureSteps == std::vector<std::size_t>({1, 2, 3, 4, 5, 6}) && measureSteps == alignSteps);
+        for (std::size_t i = 0; i < stars.size(); ++i) {
+            const auto& a = serial.frames[i]; const auto& b = parallel.frames[i];
+            require(a.native.starCount == b.native.starCount && a.native.medianFwhm == b.native.medianFwhm);
+            require(a.registration.ok && b.registration.ok && a.registration.matches == b.registration.matches);
+            require(a.registration.transform.dx == b.registration.transform.dx && a.registration.transform.dy == b.registration.transform.dy);
+            require(a.assessment.residualRms == b.assessment.residualRms && a.assessment.reasons == b.assessment.reasons);
+        }
+    }
     std::vector<fs::path> inputs;
     std::vector<std::uintmax_t> sizes;
     std::vector<fs::file_time_type> modified;
@@ -84,6 +167,13 @@ int main() {
     if (!result.ok) throw std::runtime_error(result.errorCode + ": " + result.message);
     require(result.selectedCount == inputs.size() && previous == 1 && sawConsumedWork);
     require(sawCombineStart && sawCombineEnd);
+    // The report is persistent scalar evidence, not a second copy of the
+    // per-exposure temporal grids. Large sequences must not retain that storage.
+    for (const auto& frame : result.frames) {
+        require(frame.native.ok && frame.native.noise > 0);
+        require(frame.native.luminance.empty() && frame.native.luminance.capacity() == 0);
+        require(frame.native.coverage.empty() && frame.native.coverage.capacity() == 0);
+    }
     require(result.cropX == 5 && result.cropY == 0 && result.cropWidth == 91 && result.cropHeight == 128);
     require(result.frames[0].rejectedHighSamples > 200);
     require(fs::exists(result.master) && fs::exists(result.backgroundMaster) && fs::exists(result.developed));
@@ -110,6 +200,53 @@ int main() {
     require(finish.ok && finish.masterReused && finish.frames.empty());
     require(ImageCodec().read(finish.developed).image.pixels == developed.image.pixels);
     require(!DeepSkyWorkflow().finishMaster(result.master, root / "finish", options).ok);
+    require(!result.denoiseStretchLocked && !finish.denoiseStretchLocked);
+    auto lockedOptions = options;
+    lockedOptions.lockDenoiseStretch = true;
+    lockedOptions.develop.toneScale = 0; lockedOptions.develop.whitePoint = 0;
+    lockedOptions.develop.starExposure = 1; lockedOptions.develop.starColorCleanup = 0;
+    lockedOptions.backgroundDenoiseStrength = 0;
+    lockedOptions.polynomial.exclusions = {{48,64,15,12,25}};
+    const auto lockedBefore = DeepSkyWorkflow().finishMaster(result.master, root / "locked-before", lockedOptions);
+    lockedOptions.backgroundDenoiseStrength = .8;
+    const auto lockedAfter = DeepSkyWorkflow().finishMaster(result.master, root / "locked-after", lockedOptions);
+    require(lockedBefore.ok && lockedAfter.ok && lockedBefore.denoiseStretchLocked && lockedAfter.denoiseStretchLocked);
+    require(lockedBefore.development.sky == lockedAfter.development.sky);
+    require(lockedBefore.development.gains == lockedAfter.development.gains);
+    require(lockedBefore.development.toneScale == lockedAfter.development.toneScale);
+    require(lockedBefore.development.whitePoint == lockedAfter.development.whitePoint);
+    require(lockedBefore.development.shadowNoise == lockedAfter.development.shadowNoise);
+    require(fileSHA256(lockedBefore.backgroundMaster) == fileSHA256(lockedAfter.backgroundMaster));
+    const auto lockedA = ImageCodec().read(lockedBefore.developed), lockedB = ImageCodec().read(lockedAfter.developed);
+    require(lockedA.ok && lockedB.ok && lockedA.image.pixels != lockedB.image.pixels);
+    for(unsigned y=60;y<=68;++y)for(unsigned x=39;x<=47;++x)for(unsigned c=0;c<4;++c) {
+        const auto p=(std::size_t(y)*lockedA.image.width+x)*4+c;
+        require(lockedA.image.pixels[p] == lockedB.image.pixels[p]);
+    }
+    // All enabled denoisers use the same earlier statistics, including NLM.
+    lockedOptions.denoiseH = 2;
+    lockedOptions.multiscale.luminance = .9;
+    lockedOptions.multiscale.chroma = 1;
+    const auto lockedAll = DeepSkyWorkflow().finishMaster(result.master, root / "locked-all", lockedOptions);
+    require(lockedAll.ok && lockedAll.denoiseStretchLocked);
+    require(lockedAll.development.sky == lockedBefore.development.sky);
+    require(lockedAll.development.toneScale == lockedBefore.development.toneScale);
+    require(lockedAll.development.shadowNoise == lockedBefore.development.shadowNoise);
+    const auto lockedRun = DeepSkyWorkflow().run(inputs, root / "locked-run", lockedOptions);
+    require(lockedRun.ok && lockedRun.denoiseStretchLocked && !lockedRun.masterReused);
+    require(fileSHA256(lockedRun.developed) == fileSHA256(lockedAll.developed));
+    // A successful development followed by a failed export is not a finished
+    // image, and must not advertise verified finishing provenance to the App.
+    for (bool reuse : {false, true}) {
+        const auto directory = root / (reuse ? "locked-export-failure-reuse" : "locked-export-failure-run");
+        auto failExport = [&](const std::string& stage, double, std::size_t, std::size_t) {
+            if (stage == "develop") fs::create_directory(directory / "developed.tiff");
+        };
+        const auto failed = reuse
+            ? DeepSkyWorkflow().finishMaster(result.master, directory, lockedOptions, failExport)
+            : DeepSkyWorkflow().run(inputs, directory, lockedOptions, failExport);
+        require(!failed.ok && failed.development.ok && !failed.denoiseStretchLocked);
+    }
     auto unsupportedNoise = options;
     unsupportedNoise.stack.collectNoiseDiagnostic = true;
     unsupportedNoise.stack.frameNoiseVariances.assign(inputs.size(), 1);
@@ -123,7 +260,10 @@ int main() {
     // replay with exactly the same crop/colour transform. Disable clipping here
     // so this nine-frame fixture has >=3 accepted samples in both halves.
     auto independentOptions = options;
+    independentOptions.stack.method = StackMethod::SigmaClip;
+    independentOptions.stack.sigma.medianMad = true;
     independentOptions.noiseModel = DeepSkyNoiseModel::IndependentLuminance;
+    independentOptions.lockDenoiseStretch = true;
     independentOptions.stack.sigma.sigmaLow = 1000;
     independentOptions.stack.sigma.sigmaHigh = 1000;
     independentOptions.quality.overrides.assign(inputs.size(), FrameSelectionOverride::Keep);
@@ -134,6 +274,7 @@ int main() {
     auto replay = DeepSkyWorkflow().finishMaster(independent.master, root / "independent-replay", independentOptions);
     if (!replay.ok) throw std::runtime_error(replay.errorCode + ": " + replay.message);
     require(replay.independentLuminanceNoise && replay.noiseReference == independent.noiseReference);
+    require(independent.denoiseStretchLocked && replay.denoiseStretchLocked);
     require(fileSHA256(replay.developed) == fileSHA256(independent.developed));
     auto missing = DeepSkyWorkflow().finishMaster(result.master, root / "missing-noise", independentOptions);
     require(!missing.ok && missing.errorCode == "NoiseReferenceInvalid" && !fs::exists(root / "missing-noise"));
@@ -180,6 +321,39 @@ int main() {
     auto analysis = DeepSkyWorkflow().run(inputs, root / "analysis", options);
     require(analysis.ok && analysis.master.empty() && analysis.developed.empty());
     require(!fs::exists(root / "analysis/.aligned-work"));
+    require(analysis.referenceIndex == result.referenceIndex && analysis.selectedCount == result.selectedCount);
+    for (std::size_t i = 0; i < inputs.size(); ++i) {
+        const auto& analyzed = analysis.frames[i];
+        const auto& stacked = result.frames[i];
+        require(analyzed.native.luminance.capacity() == 0 && analyzed.native.coverage.capacity() == 0);
+        require(analyzed.registration.ok && analyzed.alignedCoverage == stacked.alignedCoverage);
+        require(analyzed.assessment.comparedSamples == stacked.assessment.comparedSamples);
+        require(analyzed.assessment.residualRms == stacked.assessment.residualRms);
+        require(analyzed.assessment.positiveFraction == stacked.assessment.positiveFraction);
+        require(analyzed.assessment.negativeFraction == stacked.assessment.negativeFraction);
+        require(analyzed.assessment.reasons == stacked.assessment.reasons &&
+                analyzed.assessment.warnings == stacked.assessment.warnings);
+    }
+    // Reusing native grids must still report an unusable light, and must
+    // fail if a previously measured input is replaced before assessment.
+    {
+        auto partial = inputs;
+        partial.back() = root / "invalid.fits";
+        std::ofstream(partial.back()) << "bad FITS";
+        const auto invalid = DeepSkyWorkflow().run(partial, root / "one-invalid", options);
+        require(invalid.ok && invalid.selectedCount == partial.size() - 1);
+        require(!invalid.frames.back().native.ok && !invalid.frames.back().assessment.usable &&
+                !invalid.frames.back().errorCode.empty());
+        partial.back() = root / "changed.fits";
+        fs::copy_file(inputs.back(), partial.back());
+        const auto changed = DeepSkyWorkflow().run(partial, root / "changed-after-measure", options,
+            [&](const std::string& stage, double, std::size_t step, std::size_t) {
+                if (stage == "align" && step == 1)
+                    std::ofstream(partial.back(), std::ios::app) << "source changed";
+            });
+        require(!changed.ok && changed.errorCode == "InputChanged");
+        require(!fs::exists(root / "changed-after-measure/.aligned-work"));
+    }
     options.quality.overrides.assign(inputs.size(), FrameSelectionOverride::Reject);
     auto rejected = DeepSkyWorkflow().run(inputs, root / "rejected", options);
     require(!rejected.ok && rejected.errorCode == "SelectionNeedsReview" && rejected.frames.size() == inputs.size());

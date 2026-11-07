@@ -219,6 +219,7 @@ public extension Notification.Name {
 public enum ProcessingServiceError: Error, LocalizedError, Equatable {
     case executableNotFound
     case commandFailed(exitCode: Int32, stderr: String)
+    case commandOutputLimitExceeded(maximumBytes: Int)
     case outputMissing(path: String)
     case outputInvalid(path: String)
     case outputCommitFailed(path: String, reason: String)
@@ -233,6 +234,8 @@ public enum ProcessingServiceError: Error, LocalizedError, Equatable {
             return "PhotonStack CLI executable was not found. Build it with tools/scripts/build.sh debug or set PHOTONSTACK_CLI."
         case let .commandFailed(exitCode, stderr):
             return "PhotonStack command failed with exit code \(exitCode): \(stderr)"
+        case let .commandOutputLimitExceeded(maximumBytes):
+            return "PhotonStack command report exceeded the \(maximumBytes / (1_024 * 1_024)) MiB limit. The command was stopped; existing outputs were preserved."
         case let .outputMissing(path):
             return "PhotonStack command completed without creating its expected output: \(path)"
         case let .outputInvalid(path):

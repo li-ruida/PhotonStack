@@ -8,7 +8,7 @@
 
 namespace photonstack {
 namespace {
-using Basis = std::array<double, 6>;
+using Basis = std::array<double, 15>;
 struct Sample { Basis basis; std::array<double, 3> color; };
 double median(std::vector<double> v) {
     auto m = v.begin() + v.size()/2;
@@ -17,35 +17,38 @@ double median(std::vector<double> v) {
 }
 Basis basisAt(double x, double y, const ImageBuffer& im) {
     x = 2*x/im.width - 1; y = 2*y/im.height - 1;
-    return {1,x,y,x*x,x*y,y*y};
+    return {1,x,y,x*x,x*y,y*y,
+            x*x*x,x*x*y,x*y*y,y*y*y,
+            x*x*x*x,x*x*x*y,x*x*y*y,x*y*y*y,y*y*y*y};
 }
 double evaluate(const Basis& b, const Basis& c) { return std::inner_product(b.begin(),b.end(),c.begin(),0.0); }
-bool fit(const std::vector<Sample>& samples, int channel, Basis& coefficients) {
+bool fit(const std::vector<Sample>& samples, int channel, int terms, Basis& coefficients) {
+    coefficients.fill(0);
     std::vector<bool> keep(samples.size(),true);
     for (int iteration=0;iteration<4;++iteration) {
-        double system[6][7] = {};
+        double system[15][16] = {};
         std::size_t count=0;
         for (std::size_t n=0;n<samples.size();++n) if (keep[n]) {
             ++count; const auto& s=samples[n];
-            for (int i=0;i<6;++i) {
-                for (int j=0;j<6;++j) system[i][j]+=s.basis[i]*s.basis[j];
-                system[i][6]+=s.basis[i]*s.color[channel];
+            for (int i=0;i<terms;++i) {
+                for (int j=0;j<terms;++j) system[i][j]+=s.basis[i]*s.basis[j];
+                system[i][terms]+=s.basis[i]*s.color[channel];
             }
         }
-        if (count<12) return false;
-        for (int i=0;i<6;++i) {
+        if (count<std::size_t(std::max(12,2*terms))) return false;
+        for (int i=0;i<terms;++i) {
             int pivot=i;
-            for (int j=i+1;j<6;++j) if (std::abs(system[j][i])>std::abs(system[pivot][i])) pivot=j;
+            for (int j=i+1;j<terms;++j) if (std::abs(system[j][i])>std::abs(system[pivot][i])) pivot=j;
             if (std::abs(system[pivot][i])<1e-10) return false;
-            for(int j=0;j<7;++j) std::swap(system[i][j],system[pivot][j]);
+            for(int j=0;j<=terms;++j) std::swap(system[i][j],system[pivot][j]);
             const double divisor=system[i][i];
-            for(int j=i;j<7;++j) system[i][j]/=divisor;
-            for(int k=0;k<6;++k) if(k!=i) {
+            for(int j=i;j<=terms;++j) system[i][j]/=divisor;
+            for(int k=0;k<terms;++k) if(k!=i) {
                 const double factor=system[k][i];
-                for(int j=i;j<7;++j) system[k][j]-=factor*system[i][j];
+                for(int j=i;j<=terms;++j) system[k][j]-=factor*system[i][j];
             }
         }
-        for(int i=0;i<6;++i) coefficients[i]=system[i][6];
+        for(int i=0;i<terms;++i) coefficients[i]=system[i][terms];
         if(iteration==3) break;
         std::vector<double> residuals;
         for(const auto& s:samples) residuals.push_back(s.color[channel]-evaluate(s.basis,coefficients));
@@ -65,8 +68,9 @@ BackgroundExtractionResult BackgroundExtractor::extractPolynomial(const ImageBuf
         return fail("ImageBufferInvalid","Polynomial background requires an image at least 16 by 16 pixels");
     if(detail::imageHasInvalidCoveredColor(im)) return fail("ImageBufferInvalid","Covered image samples must be finite");
     if(opt.extraction.mode!=BackgroundMode::Subtract || !std::isfinite(opt.extraction.strength) ||
-       opt.extraction.strength<0 || opt.extraction.strength>1 || opt.columns<4 || opt.rows<4 || opt.columns>512 || opt.rows>512)
-        return fail("ArgumentInvalid","Polynomial background requires subtraction, strength 0...1, and grid dimensions 4...512");
+       opt.extraction.strength<0 || opt.extraction.strength>1 || opt.columns<4 || opt.rows<4 || opt.columns>512 || opt.rows>512 ||
+       opt.degree<1 || opt.degree>4)
+        return fail("ArgumentInvalid","Polynomial background requires subtraction, strength 0...1, degree 1...4, and grid dimensions 4...512");
     for(const auto& e:opt.exclusions)
         if(!std::isfinite(e.x)||!std::isfinite(e.y)||!std::isfinite(e.major)||!std::isfinite(e.minor)||!std::isfinite(e.angleDegrees)||e.major<=0||e.minor<=0)
             return fail("ArgumentInvalid","Background exclusion ellipses must be finite with positive semiaxes");
@@ -99,9 +103,11 @@ BackgroundExtractionResult BackgroundExtractor::extractPolynomial(const ImageBuf
         samples.push_back(sample);
     }
     std::array<Basis,3> coefficients;
-    if(samples.size()<12) return fail("BackgroundSamplesInsufficient","At least twelve sky samples outside the exclusions are required");
-    for(int c=0;c<channels;++c) if(!fit(samples,c,coefficients[c]))
-        return fail("BackgroundSamplesInsufficient","Sky samples do not constrain a quadratic background surface");
+    const int terms=int((opt.degree+1)*(opt.degree+2)/2);
+    if(samples.size()<std::size_t(std::max(12,2*terms)))
+        return fail("BackgroundSamplesInsufficient","Need at least twelve sky samples and twice as many samples as polynomial coefficients");
+    for(int c=0;c<channels;++c) if(!fit(samples,c,terms,coefficients[c]))
+        return fail("BackgroundSamplesInsufficient","Sky samples do not constrain the selected polynomial background surface");
     BackgroundExtractionResult result; result.image=im;
     result.sampledGridCells=static_cast<std::uint32_t>(samples.size());result.gridColumns=opt.columns;result.gridRows=opt.rows;
     std::array<double,3> pedestal{};

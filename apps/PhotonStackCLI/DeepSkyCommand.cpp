@@ -1,4 +1,5 @@
 #include "DeepSkyCommand.hpp"
+#include "DeepSkyPreflight.hpp"
 #include "photonstack/DeepSkyRecipe.hpp"
 
 #include <algorithm>
@@ -32,6 +33,40 @@ std::string json(const std::string& text) {
     out << '"'; return out.str();
 }
 const char* boolean(bool value) { return value ? "true" : "false"; }
+void help() {
+    std::cout << R"(PhotonStack deep-sky: analyze, select, stack and finish light frames.
+
+Usage:
+  photonstack deep-sky --input <light-directory> --output-dir <new-directory> [--analyze-only]
+  photonstack deep-sky --recipe <recipe.txt> --output-dir <new-directory> [--analyze-only]
+  photonstack deep-sky --recipe <recipe.txt> --output-dir <work-directory> --preflight
+  photonstack deep-sky --recipe <recipe.txt> --from-master <linear-RGB.fits> --output-dir <new-directory>
+  photonstack deep-sky --write-default-recipe <new-recipe.txt> [--input <light-directory>]
+  photonstack deep-sky --inspect-recipe <recipe.txt>
+  photonstack deep-sky schema
+
+Options:
+  --input                 Read supported light files directly inside a directory.
+  --recipe                Load processing settings and optional input paths.
+  --output-dir            Write results to a new or empty directory.
+  --analyze-only          Measure and select frames without stacking or finishing.
+  --preflight             Inspect headers and estimate resources; writes no outputs.
+  --from-master           Refinish an existing linear RGB FITS using a recipe;
+                          cannot be combined with --input or --analyze-only.
+  --write-default-recipe  Save editable defaults without running processing.
+  --inspect-recipe        Validate a recipe and print its normalized JSON form.
+  schema                  Print supported settings, defaults and limits as JSON.
+  --help, -h, help        Show this help without reading or writing images.
+
+Start here:
+  photonstack deep-sky --write-default-recipe recipe.txt --input lights
+  photonstack deep-sky --recipe recipe.txt --output-dir analysis --analyze-only
+  photonstack deep-sky --recipe recipe.txt --output-dir stack
+
+Input files stay unchanged. Review the analysis before stacking and inspect the
+finished image at native scale. Recipe details: docs/deep-sky-recipe.md.
+)";
+}
 void strings(std::ostream& out, const std::vector<std::string>& values) {
     out << '[';
     for (std::size_t i = 0; i < values.size(); ++i) { if (i) out << ','; out << json(values[i]); }
@@ -63,9 +98,11 @@ std::string report(const DeepSkyWorkflowResult& r, const DeepSkyRecipe& recipe, 
         << ",\"noiseReferenceManifest\":" << json(r.noiseReferenceManifest.string())
         << ",\"noiseReferenceInputs\":" << json(r.noiseReferenceInputs.string())
         << ",\"independentLuminanceNoise\":" << boolean(r.independentLuminanceNoise)
+        << ",\"denoiseStretchLocked\":" << boolean(r.ok && !analysisOnly && r.denoiseStretchLocked)
         << ",\"crop\":{\"x\":" << r.cropX << ",\"y\":" << r.cropY << ",\"width\":" << r.cropWidth << ",\"height\":" << r.cropHeight << '}'
         << ",\"denoiseH\":" << r.denoiseH << ",\"development\":{\"toneScale\":" << r.development.toneScale
         << ",\"colorCleanedStars\":" << r.development.colorCleanedStars
+        << ",\"sky\":[" << r.development.sky[0] << ',' << r.development.sky[1] << ',' << r.development.sky[2] << ']'
         << ",\"shadowNoise\":" << r.development.shadowNoise << ",\"whitePoint\":" << r.development.whitePoint << ",\"calibrationStars\":" << r.development.calibrationStars << ",\"gains\":["
         << r.development.gains[0] << ',' << r.development.gains[1] << ',' << r.development.gains[2] << "]},\"channelAlignment\":[";
     for (unsigned c=0;c<3;++c) {
@@ -74,7 +111,13 @@ std::string report(const DeepSkyWorkflowResult& r, const DeepSkyRecipe& recipe, 
             << ",\"dx\":" << r.channelAlignment.dx[c] << ",\"dy\":" << r.channelAlignment.dy[c]
             << ",\"scatter\":" << r.channelAlignment.scatter[c] << ",\"stars\":" << r.channelAlignment.stars[c] << '}';
     }
-    out << "],\"frames\":[";
+    out << "],\"displayReview\":";
+    if (r.ok && !analysisOnly && r.development.displayPixels > 0) {
+        out << "{\"version\":1,\"pixels\":" << r.development.displayPixels
+            << ",\"nearBlackPixels\":" << r.development.nearBlackPixels
+            << ",\"nearWhitePixels\":" << r.development.nearWhitePixels << '}';
+    } else out << "null";
+    out << ",\"frames\":[";
     for (std::size_t i = 0; i < r.frames.size(); ++i) {
         const auto& f = r.frames[i]; const auto& a = f.assessment;
         if (i) out << ',';
@@ -91,6 +134,11 @@ std::string report(const DeepSkyWorkflowResult& r, const DeepSkyRecipe& recipe, 
             << ",\"fwhm\":" << f.native.medianFwhm
             << ",\"eccentricity\":" << f.native.medianEccentricity << ",\"matches\":" << f.registration.matches
             << ",\"inlierRatio\":" << f.registration.inlierRatio << ",\"registrationFallback\":" << boolean(f.registration.usedFallback)
+            << ",\"centroidRefined\":" << boolean(f.registration.usedCentroidRefinement)
+            << ",\"centroidRms\":" << f.registration.centroidRefinementRms
+            << ",\"registrationTransform\":{\"scale\":" << f.registration.transform.scale
+            << ",\"rotationRadians\":" << f.registration.transform.rotationRadians
+            << ",\"dx\":" << f.registration.transform.dx << ",\"dy\":" << f.registration.transform.dy << '}'
             << ",\"positiveFraction\":" << a.positiveFraction << ",\"negativeFraction\":" << a.negativeFraction
             << ",\"residualRms\":" << a.residualRms << ",\"comparedSamples\":" << a.comparedSamples
             << ",\"rejectedLowSamples\":" << f.rejectedLowSamples << ",\"rejectedHighSamples\":" << f.rejectedHighSamples
@@ -129,6 +177,9 @@ std::vector<fs::path> directoryInputs(const fs::path& path) {
 
 int runDeepSkyCommand(const std::vector<std::string>& args) {
     try {
+        if (args.size() == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help")) {
+            help(); return 0;
+        }
         if (args == std::vector<std::string>{"schema"}) { schema(); return 0; }
         if (args.size() == 2 && args[0] == "--inspect-recipe") {
             const fs::path path = fs::absolute(args[1]);
@@ -153,12 +204,13 @@ int runDeepSkyCommand(const std::vector<std::string>& args) {
             return 0;
         }
         fs::path recipePath, output, inputDirectory, defaultPath, fromMaster;
-        bool analysisOnly = false;
+        bool analysisOnly = false, preflight = false;
         std::set<std::string> seen;
         for (std::size_t i = 0; i < args.size(); ++i) {
             const auto key = args[i];
             if (!seen.insert(key).second) throw std::invalid_argument("Duplicate argument: " + key);
             if (key == "--analyze-only") { analysisOnly = true; continue; }
+            if (key == "--preflight") { preflight = true; continue; }
             if (i + 1 == args.size()) throw std::invalid_argument("Missing value for " + key);
             const auto value = args[++i];
             if (key == "--recipe") recipePath = value;
@@ -180,7 +232,7 @@ int runDeepSkyCommand(const std::vector<std::string>& args) {
             recipe.inputs = directoryInputs(inputDirectory);
         }
         if (!defaultPath.empty()) {
-            if (!recipePath.empty() || !output.empty() || analysisOnly || !fromMaster.empty()) throw std::invalid_argument("Default recipe writing cannot be combined with a run");
+            if (!recipePath.empty() || !output.empty() || analysisOnly || preflight || !fromMaster.empty()) throw std::invalid_argument("Default recipe writing cannot be combined with a run");
             saveNew(defaultPath, recipe.serialize());
             std::cout << "{\"type\":\"complete\",\"command\":\"deep-sky recipe\",\"output\":" << json(fs::absolute(defaultPath).string()) << "}\n";
             return 0;
@@ -190,6 +242,11 @@ int runDeepSkyCommand(const std::vector<std::string>& args) {
         // identical validation, including per-frame vectors and cross-field rules.
         recipe = DeepSkyRecipe::parse(recipe.serialize(), fs::current_path());
         output = fs::absolute(output).lexically_normal();
+        if (preflight) {
+            if (analysisOnly || !fromMaster.empty()) throw std::invalid_argument("--preflight estimates the full light workflow and cannot be combined with --analyze-only or --from-master");
+            std::cout << inspectDeepSkyPlan(recipe, output).json();
+            return 0;
+        }
         if (fs::exists(output) && (!fs::is_directory(output) || !fs::is_empty(output))) throw std::invalid_argument("Output directory must be new or empty");
         recipe.options.analysisOnly = analysisOnly;
         if (!fromMaster.empty() && (analysisOnly || !inputDirectory.empty() || recipePath.empty()))

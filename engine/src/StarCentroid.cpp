@@ -12,6 +12,7 @@ namespace photonstack {
 namespace {
 constexpr int radius = 7, side = 15, count = side * side, parameters = 9;
 using Params = std::array<double, parameters>;
+using NormalMatrix = std::array<std::array<double, parameters + 1>, parameters>;
 
 double median(std::vector<double> values) {
     auto mid = values.begin() + values.size() / 2;
@@ -19,9 +20,15 @@ double median(std::vector<double> values) {
     return *mid;
 }
 
-double evaluate(const Params& p, double x, double y, Params* jacobian = nullptr) {
-    const double sx = std::exp(p[3]), sy = std::exp(p[4]);
-    const double z = std::tanh(p[5]), rho = .9 * z, den = 1 - rho * rho;
+// The Gaussian shape is constant across all 225 samples of a model evaluation.
+struct GaussianShape {
+    double sx, sy, z, rho, den;
+    explicit GaussianShape(const Params& p)
+        : sx(std::exp(p[3])), sy(std::exp(p[4])), z(std::tanh(p[5])), rho(.9 * z), den(1 - rho * rho) {}
+};
+
+double evaluate(const Params& p, const GaussianShape& shape, double x, double y, Params* jacobian = nullptr) {
+    const auto& [sx, sy, z, rho, den] = shape;
     const double u = (x - p[1]) / sx, v = (y - p[2]) / sy;
     const double numerator = u * u + v * v - 2 * rho * u * v;
     const double gaussian = std::exp(-.5 * numerator / den), signal = p[0] * gaussian;
@@ -36,7 +43,7 @@ double evaluate(const Params& p, double x, double y, Params* jacobian = nullptr)
     return signal + p[6] + p[7] * x + p[8] * y;
 }
 
-bool solve(double matrix[parameters][parameters + 1], Params& result) {
+bool solve(NormalMatrix& matrix, Params& result) {
     for (int col = 0; col < parameters; ++col) {
         int pivot = col;
         for (int row = col + 1; row < parameters; ++row)
@@ -60,11 +67,31 @@ bool solve(double matrix[parameters][parameters + 1], Params& result) {
 
 double error(const std::array<double, count>& data, const Params& p) {
     double sum = 0;
+    const GaussianShape shape(p);
     for (int j = 0; j < count; ++j) {
-        const double delta = data[j] - evaluate(p, j % side - radius, j / side - radius);
+        const double delta = data[j] - evaluate(p, shape, j % side - radius, j / side - radius);
         sum += delta * delta;
     }
     return sum;
+}
+
+NormalMatrix normalEquations(const std::array<double, count>& data, const Params& p) {
+    const GaussianShape shape(p);
+    NormalMatrix matrix{};
+    for (int j = 0; j < count; ++j) {
+        Params gradient;
+        const double residual = data[j] - evaluate(p, shape, j % side - radius, j / side - radius, &gradient);
+        for (int row = 0; row < parameters; ++row) {
+            matrix[row][parameters] += gradient[row] * residual;
+            for (int col = row; col < parameters; ++col) {
+                matrix[row][col] += gradient[row] * gradient[col];
+            }
+        }
+    }
+    // J^T J is symmetric. Mirroring retains the per-entry accumulation order.
+    for (int row = 1; row < parameters; ++row)
+        for (int col = 0; col < row; ++col) matrix[row][col] = matrix[col][row];
+    return matrix;
 }
 } // namespace
 
@@ -99,16 +126,11 @@ StarCentroidFit fitStarCentroid(const ImageBuffer& image, float x, float y) {
     for (auto& value : data) value = (value - sky) / amplitude;
     Params p{1, x - cx, y - cy, std::log(1.4), std::log(1.4), 0, 0, 0, 0};
     double damping = .01, cost = error(data, p);
+    auto normal = normalEquations(data, p);
     for (int iteration = 0; iteration < 40; ++iteration) {
-        double matrix[parameters][parameters + 1]{};
-        for (int j = 0; j < count; ++j) {
-            Params gradient;
-            const double residual = data[j] - evaluate(p, j % side - radius, j / side - radius, &gradient);
-            for (int row = 0; row < parameters; ++row) {
-                matrix[row][parameters] += gradient[row] * residual;
-                for (int col = 0; col < parameters; ++col) matrix[row][col] += gradient[row] * gradient[col];
-            }
-        }
+        // Rejected trial steps change damping only. Keep the undamped normal
+        // equations until the trial changes the model parameters.
+        auto matrix = normal;
         for (int j = 0; j < parameters; ++j) matrix[j][j] += damping * std::max(matrix[j][j], .01);
         Params step, next = p;
         if (!solve(matrix, step)) return {};
@@ -122,7 +144,11 @@ StarCentroidFit fitStarCentroid(const ImageBuffer& image, float x, float y) {
         if (nextCost < cost) {
             p = next; cost = nextCost; damping = std::max(damping / 3, 1e-7);
             if (stepNorm < 1e-10) break;
-        } else { damping = std::min(damping * 10, 1e7); }
+            normal = normalEquations(data, p);
+        } else {
+            if (damping == 1e7) break; // The next trial would repeat exactly.
+            damping = std::min(damping * 10, 1e7);
+        }
     }
     const double sx = std::exp(p[3]), sy = std::exp(p[4]), rho = .9 * std::tanh(p[5]);
     const double middle = (sx * sx + sy * sy) / 2;

@@ -2,6 +2,7 @@ add_executable(photonstack
   main.cpp
   FrequencyStackCommand.cpp
   DeepSkyCommand.cpp
+  DeepSkyPreflight.cpp
 )
 
 target_link_libraries(photonstack

@@ -13,6 +13,31 @@ tool.
 - share the same core processing behavior as the macOS app
 - expose machine-readable output for integration and tooling
 
+## Deep-sky resource planning
+
+```sh
+photonstack deep-sky --recipe recipe.txt --output-dir /path/to/project/processing --preflight
+```
+
+This read-only command inspects source headers and the destination filesystem. It
+prints JSON without creating the destination or processing any pixels. An existing
+nonempty work root is accepted, because a future run will use its own new directory.
+The estimate covers the full light workflow (analysis, stack and finishing), all
+lights and uncropped dimensions. It is not an analysis-only or reused-master plan.
+
+`temporaryBytes` estimates transient working files; `productBytes` includes retained
+masters, requested diagnostics and a 16-bit display TIFF. `plannedDiskBytes` adds
+10% headroom and a 64 MiB reserve. It is a planning estimate, not a disk reservation.
+`stackBufferBytes` and `assessmentSampleBytes` describe major buffers; decoder,
+registration, background and denoising memory are additional. They are not a process
+RSS estimate or memory cap. Source bytes are only the files successfully counted.
+
+Missing/unreadable/duplicate inputs and incompatible header dimensions appear in
+`issues` and suppress the full estimate. Unknown capacity is `null`, not zero.
+Sensor-pattern correction currently reports its extra storage as unestimated and
+omits `plannedDiskBytes`. A successful preflight command means the planning report
+was produced; it does not certify pixel decoding or calibration compatibility.
+
 ## Stack modes
 
 `photonstack stack --method maximum --output trails.fits frame1.fits frame2.fits`
@@ -287,12 +312,48 @@ photonstack develop --input background-linear.fits --output developed.tiff \
   --saturation 0.65 --star-exposure 0.25 --red-gain 0.92 --blue-gain 1.12
 ```
 
+The tone curve sets the displayed brightness of neutral colors. The default
+`--color-transfer linear-light` mixes calibrated RGB in linear display light
+and encodes the result as sRGB after applying saturation, highlight rolloff
+and gamut compression. To compare displayed stellar channel ratios, decode
+the TIFF's sRGB values first. To reproduce earlier developments, use
+`--color-transfer legacy-code` with their original settings. That mode mixes
+color directly in sRGB code values. The JSON result records the selected
+mode in `colorTransfer`.
+
 `--brightness` is positive (up to 20); `--tone-scale` optionally specifies the
 half-response in input physical units, before division by brightness. Zero
 selects a scene-based estimate. `--background` is in [0, 0.5), `--saturation`
 in [0, 3], and RGB gain multipliers in (0, 20]. `--star-exposure` is a linear
 stellar signal multiplier in [0.05, 1]; 1 leaves stars unchanged. Compactness
 checks protect broad nuclei; overlapping stellar masks are not multiplied.
+`--sky-percentile` in [0.05, 0.5] selects the per-channel reference subtracted
+before stretching. Default 0.5 preserves the historical median; lower values
+can retain extended nebulosity but also lift noise and residual gradients.
+Use after gradient correction, not as a replacement for it. This changes only
+display development, not the linear master or statistical white-balance gains.
+The App exposes this under Advanced tone settings and preserves it in replay.
+
+For controlled denoise comparisons, `develop --statistics-reference <linear.fits>`
+uses a common image to estimate the sky pedestal, statistical stellar gains,
+shadow-noise scale, automatic tone scale and white point. The input still supplies
+all rendered pixels. Use the same reference and options for both images; matching
+geometry, channel count and linear encoding are required. The caller must also
+ensure matching physical units, calibration and crop: dimensions alone cannot
+establish these. The reference is a scene image, **not** an independent noise map.
+The output must be a new path, including when an existing path is a symlink.
+JSON records `statisticsReference` and the applied tone statistics.
+
+This opt-in avoids a feedback loop where denoising lowers the automatic tone scale
+and re-amplifies the remaining noise or changes an untouched target's appearance.
+For an exactly shared pointwise transfer, use `--star-exposure 1` and
+`--star-color-cleanup 0` on both renders: those local operations remain dependent
+on each input's stellar neighborhoods. Omitting the reference preserves existing
+behavior. The external-file selector is a standalone CLI capability. The App's
+deep-sky workflow instead offers `develop.lock-denoise-stretch`, which uses that
+run's own background-corrected image; it never selects an unrelated external
+reference. Existing recipes are not silently changed.
+
 `--star-peak-threshold` in [0, 1] optionally restricts that adjustment to brighter
 stars. It compares the local-background-subtracted stellar peak after mapping
 through the selected display curve, and smoothly increases attenuation from
@@ -310,7 +371,10 @@ No artificial stars or galaxy features are generated.
 The JSON result reports the number of calibration and adjusted stars, applied
 channel gains, estimated sky levels, and the effective tone scale. Calibration
 needs at least eight usable stars. To use manual gains instead, pass
-`--stellar-balance off`. This is statistical color balancing, **not** catalog
+`--stellar-balance off`. Stellar detection and saturation screening accept signed
+linear values, including negative channel peaks after pedestal subtraction;
+an absolute zero is not a calibration-star cutoff. As with all Float32 processing,
+large offsets can reduce numerical precision. This is statistical color balancing, **not** catalog
 photometry or SPCC. Keep `--star-exposure 1` for measurements of stellar flux.
 
 The macOS action bar exposes **Deep Sky Development / 深空显影**, including
@@ -408,8 +472,12 @@ for the role of asinh stretching in a linear-image workflow.
 
 ### Protecting an extended target during background fitting
 
-`background --model polynomial` fits a robust quadratic surface independently
-per color channel to local sky medians. It supports subtraction and preserves
+`background --model polynomial` fits a robust polynomial surface independently
+per color channel to local sky medians. `--polynomial-degree` selects total degree
+1–4 (default 2, retaining the historical quadratic model). Higher orders can
+follow complex gradients but can also remove real diffuse emission: protect the
+target and compare its outer structure before accepting a result. This option
+requires the polynomial model. It supports subtraction and preserves
 signed values in FITS outputs. `--grid-x` and `--grid-y` select the sampling grid
 (default 32×48). Samples with incomplete coverage are excluded.
 
@@ -418,7 +486,9 @@ Centers and **semiaxes** use input pixel coordinates; the angle is in degrees
 from the positive x axis toward positive y. The ellipse only excludes sky-fit
 samples: the fitted background is still subtracted smoothly over the whole
 image. Exclusions require the polynomial model. A fit fails if too few or
-poorly distributed sky samples remain.
+poorly distributed sky samples remain. It needs at least 12 samples and at least
+twice the number of coefficients: 12/12/20/30 for degrees 1/2/3/4, including after
+outlier rejection. This numerical check alone cannot guarantee uncontaminated sky.
 
 ```sh
 photonstack background --input stack.fits --output background-corrected.fits \
@@ -658,4 +728,4 @@ The `deep-sky` command runs the same assessment, selection and processing workfl
 
 ### Frame review preview
 
-`photonstack review-preview --input light.fit --output new-preview.tiff` produces an original-resolution display preview for screening. FITS use display normalization, debayering on, and Malvar interpolation by default; `--fits-debayer on|off` and `--fits-demosaic bilinear|malvar|menon|ratio` override these choices. The output is an 8-bit sRGB TIFF stretched to a target background of 0.18. Existing output files are rejected. This display image is not a scientific stacking input.
+`photonstack review-preview --input light.fit --output new-preview.tiff` produces an original-resolution display preview for screening. Direct CLI calls default to display-normalized FITS with Malvar interpolation. Override these settings with `--fits-debayer on|off`, `--fits-demosaic bilinear|malvar|menon|ratio|malvar-guarded`, and `--fits-cfa-gains r,g,b`. The app passes the active recipe’s FITS decoder and interpolation gains or, for camera RAW lights, the corresponding RAW decode options supported by `convert`. Changing decode settings invalidates the associated cached previews. The output is an 8-bit sRGB TIFF stretched to a target background of 0.18. Existing output files are rejected. This display image is not a scientific stacking input.

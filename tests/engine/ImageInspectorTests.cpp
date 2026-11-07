@@ -1,5 +1,6 @@
 #include <cassert>
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +47,7 @@
 #include "photonstack/Stretch.hpp"
 #include "photonstack/TileProcessor.hpp"
 #include "photonstack/Version.hpp"
+#include "../../engine/src/StarDetectionStatistics.hpp"
 
 namespace {
 
@@ -968,6 +970,66 @@ void testStarDetection() {
     assert(std::isfinite(extreme.stars.front().flux));
     assert(std::isfinite(extreme.stars.front().fwhm));
     assert(std::isfinite(extreme.stars.front().eccentricity));
+
+    // Scientific image input rejects a covered NaN. The luminance-span API
+    // accepts an unavailable sample and computes its statistics on the rest.
+    const photonstack::StarDetectionOptions robust{.sigmaThreshold = 1.0F, .robustStatistics = true};
+    scientific.pixels[0] = std::numeric_limits<float>::quiet_NaN();
+    assert(detector.detect(scientific, robust).errorCode == "ImageBufferInvalid");
+    const auto sparse = detector.detectLuminance(scientific.width, scientific.height, scientific.pixels, robust);
+    assert(sparse.ok && sparse.stars.size() == 1);
+
+    // Fractional coverage contributes to centroids, but only complete samples
+    // establish the robust sky. Exercise both sides of the 16-sample minimum.
+    std::vector<float> coverage(scientific.pixelCount(), .5F);
+    std::fill_n(coverage.begin() + 1, 15, 1.0F);
+    const auto partial = detector.detectLuminanceWithCoverage(
+        scientific.width, scientific.height, scientific.pixels, coverage, robust);
+    assert(!partial.ok && partial.errorCode == "ImageCoverageEmpty");
+    assert(partial.message == "Robust stellar statistics need complete pixel coverage");
+    coverage[16] = 1.0F;
+    assert(detector.detectLuminanceWithCoverage(
+        scientific.width, scientific.height, scientific.pixels, coverage, robust).ok);
+    std::fill(coverage.begin(), coverage.end(), 0.0F);
+    const auto uncovered = detector.detectLuminanceWithCoverage(
+        scientific.width, scientific.height, scientific.pixels, coverage, robust);
+    assert(!uncovered.ok && uncovered.errorCode == "ImageCoverageEmpty");
+    assert(uncovered.message == "Star detection requires at least one valid pixel");
+}
+
+void testExactStellarMedian() {
+    const auto check = [](std::vector<float> samples) {
+        auto ordered = samples;
+        std::sort(ordered.begin(), ordered.end());
+        const auto upper = ordered.size() / 2, lower = (ordered.size() - 1) / 2;
+        const auto expected = .5 * (double(ordered[upper]) + ordered[lower]);
+        assert(photonstack::detail::stellarMedian(samples) == expected);
+    };
+    for (auto count : {65536U, 65537U}) {
+        std::vector<float> samples(count);
+        std::uint32_t state = 724U;
+        for (auto& value : samples) {
+            state = 1664525U * state + 1013904223U;
+            value = float(state % 123456U);
+        }
+        check(samples);
+        for (auto& value : samples) value -= 50000.F;
+        check(samples);
+        // All values in one narrow float interval, including repeated ranks.
+        for (auto& value : samples) {
+            const auto mantissa = (std::bit_cast<std::uint32_t>(value) >> 19U) % 1000U;
+            value = std::bit_cast<float>(0x3f800000U + mantissa);
+        }
+        check(samples);
+        // The two central values of an even distribution can straddle bins.
+        for (std::size_t i = 0; i < samples.size(); ++i)
+            samples[i] = (i & 1U) ? std::numeric_limits<float>::infinity() : 0.F;
+        const auto probe = 3 * (samples.size() / 4);
+        std::swap(samples[probe], samples[probe + 1]);
+        check(samples);
+        std::sort(samples.begin(), samples.end(), std::greater<float>());
+        check(samples);
+    }
 }
 
 void testFrameQualityAnalyzer() {
@@ -9596,6 +9658,7 @@ int main() {
     testResizeToWidth();
     testResizeIgnoresColorBehindTransparencyAndPreservesMetadata();
     testStarDetection();
+    testExactStellarMedian();
     testFrameQualityAnalyzer();
     testFrameNormalizer();
     testCalibration();

@@ -24,7 +24,7 @@ struct AstroDevelopControl: View {
                     Text(chinese ? "增强中间调" : "Emphasize midtones").tag("rational")
                 }
                 Toggle(chinese ? "恒星统计白平衡" : "Statistical stellar balance", isOn: $settings.stellarBalance)
-                adjustment(chinese ? "外盘亮度" : "Brightness", value: $settings.brightness, range: 0.3...4)
+                adjustment(chinese ? "主体亮度" : "Brightness", value: $settings.brightness, range: 0.3...4)
                 adjustment(chinese ? "背景亮度" : "Background", value: $settings.background, range: 0.01...0.12)
                 adjustment(chinese ? "恒星曝光" : "Star exposure", value: $settings.starExposure, range: 0.1...1)
                 adjustment(chinese ? "亮星门槛" : "Bright-star threshold", value: $settings.starPeakThreshold, range: 0...1)
@@ -37,6 +37,10 @@ struct AstroDevelopControl: View {
                 adjustment(chinese ? "红色微调" : "Red gain", value: $settings.redGain, range: 0.6...1.4)
                 adjustment(chinese ? "蓝色微调" : "Blue gain", value: $settings.blueGain, range: 0.6...1.4)
                 DisclosureGroup(chinese ? "高级拉伸" : "Advanced tone settings") {
+                    adjustment(chinese ? "背景参考分位" : "Sky reference quantile", value: $settings.skyPercentile, range: 0.05...0.5)
+                        .accessibilityIdentifier("develop.sky-percentile")
+                    Text(chinese ? "0.5 保持原效果。大面积星云被扣暗时，可尝试 0.15–0.3；数值越低保留的暗部越多，也可能抬高噪声和残余渐变。请先校正背景，这不是光度标定。" : "0.5 preserves the original rendering. Try 0.15–0.3 if extended nebulosity is lost. Lower values retain more shadows, but may lift noise and residual gradients. Correct gradients first; this is not photometric calibration.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Text(chinese ? "0 表示自动；数值使用输入图像的线性单位。" : "Zero selects automatic values, in the input image's linear units.")
                         .font(.caption).foregroundStyle(.secondary)
                     TextField(chinese ? "拉伸尺度" : "Tone scale", value: $settings.toneScale, format: .number)

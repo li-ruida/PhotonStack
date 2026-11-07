@@ -18,10 +18,21 @@ public extension ProcessingService {
         try decodeDeepSkyOutput(await runCLI(arguments: ["deep-sky", "--inspect-recipe", url.path]))
     }
 
-    func finishDeepSky(recipe: URL, master: URL, outputDirectory: URL, previous: DeepSkyReport) async throws -> DeepSkyReport {
+    func finishDeepSky(recipe: URL, master: URL, outputDirectory: URL, previous: DeepSkyReport, buildIdentity: String? = nil) async throws -> DeepSkyReport {
         try previous.validate()
         guard previous.success, !previous.analysisOnly, previous.master == master.path,
               !FileManager.default.fileExists(atPath: outputDirectory.path) else { throw DeepSkyRecipeError.invalidReport }
+        let previousReportURL = URL(fileURLWithPath: previous.developed).deletingLastPathComponent().appendingPathComponent("app-report.json")
+        let sourcesVerified = try await DeepSkyResultReuse.validateSourcesForRefinish(report: previous, reportURL: previousReportURL)
+        var reuse: DeepSkyResultReuse.Prepared?
+        if let buildIdentity, let sourcesVerified {
+            let candidate = try await prepareDeepSkyReuse(recipe: recipe, buildIdentity: buildIdentity)
+            // A master made by engine/build A and finished by B is valid, but
+            // cannot claim to be the result of running the full recipe with B.
+            if candidate?.buildIdentity == sourcesVerified.buildIdentity,
+               candidate?.engineSHA256 == sourcesVerified.engineSHA256,
+               candidate?.preservesStack(from: previous.recipe) == true { reuse = candidate }
+        }
         let masterDigest = try deepSkySourceDigest(master)
         if let expected = previous.masterSHA256, expected != masterDigest {
             throw DeepSkyRecipeError.masterChanged
@@ -69,11 +80,7 @@ public extension ProcessingService {
               URL(fileURLWithPath: report.master).standardizedFileURL == master.standardizedFileURL else {
             throw DeepSkyRecipeError.invalidReport
         }
-        for path in [report.backgroundMaster, report.developed] {
-            let url = URL(fileURLWithPath: path).standardizedFileURL
-            guard url.deletingLastPathComponent() == outputDirectory.standardizedFileURL,
-                  FileManager.default.fileExists(atPath: path) else { throw DeepSkyRecipeError.invalidReport }
-        }
+        try validateDeepSkyProducts([report.backgroundMaster, report.developed], in: outputDirectory)
         // The original frame assessment belongs to the reused master. Keep it
         // separate from the finish-only engine report and retain its provenance.
         report.inputCount = previous.inputCount
@@ -92,15 +99,20 @@ public extension ProcessingService {
         }
         try validateNoiseReferencePaths(report)
         guard try deepSkySourceDigest(master) == masterDigest else { throw DeepSkyRecipeError.masterChanged }
+        if let sourcesVerified {
+            try await DeepSkyResultReuse.revalidateSourcesForRefinish(sourcesVerified, reportURL: previousReportURL)
+        }
         report.masterSHA256 = masterDigest
         report.developedSHA256 = try deepSkySourceDigest(URL(fileURLWithPath: report.developed))
         if hasPattern { report.recipe = originalRecipe }
         try report.validate()
-        try JSONEncoder().encode(report).write(to: outputDirectory.appendingPathComponent("app-report.json"), options: .atomic)
+        let reportURL = outputDirectory.appendingPathComponent("app-report.json")
+        try JSONEncoder().encode(report).write(to: reportURL, options: .atomic)
+        if let reuse { try await DeepSkyResultReuse.publish(reuse, report: report, reportURL: reportURL) }
         return report
     }
 
-    func deepSky(recipe: URL, outputDirectory: URL, analyzeOnly: Bool) async throws -> DeepSkyReport {
+    func deepSky(recipe: URL, outputDirectory: URL, analyzeOnly: Bool, buildIdentity: String? = nil) async throws -> DeepSkyReport {
         guard !FileManager.default.fileExists(atPath: outputDirectory.path) else {
             throw ProcessingServiceError.outputCommitFailed(path: outputDirectory.path, reason: "Deep-sky runs require a new output directory.")
         }
@@ -109,6 +121,7 @@ public extension ProcessingService {
             // explicitly owned intermediates; retain reports and final masters.
             try? FileManager.default.removeItem(at: outputDirectory.appendingPathComponent(".aligned-work"))
         }
+        let reuse = try await prepareDeepSkyReuse(recipe: recipe, buildIdentity: analyzeOnly ? nil : buildIdentity)
         var args = ["deep-sky", "--recipe", recipe.path, "--output-dir", outputDirectory.path]
         if analyzeOnly { args.append("--analyze-only") }
         var report: DeepSkyReport = try decodeDeepSkyOutput(await runCLI(arguments: args))
@@ -116,16 +129,49 @@ public extension ProcessingService {
         guard report.success, report.analysisOnly == analyzeOnly else { throw DeepSkyRecipeError.invalidReport }
         if !analyzeOnly {
             try validateNoiseReferencePaths(report)
-            for path in [report.master, report.backgroundMaster, report.developed] {
-                let url = URL(fileURLWithPath: path).standardizedFileURL
-                guard url.deletingLastPathComponent() == outputDirectory.standardizedFileURL,
-                      FileManager.default.fileExists(atPath: path) else { throw DeepSkyRecipeError.invalidReport }
-            }
+            try validateDeepSkyProducts([report.master, report.backgroundMaster, report.developed], in: outputDirectory)
             report.masterSHA256 = try deepSkySourceDigest(URL(fileURLWithPath: report.master))
             report.developedSHA256 = try deepSkySourceDigest(URL(fileURLWithPath: report.developed))
-            try JSONEncoder().encode(report).write(to: outputDirectory.appendingPathComponent("app-report.json"), options: .atomic)
+            let reportURL = outputDirectory.appendingPathComponent("app-report.json")
+            try JSONEncoder().encode(report).write(to: reportURL, options: .atomic)
+            if let reuse { try await DeepSkyResultReuse.publish(reuse, report: report, reportURL: reportURL) }
         }
         return report
+    }
+
+    private func prepareDeepSkyReuse(recipe: URL, buildIdentity: String?) async throws -> DeepSkyResultReuse.Prepared? {
+        #if os(macOS)
+        guard let buildIdentity, let cli = self as? CLIProcessingService else { return nil }
+        return try await DeepSkyResultReuse.prepare(inspectDeepSkyRecipe(recipe), buildIdentity: buildIdentity, engine: cli.executableURL)
+        #else
+        return nil
+        #endif
+    }
+
+    func reusableDeepSkyResult(reportURL: URL, recipe: String, output: URL, buildIdentity: String) async throws -> URL? {
+        #if os(macOS)
+        guard let cli = self as? CLIProcessingService else { return nil }
+        return try await DeepSkyResultReuse.validatedOutput(reportURL: reportURL, recipe: recipe,
+            output: output, buildIdentity: buildIdentity, engine: cli.executableURL)
+        #else
+        return nil
+        #endif
+    }
+}
+
+private func validateDeepSkyProducts(_ paths: [String], in outputDirectory: URL) throws {
+    // URL equality includes the directory/trailing-slash hint. Export replay and
+    // refinish callers legitimately construct the same directory without it.
+    // Compare canonical filesystem paths, while rejecting linked products and
+    // any engine report that points outside this run's output directory.
+    let directory = outputDirectory.resolvingSymlinksInPath().standardizedFileURL.path
+    for path in paths {
+        let url = URL(fileURLWithPath: path)
+        guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true, values.isSymbolicLink != true,
+              url.resolvingSymlinksInPath().standardizedFileURL.deletingLastPathComponent().path == directory else {
+            throw DeepSkyRecipeError.invalidReport
+        }
     }
 }
 

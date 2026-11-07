@@ -28,7 +28,7 @@ struct BackgroundProtectionEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(chinese ? "背景保护区" : "Background protection").font(.title2)
-            Text(chinese ? "覆盖星云、星系及外围光晕，留出足够天空估计背景。这里显示上次成片；保存范围后，点击“更新背景与降噪”生成新结果。"
+            Text(chinese ? "覆盖星云、星系及外围光晕，留出足够天空估计背景。这里显示上次成片；保存范围后，点击“从母版重新显影”生成新结果。"
                  : "Cover the target and faint outskirts, leaving enough sky for background estimation. This is the previous result. Save regions, then reprocess the master.")
                 .font(.callout).foregroundStyle(.secondary)
             HStack(alignment: .top, spacing: 16) {

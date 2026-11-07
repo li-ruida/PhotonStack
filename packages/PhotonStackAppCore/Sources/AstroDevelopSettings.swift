@@ -3,9 +3,11 @@ import Foundation
 /// Reproducible display development of a linear RGB integration.
 /// The stellar balance is statistical, rather than catalog photometry.
 public struct AstroDevelopSettings: Equatable, Sendable {
+    public var linearDisplayColor = true
     public var stellarBalance = true
     public var brightness = 1.5
     public var background = 0.035
+    public var skyPercentile = 0.5
     public var saturation = 0.7
     public var shadowNeutralization = 0.8
     public var starColorCleanup = 0.8
@@ -20,8 +22,10 @@ public struct AstroDevelopSettings: Equatable, Sendable {
     public init() {}
 
     public var operationParameters: [String: String] {
-        ["mode": "astro-v1", "toneCurve": toneCurve, "toneScale": String(toneScale), "whitePoint": String(whitePoint), "stellarBalance": String(stellarBalance),
+        ["mode": "astro-v1", "linearDisplayColor": String(linearDisplayColor),
+         "toneCurve": toneCurve, "toneScale": String(toneScale), "whitePoint": String(whitePoint), "stellarBalance": String(stellarBalance),
          "brightness": String(brightness), "background": String(background),
+         "skyPercentile": String(skyPercentile),
          "starColorCleanup": String(starColorCleanup),
          "starExposure": String(starExposure), "starPeakThreshold": String(starPeakThreshold),
          "saturation": String(saturation), "shadowNeutralization": String(shadowNeutralization),
@@ -30,6 +34,8 @@ public struct AstroDevelopSettings: Equatable, Sendable {
 
     public init(operationParameters p: [String: String]) {
         self.init()
+        // Earlier astro-v1 operations applied color in encoded display values.
+        linearDisplayColor = p["linearDisplayColor"].flatMap(Bool.init) ?? false
         // Records created before curve selection used the rational transfer.
         toneCurve = p["toneCurve"] ?? "rational"
         toneScale = p["toneScale"].flatMap(Double.init) ?? 0
@@ -37,6 +43,7 @@ public struct AstroDevelopSettings: Equatable, Sendable {
         stellarBalance = p["stellarBalance"].flatMap(Bool.init) ?? stellarBalance
         brightness = p["brightness"].flatMap(Double.init) ?? brightness
         background = p["background"].flatMap(Double.init) ?? background
+        skyPercentile = p["skyPercentile"].flatMap(Double.init) ?? 0.5
         starExposure = p["starExposure"].flatMap(Double.init) ?? 0.5
         starColorCleanup = p["starColorCleanup"].flatMap(Double.init) ?? 0
         starPeakThreshold = p["starPeakThreshold"].flatMap(Double.init) ?? 0

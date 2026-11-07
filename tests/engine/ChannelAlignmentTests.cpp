@@ -1,4 +1,5 @@
 #include "photonstack/AstroDevelop.hpp"
+#include "DisplayPhotometry.hpp"
 #include "photonstack/ChannelAlignment.hpp"
 #include "photonstack/StarCentroid.hpp"
 #include <cmath>
@@ -136,7 +137,8 @@ int main() {
         for (unsigned x = 0; x < 256; ++x) {
             const auto p = (y * 256 + x) * 4;
             const auto lum = [&](const ImageBuffer& im) {
-                return .2126 * im.pixels[p] + .7152 * im.pixels[p + 1] + .0722 * im.pixels[p + 2];
+                return .2126 * displayLight(im.pixels[p]) + .7152 * displayLight(im.pixels[p + 1]) +
+                       .0722 * displayLight(im.pixels[p + 2]);
             };
             require(std::abs(lum(before.image) - lum(after.image)) < 2e-7, "Display luminance unchanged");
             if (y < 12) {

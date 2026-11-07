@@ -138,6 +138,10 @@ struct StackOptions {
     // Robust combine only: 0 selects bounded automatic parallelism, 1 is serial.
     // Values above 8 are capped. Changes scheduling, never sample/reduction order.
     std::size_t combineWorkers = 0;
+    // Robust combine only: hard budget for the shared all-frame pixel tile.
+    // Excludes outputs, worker scratch and the separately bounded read buffers.
+    // Rows split when needed. A budget below one all-frame pixel is rejected.
+    std::size_t combineTileBytes = 64ULL * 1024ULL * 1024ULL;
     // Optional owner-managed parent for transient cache directories.
     std::filesystem::path temporaryDirectory;
     StackProgressCallback progress;

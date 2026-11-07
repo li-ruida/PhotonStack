@@ -5,12 +5,14 @@ public extension ProcessingService {
     func develop(input: URL, output: URL, settings: AstroDevelopSettings) async throws -> ProcessingCommandResult {
         try await runCLI(arguments: [
             "develop", "--input", input.path, "--output", output.path,
+            "--color-transfer", settings.linearDisplayColor ? "linear-light" : "legacy-code",
             "--stellar-balance", settings.stellarBalance ? "on" : "off",
             "--brightness", String(settings.brightness),
             "--tone-curve", settings.toneCurve,
             "--tone-scale", String(settings.toneScale),
             "--white-point", String(settings.whitePoint),
             "--background", String(settings.background),
+            "--sky-percentile", String(settings.skyPercentile),
             "--star-color-cleanup", String(settings.starColorCleanup),
             "--star-exposure", String(settings.starExposure),
             "--star-peak-threshold", String(settings.starPeakThreshold),

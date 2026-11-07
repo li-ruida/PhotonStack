@@ -6,9 +6,12 @@ This folder contains the public documentation for PhotonStack.
 
 - [`build.md`](build.md): environment setup, build, packaging, and local development
 - [`features.md`](features.md): current capabilities overview
+- [`product-workflow.md`](product-workflow.md): intended astrophotography workflow, current capability gaps, and acceptance priorities
+- [`reusable-workflows.md`](reusable-workflows.md): save processing steps and reuse them on new folders
 - [`cli.md`](cli.md): CLI scope and design notes
 - [`image-pipeline.md`](image-pipeline.md): processing pipeline overview
 - [`architecture.md`](architecture.md): repository architecture and shared-engine structure
+- [`third-party-review-2026-11.md`](third-party-review-2026-11.md): third-party UX review, implemented refactors, and numerical/native acceptance evidence
 - [`development-artifacts.md`](development-artifacts.md): source layout, local results, experiment archives, and cleanup rules
 - [`compliance/third-party-dependencies.md`](compliance/third-party-dependencies.md): tracked runtime and build dependencies
 

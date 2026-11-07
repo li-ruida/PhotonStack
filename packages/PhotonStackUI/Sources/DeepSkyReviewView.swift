@@ -1,204 +1,299 @@
-import AppKit
 import PhotonStackAppCore
 import SwiftUI
+
+/// Track the exposure path, since frame ordinals can be reused by a later
+/// report. A shrinking filtered list must not mark another exposure for edit.
+struct DeepSkyReviewFocus {
+    var selected = Set<String>()
+    var focused: String?
+
+    mutating func open(_ path: String?) {
+        selected = Set([path].compactMap { $0 })
+        focused = path
+    }
+
+    mutating func select(_ paths: Set<String>, in order: [String]) {
+        let added = paths.subtracting(selected)
+        selected = paths
+        if added.count == 1 {
+            focused = added.first
+        } else if focused.map(paths.contains) != true {
+            focused = order.first(where: paths.contains)
+        }
+    }
+
+    mutating func reconcile(with visible: [String]) {
+        select(selected.intersection(visible), in: visible)
+    }
+}
 
 struct DeepSkyReviewView: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     let report: DeepSkyReport
-    @State private var filter: DeepSkyReviewFilter = .all
+    let settings: DeepSkySettings
+    let reportIsCurrent: Bool
+    @Binding var filter: DeepSkyReviewFilter
+    @Binding var query: String
     @State private var sort: DeepSkyReviewSort = .attention
-    @State private var query = ""
-    @State private var selected = Set<Int>()
-    @State private var focused: Int?
+    @State private var focus = DeepSkyReviewFocus()
     @State private var undo: [[String: String]] = []
     @State private var notice: String?
+    @State private var exclusionCode: String?
+    @State private var prepared: (report: DeepSkyReport, evidence: DeepSkyReviewEvidence)?
     private var chinese: Bool { model.language == .simplifiedChinese }
-    private var settings: DeepSkySettings { model.deepSkySettings }
-    private var visible: [DeepSkyReport.Frame] {
-        DeepSkyReview.frames(report.frames, settings: settings, filter: filter, query: query, sort: sort)
-    }
-    private var focusedFrame: DeepSkyReport.Frame? { visible.first { $0.index == focused } }
-    private var chosen: [DeepSkyReport.Frame] { visible.filter { selected.contains($0.index) } }
-    private var keptCount: Int { report.frames.filter { DeepSkyReview.kept($0, settings: settings) }.count }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            summary
-            HStack(spacing: 12) {
-                Picker(chinese ? "显示范围" : "Show", selection: $filter) {
-                    ForEach(DeepSkyReviewFilter.allCases, id: \.self) { item in
-                        Text("\(item.title(chinese: chinese)) \(count(item))").tag(item)
-                    }
-                }.pickerStyle(.segmented).labelsHidden().frame(maxWidth: 540)
-                TextField(chinese ? "搜索文件名、序号或原因" : "Search name, number or reason", text: $query)
-                    .textFieldStyle(.roundedBorder).accessibilityIdentifier("review.search")
-                Picker(chinese ? "排序" : "Sort", selection: $sort) {
-                    ForEach(DeepSkyReviewSort.allCases, id: \.self) { Text($0.title(chinese: chinese)).tag($0) }
-                }.frame(width: 190).labelsHidden()
+        Group {
+            if let prepared, prepared.report == report {
+                workbench(context: prepared.evidence)
+            } else {
+                ProgressView().accessibilityLabel(chinese ? "读取筛片结果" : "Loading frame review")
             }
-            HSplitView {
+        }
+        .onChange(of: report, initial: true) { _, value in
+            prepared = (value, DeepSkyReviewEvidence(report: value))
+            undo = []
+            notice = nil
+            exclusionCode = nil
+            focus = DeepSkyReviewFocus()
+        }
+    }
+
+    private struct Scope: Equatable {
+        var filter: DeepSkyReviewFilter
+        var query: String
+        var exclusionCode: String?
+    }
+
+    private func workbench(context: DeepSkyReviewEvidence) -> some View {
+        let selection = DeepSkyReviewSelection(report: report, settings: settings, isCurrent: reportIsCurrent)
+        let listing = DeepSkyReview.listing(report.frames, selection: selection, filter: filter, query: query, sort: sort)
+        let visible: [DeepSkyReport.Frame]
+        if filter == .excluded, let exclusionCode {
+            visible = listing.frames.filter { DeepSkyReviewEvidence.exclusionCodes($0, selection: selection).contains(exclusionCode) }
+        } else {
+            visible = listing.frames
+        }
+        let paths = visible.map(\.input)
+        let chosen = visible.filter { focus.selected.contains($0.input) }
+        let focused = visible.first { $0.input == focus.focused }
+        return VStack(alignment: .leading, spacing: 8) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    scopeControls(listing.counts, selection: selection)
+                    Spacer(minLength: 0)
+                    searchAndSort
+                }
                 VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(chinese ? "\(visible.count) 张 · 选中 \(chosen.count) 张" : "\(visible.count) frames · \(chosen.count) selected").font(.caption).foregroundStyle(.secondary)
-                        Spacer()
-                        Button(chinese ? "全选列表" : "Select listed") { selected = Set(visible.map(\.index)) }
-                            .controlSize(.small).disabled(visible.isEmpty)
-                    }
-                    if visible.isEmpty {
-                        VStack(spacing: 12) {
-                            Image(systemName: "line.3.horizontal.decrease.circle").font(.largeTitle).foregroundStyle(.secondary)
-                            Text(chinese ? "没有符合条件的照片" : "No matching frames")
-                            Button(chinese ? "显示全部" : "Show all") { query = ""; filter = .all }
-                        }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        ScrollViewReader { proxy in
-                            List(selection: $selected) {
-                                ForEach(visible) { frame in row(frame).tag(frame.index).id(frame.index) }
-                            }.listStyle(.inset).accessibilityIdentifier("review.frames")
-                                .onChange(of: focused) { _, id in
-                                    if let id { proxy.scrollTo(id, anchor: .center) }
-                                }
-                                .onChange(of: visible.map(\.index)) { _, _ in
-                                    if let focused { proxy.scrollTo(focused, anchor: .center) }
-                                }
-                        }
-                    }
-                    Text(chinese ? "⌘ / ⇧ 多选 · ↑ ↓ 浏览" : "⌘ / ⇧ multi-select · ↑ ↓ browse")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.frame(minWidth: 260, idealWidth: 290, maxWidth: 380)
-                VStack(alignment: .leading, spacing: 10) {
-                    if let frame = focusedFrame {
-                        HStack(alignment: .top) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(URL(fileURLWithPath: frame.input).lastPathComponent).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle).help(frame.input)
-                                Text(decision(frame)).font(.caption).foregroundStyle(DeepSkyReview.kept(frame, settings: settings) ? .green : .orange)
-                            }
-                            Spacer(minLength: 6)
-                            Button { navigate(-1) } label: { Image(systemName: "chevron.up") }
-                                .help(chinese ? "上一张（⌥↑）" : "Previous (⌥↑)").keyboardShortcut(.upArrow, modifiers: .option)
-                                .disabled(focused == visible.first?.index)
-                            Button { navigate(1) } label: { Image(systemName: "chevron.down") }
-                                .help(chinese ? "下一张（⌥↓）" : "Next (⌥↓)").keyboardShortcut(.downArrow, modifiers: .option)
-                                .disabled(focused == visible.last?.index)
-                        }
-                        DeepSkyFramePreview(model: model, frame: frame, reference: report.frames.first(where: \.reference))
-                        metrics(frame)
-                    } else {
-                        Text(chinese ? "从左侧选择照片，检查原片后决定是否使用。" : "Select a frame to inspect the original and decide whether to use it.")
-                            .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }.padding(.leading, 12).frame(minWidth: 570, maxWidth: .infinity)
+                    scopeControls(listing.counts, selection: selection)
+                    searchAndSort
+                }
             }
-            actions
+            if filter == .excluded {
+                exclusionReasons(DeepSkyExclusionSummary(report: report, selection: selection, chinese: chinese))
+            }
+            GeometryReader { geometry in
+                let previewHeight = max(240, min(440, geometry.size.height * 0.52))
+                if geometry.size.width >= 730 {
+                    HSplitView {
+                        frameList(visible, paths: paths, context: context, selection: selection)
+                            .frame(minWidth: 245, idealWidth: 315, maxWidth: 420)
+                        detail(focused, in: visible, context: context, selection: selection, previewHeight: previewHeight)
+                            .padding(.leading, 10).frame(minWidth: 410)
+                    }
+                } else {
+                    VStack(spacing: 5) {
+                        frameList(visible, paths: paths, context: context, selection: selection)
+                            .frame(height: min(185, max(100, geometry.size.height * 0.32)))
+                        Divider()
+                        detail(focused, in: visible, context: context, selection: selection, previewHeight: 240)
+                    }
+                }
+            }
+            actions(chosen, selection: selection)
         }
-        .onAppear { reconcileSelection() }
-        .onChange(of: visible.map(\.index)) { _, _ in reconcileSelection() }
-        .onChange(of: selected) { _, ids in
-            if !ids.contains(focused ?? -1) { focused = visible.first { ids.contains($0.index) }?.index }
+        .onChange(of: Scope(filter: filter, query: query, exclusionCode: exclusionCode), initial: true) { _, _ in
+            focus.open(representative(in: visible, selection: selection))
+        }
+        .onChange(of: paths) { _, updated in focus.reconcile(with: updated) }
+    }
+
+    private func representative(in frames: [DeepSkyReport.Frame], selection: DeepSkyReviewSelection) -> String? {
+        let rejected = frames.first { $0.usable && !$0.recommendedKeep && !selection.kept($0) }
+            ?? frames.first { !selection.kept($0) }
+        return (rejected ?? frames.first)?.input
+    }
+
+    private func show(_ scope: DeepSkyReviewFilter, selection: DeepSkyReviewSelection) {
+        // Clicking a count always opens the entire set, even after a filename search.
+        if filter == scope && query.isEmpty && exclusionCode == nil {
+            let frames = DeepSkyReview.listing(report.frames, selection: selection, filter: scope, query: "", sort: sort).frames
+            focus.open(representative(in: frames, selection: selection))
+        }
+        exclusionCode = nil
+        filter = scope
+        query = ""
+    }
+
+    private func scopeControls(_ counts: [DeepSkyReviewFilter: Int], selection: DeepSkyReviewSelection) -> some View {
+        HStack(spacing: 6) {
+            Text(reportIsCurrent ? (chinese ? "本次堆栈" : "Next stack") : (chinese ? "上次报告" : "Last report"))
+                .font(.callout.weight(.semibold)).accessibilityIdentifier("review.planned-count")
+            ForEach([DeepSkyReviewFilter.kept, .excluded], id: \.self) { scope in
+                Button { show(scope, selection: selection) } label: {
+                    Label("\(scope.title(chinese: chinese)) \(counts[scope, default: 0])",
+                          systemImage: scope == .kept ? "checkmark.circle" : "minus.circle")
+                        .monospacedDigit().fixedSize()
+                }
+                .buttonStyle(.bordered)
+                .tint(filter == scope ? Color.accentColor : .secondary)
+                .accessibilityIdentifier("review.filter.\(scope.rawValue)")
+                .accessibilityAddTraits(filter == scope ? .isSelected : [])
+            }
+            Menu {
+                ForEach([DeepSkyReviewFilter.all, .attention, .manual], id: \.self) { scope in
+                    Button { show(scope, selection: selection) } label: {
+                        if filter == scope { Label("\(scope.title(chinese: chinese)) \(counts[scope, default: 0])", systemImage: "checkmark") }
+                        else { Text("\(scope.title(chinese: chinese)) \(counts[scope, default: 0])") }
+                    }
+                }
+            } label: {
+                if [.all, .attention, .manual].contains(filter) {
+                    Text("\(filter.title(chinese: chinese)) \(counts[filter, default: 0])")
+                } else {
+                    Text(chinese ? "其他名单" : "Other lists")
+                }
+            }.fixedSize().accessibilityIdentifier("review.filter.more")
         }
     }
 
-    private var summary: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 18) {
-            Label(chinese ? "下次堆栈：\(keptCount) / \(report.inputCount) 张" : "Next stack: \(keptCount) / \(report.inputCount)", systemImage: "checkmark.circle")
-                .font(.headline).accessibilityIdentifier("review.planned-count")
-            Text(chinese ? "已排除 \(report.inputCount - keptCount) 张" : "\(report.inputCount - keptCount) excluded").foregroundStyle(.secondary)
-            Spacer()
-            Text(chinese ? "标记即时保存，不删除原片" : "Decisions autosave; originals stay intact").font(.caption).foregroundStyle(.secondary)
-        }
-    }
-
-    private func row(_ frame: DeepSkyReport.Frame) -> some View {
+    private var searchAndSort: some View {
         HStack(spacing: 8) {
-            Image(systemName: !frame.usable ? "exclamationmark.octagon" : !DeepSkyReview.kept(frame, settings: settings) ? "minus.circle" : DeepSkyReview.attention(frame) ? "exclamationmark.triangle" : "checkmark.circle")
-                .foregroundStyle(!frame.usable || !DeepSkyReview.kept(frame, settings: settings) ? .orange : DeepSkyReview.attention(frame) ? .yellow : .green)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("#\(frame.index + 1)  " + URL(fileURLWithPath: frame.input).lastPathComponent)
-                    .lineLimit(1).truncationMode(.middle)
-                Text(rowDetail(frame)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-        }.padding(.vertical, 3).help(frame.input)
-    }
-    private func rowDetail(_ frame: DeepSkyReport.Frame) -> String {
-        let reason = DeepSkyReview.reasons(frame, chinese: chinese).first
-        return decision(frame) + (reason.map { " · " + $0 } ?? (frame.reference ? (chinese ? " · 参考帧" : " · Reference") : ""))
-    }
-    private func decision(_ frame: DeepSkyReport.Frame) -> String {
-        if !frame.usable { return chinese ? "不可用，无法强制保留" : "Unusable; cannot force inclusion" }
-        let manual = DeepSkyReview.manual(frame, settings: settings)
-        if chinese { return (manual ? "手动" : "自动") + (DeepSkyReview.kept(frame, settings: settings) ? "保留" : "排除") }
-        return (manual ? "Manual: " : "Auto: ") + (DeepSkyReview.kept(frame, settings: settings) ? "keep" : "exclude")
-    }
-    private func count(_ item: DeepSkyReviewFilter) -> Int {
-        DeepSkyReview.frames(report.frames, settings: settings, filter: item, query: "", sort: .capture).count
-    }
-    private func metrics(_ frame: DeepSkyReport.Frame) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 20) {
-                metric(chinese ? "星点宽度" : "Star width", frame.starsMeasured && frame.fwhm > 0 ? String(format: "%.2f px", frame.fwhm) : "—",
-                       frame.fwhmEstimator == "native-gaussian-v1"
-                        ? (chinese ? "原尺寸高斯拟合，\(frame.starShapeCount ?? 0) 颗有效星点；用于比较模糊程度，不代表光学分辨率。" : "Native Gaussian fits to \(frame.starShapeCount ?? 0) stars; a comparative blur measure, not optical resolution.")
-                        : (chinese ? "历史分析的星宽估计；重新分析可更新为原尺寸测量。" : "Width estimate from an earlier analysis; analyze again for native measurements."))
-                metric(chinese ? "拉长程度" : "Elongation", frame.starsMeasured && frame.fwhm > 0 ? String(format: "%.2f", frame.eccentricity) : "—", chinese ? "偏心率：0 更圆，接近 1 更细长" : "Eccentricity: 0 is round; near 1 is elongated")
-                metric(chinese ? "噪声倍率" : "Noise ratio", String(format: "%.2f×", frame.noiseRatio), chinese ? "相对于这组照片的中位数，越高噪声越大" : "Relative to the sequence median")
-                metric(chinese ? "有效覆盖" : "Coverage", String(format: "%.1f%%", frame.coverage * 100), chinese ? "对齐后的有效像素覆盖比例" : "Valid coverage after registration")
-                Spacer(minLength: 0)
-            }
-            let reasons = DeepSkyReview.reasons(frame, chinese: chinese)
-            Text(reasons.isEmpty ? (chinese ? "未发现整帧异常。可结合原片检查后保留。" : "No whole-frame issue found. Inspect the original before deciding.") : reasons.joined(separator: "；"))
-                .font(.callout).foregroundStyle(reasons.isEmpty ? Color.secondary : Color.orange).lineLimit(2).help(reasons.joined(separator: "\n"))
-            DisclosureGroup(chinese ? "详细测量与剔除统计" : "Detailed measurements and rejection") {
-                ScrollView {
-                    Text(String(format: chinese ? "星点 %@ · 匹配 %d · 正残差 %.3f%% · 负残差 %.3f%%\n通道样本剔除 +%llu / −%llu；局部异常通常无需排除整帧。" : "Stars %@ · Matches %d · Positive %.3f%% · Negative %.3f%%\nChannel samples rejected +%llu / −%llu; local anomalies rarely require whole-frame exclusion.", DeepSkyReview.starCountText(frame), frame.matches, frame.positiveFraction * 100, frame.negativeFraction * 100, frame.rejectedHighSamples, frame.rejectedLowSamples))
-                        .font(.caption).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
-                        .help(DeepSkyReview.starCountHelp(frame, chinese: chinese))
-                }.frame(maxHeight: 60)
-            }.font(.caption)
+            TextField(chinese ? "搜索文件、序号或原因" : "Search file, number or reason", text: $query)
+                .textFieldStyle(.roundedBorder).frame(minWidth: 135, maxWidth: 270)
+                .accessibilityIdentifier("review.search")
+            Picker(chinese ? "排序" : "Sort", selection: $sort) {
+                ForEach(DeepSkyReviewSort.allCases, id: \.self) { Text($0.title(chinese: chinese)).tag($0) }
+            }.fixedSize().labelsHidden().accessibilityLabel(chinese ? "排序" : "Sort")
         }
     }
-    private func metric(_ label: String, _ value: String, _ help: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            Text(value).font(.callout.monospacedDigit().weight(.medium))
-        }.help(help)
+
+    @ViewBuilder private func exclusionReasons(_ summary: DeepSkyExclusionSummary) -> some View {
+        if let first = summary.items.first {
+            HStack(spacing: 8) {
+                Text(chinese ? "排除原因" : "Exclusion reasons").fontWeight(.medium)
+                if summary.items.count == 1 && exclusionCode == nil {
+                    Text("\(first.title) · \(first.count) " + (chinese ? "张" : "frames"))
+                } else {
+                    let active = summary.items.first { $0.code == exclusionCode }
+                    Menu {
+                        Button(chinese ? "全部原因" : "All reasons") { exclusionCode = nil }
+                        Divider()
+                        ForEach(summary.items) { item in
+                            Button("\(item.title) · \(item.count)") { exclusionCode = item.code; query = "" }
+                        }
+                    } label: {
+                        Text(active.map { "\($0.title) · \($0.count)" } ??
+                             (exclusionCode == nil ? (chinese ? "全部 \(summary.items.count) 种" : "All \(summary.items.count) reasons")
+                                : (chinese ? "该原因已无排除帧" : "No exclusions for this reason")))
+                    }.fixedSize().accessibilityIdentifier("review.exclusion-reasons")
+                    if exclusionCode != nil {
+                        Button(chinese ? "全部原因" : "All reasons") { exclusionCode = nil }.controlSize(.small)
+                    } else {
+                        Text("\(first.title) · \(first.count)").lineLimit(1)
+                    }
+                    if summary.hasMultipleReasonsPerFrame {
+                        Text(chinese ? "一帧可有多个原因" : "A frame can have multiple reasons").foregroundStyle(.secondary)
+                    }
+                }
+                Spacer(minLength: 0)
+            }.font(.caption).accessibilityIdentifier("review.exclusion-summary")
+        } else if exclusionCode != nil {
+            Button(chinese ? "清除原因筛选" : "Clear reason filter") { exclusionCode = nil }.controlSize(.small)
+        }
     }
-    private var actions: some View {
-        HStack(spacing: 10) {
-            Text(chinese ? "标记选中 \(chosen.count) 张" : "Mark \(chosen.count) selected").font(.callout)
-            Button { mark("keep") } label: { Label(chinese ? "保留" : "Keep", systemImage: "checkmark") }
-                .keyboardShortcut("k", modifiers: .command).help("⌘K")
-                .disabled(chosen.filter(\.usable).isEmpty || model.isProcessing).accessibilityIdentifier("review.keep")
-            Button { mark("reject") } label: { Label(chinese ? "排除" : "Exclude", systemImage: "minus.circle") }
-                .keyboardShortcut("r", modifiers: .command).help("⌘R")
-                .disabled(chosen.filter(\.usable).isEmpty || model.isProcessing).accessibilityIdentifier("review.exclude")
-            Button(chinese ? "恢复自动" : "Reset to auto") { mark("auto") }
-                .disabled(chosen.isEmpty || model.isProcessing).accessibilityIdentifier("review.auto")
-            Button { undoLast() } label: { Label(chinese ? "撤销标记" : "Undo decision", systemImage: "arrow.uturn.backward") }
-                .disabled(undo.isEmpty || model.isProcessing).accessibilityIdentifier("review.undo")
-            Spacer()
-            if let notice { Text(notice).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-        }.controlSize(.regular)
+
+    private func frameList(_ visible: [DeepSkyReport.Frame], paths: [String], context: DeepSkyReviewEvidence,
+                           selection: DeepSkyReviewSelection) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(chinese ? "显示 \(paths.count) 张" : "\(paths.count) listed").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button(chinese ? "全选列表" : "Select listed") { focus.select(Set(paths), in: paths) }
+                    .controlSize(.small).disabled(paths.isEmpty)
+            }
+            if visible.isEmpty {
+                VStack(spacing: 7) {
+                    Text(chinese ? "没有符合条件的帧" : "No matching frames").foregroundStyle(.secondary)
+                    Button(chinese ? "显示全部" : "Show all") { show(.all, selection: selection) }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                DeepSkyReviewTable(paths: paths,
+                    content: .init(report: report, overrides: settings.overrides, apply: settings.values["selection.apply"],
+                                   current: reportIsCurrent, chinese: chinese),
+                    selected: focus.selected, focused: focus.focused,
+                    row: { index in
+                        let frame = visible[index]
+                        let evidence = context.frame(frame, selection: selection, chinese: chinese)
+                        let description = evidence.summary == evidence.decisionTitle ? evidence.decisionTitle :
+                            evidence.decisionTitle + " · " + evidence.summary
+                        return .init(index: frame.index, filename: URL(fileURLWithPath: frame.input).lastPathComponent,
+                                     decision: description, symbol: !frame.usable ? "exclamationmark.octagon" :
+                                        evidence.kept ? "checkmark.circle" : "minus.circle", kept: evidence.kept)
+                    }, select: { focus.select($0, in: paths) })
+            }
+        }
     }
-    private func reconcileSelection() {
-        let available = Set(visible.map(\.index))
-        selected.formIntersection(available)
-        if selected.isEmpty, let first = visible.first { selected = [first.index] }
-        if !selected.contains(focused ?? -1) { focused = visible.first { selected.contains($0.index) }?.index }
+
+    @ViewBuilder private func detail(_ frame: DeepSkyReport.Frame?, in visible: [DeepSkyReport.Frame],
+                                     context: DeepSkyReviewEvidence, selection: DeepSkyReviewSelection,
+                                     previewHeight: CGFloat) -> some View {
+        if let frame {
+            DeepSkyReviewFrameDetail(model: model, frame: frame, reference: report.frames.first(where: \.reference),
+                evidence: context.frame(frame, selection: selection, chinese: chinese), previewHeight: previewHeight,
+                hasPrevious: frame.input != visible.first?.input, hasNext: frame.input != visible.last?.input,
+                navigate: { direction in
+                    guard let i = visible.firstIndex(where: { $0.input == frame.input }), visible.indices.contains(i + direction) else { return }
+                    focus.open(visible[i + direction].input)
+                })
+        } else {
+            Text(chinese ? "选择一帧查看依据与原片" : "Select a frame to inspect its decision and original")
+                .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
     }
-    private func navigate(_ delta: Int) {
-        guard let index = visible.firstIndex(where: { $0.index == focused }), visible.indices.contains(index + delta) else { return }
-        focused = visible[index + delta].index; selected = [visible[index + delta].index]
+
+    private func actions(_ chosen: [DeepSkyReport.Frame], selection: DeepSkyReviewSelection) -> some View {
+        HStack(spacing: 8) {
+            Text(chinese ? "已选 \(chosen.count) 张" : "\(chosen.count) selected").font(.callout).monospacedDigit()
+            let hasUsable = chosen.contains(where: \.usable)
+            Button { mark("keep", chosen: chosen, selection: selection) } label: {
+                Label(chinese ? "保留" : "Keep", systemImage: "checkmark")
+            }.keyboardShortcut("k", modifiers: .command).disabled(!hasUsable).accessibilityIdentifier("review.keep")
+            Button { mark("reject", chosen: chosen, selection: selection) } label: {
+                Label(chinese ? "排除" : "Exclude", systemImage: "minus.circle")
+            }.keyboardShortcut("r", modifiers: .command).disabled(!hasUsable).accessibilityIdentifier("review.exclude")
+            Button(chinese ? "恢复自动" : "Reset to auto") { mark("auto", chosen: chosen, selection: selection) }
+                .disabled(chosen.isEmpty).accessibilityIdentifier("review.auto")
+            Button { undoLast() } label: {
+                Label(chinese ? "撤销标记" : "Undo decision", systemImage: "arrow.uturn.backward")
+            }.disabled(undo.isEmpty).accessibilityIdentifier("review.undo")
+            Spacer(minLength: 0)
+            if let notice { Text(notice).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
+        }.controlSize(.regular).disabled(!reportIsCurrent || model.isProcessing)
     }
-    private func mark(_ value: String) {
-        let frames = chosen.filter { value == "auto" || $0.usable }
+
+    private func mark(_ value: String, chosen: [DeepSkyReport.Frame], selection: DeepSkyReviewSelection) {
+        guard reportIsCurrent, !model.isProcessing else { return }
+        let frames = chosen.filter { (value == "auto" || $0.usable) && selection.decision($0) != value }
         guard !frames.isEmpty else { return }
-        undo.append(Dictionary(uniqueKeysWithValues: frames.map { ($0.input, DeepSkyReview.decision($0, settings: settings)) }))
+        undo.append(Dictionary(uniqueKeysWithValues: frames.map { ($0.input, selection.decision($0)) }))
         if undo.count > 20 { undo.removeFirst() }
         model.updateDeepSkyOverrides(Dictionary(uniqueKeysWithValues: frames.map { ($0.input, value) }))
-        notice = chinese ? "已更新 \(frames.count) 张，可撤销" : "Updated \(frames.count) frames; undo available"
+        notice = chinese ? "已更新 \(frames.count) 张" : "Updated \(frames.count) frames"
     }
+
     private func undoLast() {
-        guard let previous = undo.popLast() else { return }
+        guard reportIsCurrent, !model.isProcessing, let previous = undo.popLast() else { return }
         model.updateDeepSkyOverrides(previous)
         notice = chinese ? "已撤销上次标记" : "Last decision undone"
     }

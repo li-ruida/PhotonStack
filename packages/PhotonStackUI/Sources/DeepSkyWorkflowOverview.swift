@@ -19,8 +19,7 @@ struct DeepSkyWorkflowOverview: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     private var chinese: Bool { model.language == .simplifiedChinese }
     private var reportIsCurrent: Bool {
-        guard let report = model.deepSkySettings.lastReport else { return false }
-        return DeepSkyReview.sameAnalysisRecipe(try? model.deepSkyRecipeText(), report.recipe)
+        model.journeyAnalysisIsCurrent
     }
 
     var body: some View {
@@ -60,17 +59,22 @@ struct DeepSkyWorkflowOverview: View {
         if model.lightAssets.count < 3 {
             return chinese ? "先导入至少 3 张亮场，工作台会引导你分析和筛片。" : "Import at least 3 lights, then analyze and review them in the workbench."
         }
-        if let report = model.deepSkySettings.lastReport,
-           DeepSkyReview.sameResultRecipe(try? model.deepSkyRecipeText(), report.recipe),
-           report.success, !report.analysisOnly, model.latestDeepSkyResultURL != nil {
-            return chinese ? "已用 \(report.selectedCount) 张亮场完成堆栈。查看结果后，可继续修整或导出。" : "Stack completed with \(report.selectedCount) lights. View the result, then finish or export."
+        if let report = model.project.deepSkySettings?.lastReport, !report.success {
+            return chinese ? "上次处理未完成。打开工作台查看失败原因，修正后重新分析；已有测量可供参考。"
+                : "The previous run did not complete. Open the workbench for the failure details, then analyze again after correcting the issue. Existing measurements remain available for reference."
         }
-        if reportIsCurrent, model.canRefinishDeepSkyMaster {
-            return chinese ? "修整参数已变化，当前显示的仍是上次成片。在工作台更新背景与降噪即可，无需重新筛片和堆栈。" : "Finishing settings changed; the displayed image is the previous result. Reprocess the master in the workbench without analyzing or stacking again."
+        if let report = model.project.deepSkySettings?.lastReport,
+           report.success, !report.analysisOnly, model.latestDeepSkyResultURL != nil,
+           DeepSkyReview.sameResultRecipe(try? model.deepSkyRecipeText(), report.recipe) {
+            return chinese ? "\(report.selectedCount) 张亮场的处理结果已生成，尚需画质复查。先检查全图和 100% 细节，再决定修整或导出。" : "Result available from \(report.selectedCount) lights; visual review is still needed. Inspect the full image and 100% detail before finishing or exporting."
         }
-        if reportIsCurrent, let report = model.deepSkySettings.lastReport {
-            let kept = report.frames.filter { DeepSkyReview.kept($0, settings: model.deepSkySettings) }.count
-            return chinese ? "已分析 \(report.inputCount) 张，当前保留 \(kept) 张。可检查异常原片或开始堆栈。" : "\(report.inputCount) analyzed, \(kept) kept. Review flagged frames or start stacking."
+        let current = reportIsCurrent
+        if current, model.canRefinishDeepSkyMaster {
+            return chinese ? "修整参数已变化，当前显示的仍是上次成片。在工作台点击“从母版重新显影”即可，无需重新筛片和堆栈。" : "Finishing settings changed; the displayed image is the previous result. Reprocess the master in the workbench without analyzing or stacking again."
+        }
+        if current, let report = model.project.deepSkySettings?.lastReport {
+            let kept = DeepSkyReview.keptCount(report.frames, settings: model.deepSkySettings)
+            return chinese ? "已分析 \(report.frames.count) 张，当前保留 \(kept) 张、排除 \(report.frames.count - kept) 张。" : "\(report.frames.count) analyzed, \(kept) kept and \(report.frames.count - kept) excluded."
         }
         return chinese ? "素材已就绪。先分析星点、噪声和对齐质量，再决定保留哪些照片。" : "Inputs ready. Analyze stars, noise and registration before choosing frames."
     }

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,8 @@ struct SequenceQualityOptions {
     double minimumCoverage = 0.70;
     double maximumNoiseRatio = 2.0;
     double maximumFwhmRatio = 1.7;
+    // Review threshold: warn above it; reject only when also more than 0.15
+    // above the sequence median, preserving the relative selection policy.
     double maximumEccentricity = 0.80;
     double minimumStarRatio = 0.30;
     double maximumResidualFraction = 0.10;
@@ -78,11 +81,17 @@ struct SequenceQualityResult {
     std::string errorCode, message;
 };
 
+struct RegistrationPixelGrid;
+using RegisteredGridRenderer = std::function<ImageBuffer(const RegistrationPixelGrid&)>;
+
 class SequenceQualityAnalyzer {
   public:
-    // Deterministic bounded sampling; does not modify image or reconstruct pixels.
+    // The optional renderer provides the exact registered pixels at the grid
+    // centers and their native one-pixel Haar neighbors. Stars require a full
+    // native image and must be measured separately when using a renderer.
     SequenceFrameSample sample(const ImageBuffer& image,
-                               const SequenceQualityOptions& options = {}) const;
+                               const SequenceQualityOptions& options = {},
+                               const RegisteredGridRenderer& renderer = {}) const;
     // Temporal residual centers exclude the frame being assessed. Call after
     // registration, with consistent linear photometric units and sampling grids.
     SequenceQualityResult assess(const std::vector<SequenceFrameSample>& frames,

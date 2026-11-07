@@ -89,7 +89,10 @@ struct WorkspaceStorageView: View {
     }
 
     private func formatBytes(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        if bytes == 0 {
+            return "0 KB"
+        }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     @MainActor private func refresh(for key: RefreshKey) async {

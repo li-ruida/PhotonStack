@@ -28,7 +28,7 @@ struct JobsSection: View {
                             .frame(width: 18)
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(job.title)
+                            Text(model.language.processingJobTitle(job.title))
                                 .lineLimit(1)
                             if let outputURL = job.outputURL {
                                 Text(outputURL.lastPathComponent)

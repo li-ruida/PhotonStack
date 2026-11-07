@@ -49,7 +49,9 @@ struct WorkflowLibrarySheet: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
             if busy { ProgressView().controlSize(.small) }
-            if let error = error ?? batch.error ?? model.errorMessage { Text(error).foregroundStyle(.red).textSelection(.enabled).font(.callout) }
+            if let error = error ?? batch.error ?? model.errorMessage {
+                Text(localizedWorkflowMessage(error)).foregroundStyle(.red).textSelection(.enabled).font(.callout)
+            }
         }
         .padding(22).frame(width: 820, height: 700)
         .interactiveDismissDisabled(busy)
@@ -133,7 +135,9 @@ struct WorkflowLibrarySheet: View {
                 }
             }
             Text(t("最后按保存的导出设置生成全分辨率 TIFF。", "Exports full-resolution TIFF using the saved export settings.")).font(.caption).foregroundStyle(.secondary)
-            ForEach(workflow.notices, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+            ForEach(workflow.notices, id: \.self) {
+                Text(localizedWorkflowMessage($0)).font(.caption).foregroundStyle(.secondary)
+            }
         }.padding(10).background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
     }
 
@@ -154,11 +158,12 @@ struct WorkflowLibrarySheet: View {
                 Button(t("检查目标", "Check targets")) {
                     perform {
                         let targets = folders
+                        let photoUnit = t("张照片", "photos")
                         let result = await Task.detached {
                             targets.map { folder -> (String, Bool) in
                                 do {
                                     let plan = try WorkflowInputPlan.inspect(folder: folder, workflow: workflow)
-                                    return ("✓ \(plan.title): \(plan.lights.count) photos", true)
+                                    return ("✓ \(plan.title): \(plan.lights.count) \(photoUnit)", true)
                                 } catch { return ("✕ \(folder.lastPathComponent): \(error.localizedDescription)", false) }
                             }
                         }.value
@@ -201,7 +206,8 @@ struct WorkflowLibrarySheet: View {
                         .foregroundStyle(item.status == .failed ? Color.red : Color.secondary)
                     VStack(alignment: .leading) {
                         Text(item.title)
-                        Text("\(item.status.rawValue) · \(item.message)").font(.caption).foregroundStyle(.secondary)
+                        Text("\(model.language.processingStatusName(item.status)) · \(localizedWorkflowMessage(item.message))")
+                            .font(.caption).foregroundStyle(.secondary)
                         if item.status == .running {
                             Text(t("步骤 \(min(item.completedSteps + 1, batch.stepCount)) / \(batch.stepCount)", "Step \(min(item.completedSteps + 1, batch.stepCount)) / \(batch.stepCount)"))
                                 .font(.caption).foregroundStyle(.secondary)
@@ -226,6 +232,12 @@ struct WorkflowLibrarySheet: View {
             workflows = try await repository.load()
             selection = selection ?? workflows.first?.id
         } catch { self.error = error.localizedDescription }
+    }
+
+    private func localizedWorkflowMessage(_ message: String) -> String {
+        let variants = message.components(separatedBy: " / ")
+        guard variants.count == 2 else { return message }
+        return chinese ? variants[0] : variants[1]
     }
     private func perform(_ action: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }
@@ -269,8 +281,6 @@ struct WorkflowLibrarySheet: View {
 extension WorkflowStep {
     func title(chinese: Bool) -> String {
         if deepSkyValues != nil { return chinese ? "筛片 → 校准 → 配准 → 堆栈 → 深空后期" : "Analyze → calibrate → register → stack → develop" }
-        guard chinese else { return kind.rawValue }
-        let titles: [ProcessingOperationKind: String] = [.rawDecode: "RAW 解码", .stack: "堆栈", .drizzle: "Drizzle 堆栈", .crop: "裁切", .background: "背景校正", .normalize: "归一化", .stretch: "拉伸", .curves: "曲线", .localContrast: "局部对比度", .denoise: "降噪", .sharpen: "锐化", .deconvolve: "反卷积", .colorNeutralize: "色彩中和", .colorSaturate: "饱和度", .starReduce: "缩星", .comaReduce: "彗差修正", .artifactRemove: "去航迹", .cloudRemove: "去云"]
-        return titles[kind] ?? kind.rawValue
+        return (chinese ? AppLanguage.simplifiedChinese : .english).processingOperationName(kind)
     }
 }

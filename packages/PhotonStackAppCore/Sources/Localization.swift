@@ -55,6 +55,145 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
         }
     }
 
+    public func processingOperationName(_ kind: ProcessingOperationKind) -> String {
+        switch (self, kind) {
+        case (.english, .inspect): "Inspect"
+        case (.english, .rawDecode): "RAW Decode"
+        case (.english, .preview): "Preview"
+        case (.english, .crop): "Crop"
+        case (.english, .calibrate): "Calibrate"
+        case (.english, .register): "Register"
+        case (.english, .stack): "Stack"
+        case (.english, .drizzle): "Drizzle"
+        case (.english, .meteorRestore): "Restore Meteors"
+        case (.english, .cloudRemove): "Remove Clouds"
+        case (.english, .background): "Background"
+        case (.english, .normalize): "Normalize"
+        case (.english, .histogram): "Histogram"
+        case (.english, .stretch): "Stretch"
+        case (.english, .curves): "Curves"
+        case (.english, .localContrast): "Local Contrast"
+        case (.english, .denoise): "Denoise"
+        case (.english, .sharpen): "Sharpen"
+        case (.english, .deconvolve): "Deconvolve"
+        case (.english, .colorNeutralize): "Color Neutralize"
+        case (.english, .colorSaturate): "Saturation"
+        case (.english, .starDetect): "Detect Stars"
+        case (.english, .starMask): "Star Mask"
+        case (.english, .starReduce): "Reduce Stars"
+        case (.english, .comaReduce): "Reduce Coma"
+        case (.english, .artifactDetect): "Detect Trails"
+        case (.english, .artifactRemove): "Remove Trails"
+        case (.english, .cloudDetect): "Detect Clouds"
+        case (.english, .mosaic): "Mosaic"
+        case (.english, .export): "Export"
+        case (.simplifiedChinese, .inspect): "检查"
+        case (.simplifiedChinese, .rawDecode): "RAW 解码"
+        case (.simplifiedChinese, .preview): "生成预览"
+        case (.simplifiedChinese, .crop): "裁切"
+        case (.simplifiedChinese, .calibrate): "校准"
+        case (.simplifiedChinese, .register): "配准"
+        case (.simplifiedChinese, .stack): "堆栈"
+        case (.simplifiedChinese, .drizzle): "Drizzle 堆栈"
+        case (.simplifiedChinese, .meteorRestore): "恢复流星"
+        case (.simplifiedChinese, .cloudRemove): "去除云雾"
+        case (.simplifiedChinese, .background): "背景校正"
+        case (.simplifiedChinese, .normalize): "归一化"
+        case (.simplifiedChinese, .histogram): "直方图"
+        case (.simplifiedChinese, .stretch): "拉伸"
+        case (.simplifiedChinese, .curves): "曲线"
+        case (.simplifiedChinese, .localContrast): "局部对比度"
+        case (.simplifiedChinese, .denoise): "降噪"
+        case (.simplifiedChinese, .sharpen): "锐化"
+        case (.simplifiedChinese, .deconvolve): "反卷积"
+        case (.simplifiedChinese, .colorNeutralize): "色彩中和"
+        case (.simplifiedChinese, .colorSaturate): "饱和度"
+        case (.simplifiedChinese, .starDetect): "检测星点"
+        case (.simplifiedChinese, .starMask): "生成星点蒙版"
+        case (.simplifiedChinese, .starReduce): "缩星"
+        case (.simplifiedChinese, .comaReduce): "彗差修正"
+        case (.simplifiedChinese, .artifactDetect): "检测航迹"
+        case (.simplifiedChinese, .artifactRemove): "去除航迹"
+        case (.simplifiedChinese, .cloudDetect): "检测云雾"
+        case (.simplifiedChinese, .mosaic): "接片"
+        case (.simplifiedChinese, .export): "导出"
+        }
+    }
+
+    public func processingStatusName(_ status: ProcessingJobStatus) -> String {
+        switch (self, status) {
+        case (.english, .queued): "Queued"
+        case (.english, .running): "Running"
+        case (.english, .succeeded): "Completed"
+        case (.english, .failed): "Failed"
+        case (.english, .cancelled): "Cancelled"
+        case (.simplifiedChinese, .queued): "等待中"
+        case (.simplifiedChinese, .running): "执行中"
+        case (.simplifiedChinese, .succeeded): "已完成"
+        case (.simplifiedChinese, .failed): "失败"
+        case (.simplifiedChinese, .cancelled): "已取消"
+        }
+    }
+
+    /// Job titles are persisted as stable English identifiers. Translate only
+    /// at presentation time so old projects and workflow checks remain valid.
+    public func processingJobTitle(_ title: String) -> String {
+        let workflowPrefix = "工作流 / Workflow: "
+        if title.hasPrefix(workflowPrefix) {
+            let name = title.dropFirst(workflowPrefix.count)
+            return self == .simplifiedChinese ? "工作流：\(name)" : "Workflow: \(name)"
+        }
+        guard self == .simplifiedChinese else { return title }
+        if title.hasPrefix("Inspect ") {
+            return "检查 " + title.dropFirst("Inspect ".count)
+        }
+        let translations: [String: String] = [
+            "Save Project": "保存项目",
+            "Open Project": "打开项目",
+            "Build Preview": "生成预览",
+            "Deep Sky Frame Assessment": "分析深空素材",
+            "Deep Sky Recipe": "深空筛片与堆栈",
+            "Deep Sky Background & Denoise": "深空背景校正与降噪",
+            "Deep Sky Development": "深空显影",
+            "Auto Stretch": "自动拉伸",
+            "Local Contrast": "局部对比度",
+            "Denoise": "降噪",
+            "Sharpen": "锐化",
+            "Reduce Stars": "缩星",
+            "Reduce Coma": "彗差修正",
+            "Detect Stars": "检测星点",
+            "Create Star Mask": "生成星点蒙版",
+            "Detect Trails": "检测航迹",
+            "Remove Trails": "去除航迹",
+            "Extract Meteor Layer": "提取流星层",
+            "Restore Meteors": "恢复流星",
+            "Background": "背景校正",
+            "Detect Clouds": "检测云雾",
+            "Detect Clouds Across Frames": "跨帧检测云雾",
+            "Remove Clouds": "去除云雾",
+            "Normalize": "归一化",
+            "Diffuse Tone": "柔化明暗",
+            "Display Grid Reduction": "细纹抑制",
+            "Green Cast Adjustment": "绿色偏色校正",
+            "Color Neutralize": "色彩中和",
+            "Color Saturate": "饱和度调整",
+            "Deconvolve": "反卷积",
+            "Drizzle": "Drizzle 堆栈",
+            "Export Image": "导出成片",
+            "Export Product Manifest": "导出产品清单",
+            "Preview Layer Stack": "预览图层合成",
+            "Histogram": "生成直方图",
+            "Apply Curve": "应用曲线",
+            "Register Frames": "配准照片",
+            "Calibrate and Stack": "校准并堆栈",
+            "Mosaic": "接片",
+            "Mosaic Preview": "接片预览",
+            "Console": "控制台命令",
+            "Replay Edit Graph": "重放处理历史",
+        ]
+        return translations[title] ?? title
+    }
+
     public func calibrationBiasStateName(_ state: CalibrationBiasState) -> String {
         switch (self, state) {
         case (.english, .included):
@@ -486,6 +625,12 @@ public enum LocalizedTextKey: String, CaseIterable, Codable, Sendable {
     case chooseBatchOutputDirectoryMessage
     case openAction
     case saveAction
+    case projectMenu
+    case workflowsAction
+    case workflowsHelp
+    case quickAdjustments
+    case autoStretchAction
+    case autoStretchHelp
     case unsavedChangesTitle
     case unsavedChangesMessage
     case saveChangesAction
@@ -890,6 +1035,12 @@ private enum LocalizedTextCatalog {
         .chooseBatchOutputDirectoryMessage: "Choose a folder for completed batch images.",
         .openAction: "Open",
         .saveAction: "Save",
+        .projectMenu: "Project",
+        .workflowsAction: "Workflows",
+        .workflowsHelp: "Save processing steps and reuse them in batches.",
+        .quickAdjustments: "Quick Adjustments",
+        .autoStretchAction: "Auto Stretch",
+        .autoStretchHelp: "Create a reversible stretch layer without changing originals. Set the target background in the inspector.",
         .unsavedChangesTitle: "Save changes before continuing?",
         .unsavedChangesMessage: "The current project has changes that have not been saved. Save them before replacing or closing it.",
         .saveChangesAction: "Save Changes",
@@ -1293,6 +1444,12 @@ private enum LocalizedTextCatalog {
         .chooseBatchOutputDirectoryMessage: "选择批处理成片的输出文件夹。",
         .openAction: "打开",
         .saveAction: "保存",
+        .projectMenu: "项目",
+        .workflowsAction: "工作流",
+        .workflowsHelp: "保存处理步骤并批量复用。",
+        .quickAdjustments: "快速调整",
+        .autoStretchAction: "自动拉伸",
+        .autoStretchHelp: "生成可撤销的拉伸图层，不改动原片；目标背景值在右侧检查器设置。",
         .unsavedChangesTitle: "继续前保存更改？",
         .unsavedChangesMessage: "当前项目包含尚未保存的更改。替换或关闭项目前，可以先保存这些更改。",
         .saveChangesAction: "保存更改",
@@ -1364,11 +1521,11 @@ private enum LocalizedTextCatalog {
         .noAssetSelected: "未选择素材",
         .workflowSection: "工作流",
         .processMenu: "处理",
-        .masterLabel: "Master",
-        .darkBiasStateLabel: "Dark 偏置状态",
-        .flatBiasStateLabel: "Flat 偏置状态",
-        .calibrationBiasStateHelp: "选择源 Master 是否仍包含相机 Bias 基线。",
-        .flatBiasMissingWarning: "标记为包含 Bias 的 Flat 需要提供 Bias 素材。",
+        .masterLabel: "主校准帧",
+        .darkBiasStateLabel: "暗场主帧偏置状态",
+        .flatBiasStateLabel: "平场主帧偏置状态",
+        .calibrationBiasStateHelp: "选择主校准帧是否仍包含相机偏置基线。",
+        .flatBiasMissingWarning: "标记为包含偏置的平场主帧需要提供偏置素材。",
         .stackLabel: "堆栈",
         .alignLabel: "配准",
         .restoreMeteorsAfterStack: "堆栈后贴回流星",

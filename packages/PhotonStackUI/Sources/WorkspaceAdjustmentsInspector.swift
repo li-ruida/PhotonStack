@@ -307,11 +307,11 @@ private struct HistogramCurvesSection: View {
 
             if let histogram = model.curveReferenceHistogram ?? model.histogram {
                 HStack {
-                    Text("min \(histogram.minimum, format: .number.precision(.fractionLength(3)))")
+                    Text("\(model.language == .simplifiedChinese ? "最小" : "min") \(histogram.minimum, format: .number.precision(.fractionLength(3)))")
                     Spacer()
-                    Text("mean \(histogram.mean, format: .number.precision(.fractionLength(3)))")
+                    Text("\(model.language == .simplifiedChinese ? "均值" : "mean") \(histogram.mean, format: .number.precision(.fractionLength(3)))")
                     Spacer()
-                    Text("max \(histogram.maximum, format: .number.precision(.fractionLength(3)))")
+                    Text("\(model.language == .simplifiedChinese ? "最大" : "max") \(histogram.maximum, format: .number.precision(.fractionLength(3)))")
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -510,7 +510,7 @@ private struct CurveEditorView: View {
                     }
                     .stroke(Color.accentColor, lineWidth: 1.5)
                 } else {
-                    Text("Histogram")
+                    Text(model.language == .simplifiedChinese ? "直方图" : "Histogram")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

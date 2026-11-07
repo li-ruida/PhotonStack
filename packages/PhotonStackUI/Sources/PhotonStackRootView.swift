@@ -158,64 +158,15 @@ public struct PhotonStackRootView: View {
             .navigationTitle(model.project.name)
         }
         .toolbar {
-            ToolbarItemGroup(placement: .automatic) {
-                Button {
-                    isWorkflowLibraryPresented = true
-                } label: {
-                    Label(model.language == .simplifiedChinese ? "工作流" : "Workflows", systemImage: "point.3.connected.trianglepath.dotted")
-                }
-                .help(model.language == .simplifiedChinese ? "保存处理步骤并批量复用" : "Save and reuse processing workflows")
-                .keyboardShortcut("w", modifiers: [.command, .option])
-                .accessibilityIdentifier("workspace.workflows")
-                Button {
-                    presentNewProjectSheet()
-                } label: {
-                    Label(model.localized(.newProject), systemImage: "doc.badge.plus")
-                        .labelStyle(.titleAndIcon)
-                }
-                .help(model.localized(.newProject))
-                .keyboardShortcut("n", modifiers: [.command])
-                .accessibilityIdentifier("workspace.newProject")
-                .disabled(model.hasActiveProcessing)
-
-                Menu {
-                    Button {
-                        startImportFiles()
-                    } label: {
-                        Label(model.localized(.importFilesAction), systemImage: "photo.on.rectangle.angled")
-                    }
-                    .keyboardShortcut("i", modifiers: [.command])
-
-                    Button {
-                        startImportFolder()
-                    } label: {
-                        Label(model.localized(.importFolderAction), systemImage: "folder.badge.plus")
-                    }
-                    .keyboardShortcut("i", modifiers: [.command, .shift])
-                } label: {
-                    Label(model.localized(.importAction), systemImage: "plus")
-                }
-                .help(model.localized(.importAction))
-                .disabled(model.hasActiveProcessing)
-
-                Button {
-                    openProject()
-                } label: {
-                    Label(model.localized(.openAction), systemImage: "folder")
-                }
-                .help(model.localized(.openAction))
-                .keyboardShortcut("o", modifiers: [.command])
-                .disabled(model.hasActiveProcessing)
-
-                Button {
-                    saveProject()
-                } label: {
-                    Label(model.localized(.saveAction), systemImage: "square.and.arrow.down")
-                }
-                .help(model.localized(.saveAction))
-                .keyboardShortcut("s", modifiers: [.command])
-                .disabled(model.hasActiveProcessing)
-            }
+            WorkspaceToolbar(
+                model: model,
+                onNewProject: presentNewProjectSheet,
+                onImportFiles: startImportFiles,
+                onImportFolder: startImportFolder,
+                onOpenProject: openProject,
+                onSaveProject: saveProject,
+                onOpenWorkflows: { isWorkflowLibraryPresented = true }
+            )
         }
     }
 

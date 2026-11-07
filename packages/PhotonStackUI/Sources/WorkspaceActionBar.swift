@@ -20,13 +20,6 @@ struct ActionBar: View {
             model.editGraphNeedsReplay == false
 
         HStack(spacing: 8) {
-            DeepSkyControl(model: model, context: "toolbar")
-                .labelStyle(.iconOnly)
-
-            AstroDevelopControl(model: model)
-                .labelStyle(.titleAndIcon)
-                .disabled(canAdjustCurrentInput == false)
-
             ResultComparisonControl(model: model)
                 .labelStyle(.titleAndIcon)
 
@@ -34,6 +27,7 @@ struct ActionBar: View {
                 model.startInspectSelectedAsset()
             } label: {
                 Label(model.localized(.inspectAction), systemImage: "info.circle")
+                    .labelStyle(.titleAndIcon)
             }
             .disabled(canInspectAsset == false)
             .help(model.localized(.inspectAction))
@@ -43,6 +37,7 @@ struct ActionBar: View {
                     model.startBuildPreview()
                 } label: {
                     Label(model.localized(.sourcePreviewAction), systemImage: "photo")
+                        .labelStyle(.titleAndIcon)
                 }
                 .accessibilityLabel(
                     "\(model.localized(.sourcePreviewAction)): \(model.selectedAsset?.displayName ?? model.localized(.sourcePreviewAction))"
@@ -55,10 +50,10 @@ struct ActionBar: View {
                 Button {
                     model.startAutoStretchPreview()
                 } label: {
-                    Label(model.language == .simplifiedChinese ? "自动拉伸" : "Auto Stretch", systemImage: "sun.max")
+                    Label(model.localized(.autoStretchAction), systemImage: "sun.max")
                 }
                 .accessibilityIdentifier("adjustments.auto-stretch")
-                .help(model.language == .simplifiedChinese ? "生成可撤销的拉伸图层，不改动原片；目标背景值在参数面板设置。" : "Create a reversible stretch layer without changing originals. Set target background in the parameters panel.")
+                .help(model.localized(.autoStretchHelp))
 
                 Button {
                     model.startLocalContrastPreview()
@@ -92,10 +87,12 @@ struct ActionBar: View {
                     Label(model.localized(.comaAction), systemImage: "oval.portrait")
                 }
             } label: {
-                Label(model.localized(.inspectorAdjustmentsGroup), systemImage: "slider.horizontal.3")
+                Label(model.localized(.quickAdjustments), systemImage: "slider.horizontal.3")
+                    .labelStyle(.titleAndIcon)
             }
-            .help(model.localized(.inspectorAdjustmentsGroup))
+            .help(model.localized(.quickAdjustments))
             .disabled(canAdjustCurrentInput == false)
+            .fixedSize()
 
             Spacer()
 
@@ -118,14 +115,15 @@ struct ActionBar: View {
                 .help(model.localized(.resetAction))
                 .disabled(model.canResetPreviewToOriginal == false || model.isProcessing)
 
-                Button(role: .cancel) {
-                    model.cancelCurrentTask()
-                } label: {
-                    Label(model.localized(.cancelAction), systemImage: "xmark.circle")
-                        .labelStyle(.iconOnly)
+                if model.canCancel {
+                    Button(role: .cancel) {
+                        model.cancelCurrentTask()
+                    } label: {
+                        Label(model.localized(.cancelAction), systemImage: "xmark.circle")
+                            .labelStyle(.iconOnly)
+                    }
+                    .help(model.localized(.cancelAction))
                 }
-                .help(model.localized(.cancelAction))
-                .disabled(model.canCancel == false)
 
                 #if os(macOS)
                 Button {
@@ -143,7 +141,6 @@ struct ActionBar: View {
                 #endif
             }
         }
-        .labelStyle(.iconOnly)
         .buttonStyle(.bordered)
         .controlSize(.regular)
         .padding(12)

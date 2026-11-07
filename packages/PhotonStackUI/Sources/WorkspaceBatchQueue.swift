@@ -184,7 +184,7 @@ struct BatchQueueSection: View {
                             .foregroundStyle(color(for: item.status))
                             .frame(width: 18)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.title)
+                            Text(model.language.processingOperationName(item.kind))
                                 .lineLimit(1)
                             Text(item.inputURL.lastPathComponent)
                                 .font(.caption2)

@@ -186,16 +186,12 @@ ColorAdjustmentResult ColorAdjuster::suppressGreenCast(const ImageBuffer& image,
 
         output.pixels[offset + 1] = std::clamp(green + (neutralGreen - green) * blend, 0.0F, 1.0F);
         if (options.preserveLightness) {
-            const auto decode = [](double v) { return v <= .04045 ? v / 12.92 : std::pow((v + .055) / 1.055, 2.4); };
-            const auto encode = [](double v) {
-                return v <= .0031308 ? 12.92 * v : 1.055 * std::pow(v, 1 / 2.4) - .055;
-            };
             const std::array<double, 3> weights{.2126, .7152, .0722};
             std::array<double, 3> color;
             double originalY = 0, adjustedY = 0;
             for (int c = 0; c < 3; ++c) {
-                originalY += weights[c] * decode(image.pixels[offset + c]);
-                color[c] = decode(output.pixels[offset + c]);
+                originalY += weights[c] * detail::decodeSRGB(image.pixels[offset + c]);
+                color[c] = detail::decodeSRGB(output.pixels[offset + c]);
                 adjustedY += weights[c] * color[c];
             }
             // A pure green pixel may become black at full suppression. Its
@@ -212,7 +208,7 @@ ColorAdjustmentResult ColorAdjuster::suppressGreenCast(const ImageBuffer& image,
             const double scale = detail::softGamutScale(available);
             for (int c = 0; c < 3; ++c)
                 output.pixels[offset + c] =
-                    static_cast<float>(encode(std::clamp(originalY + scale * (color[c] - originalY), 0.0, 1.0)));
+                    static_cast<float>(detail::encodeSRGB(std::clamp(originalY + scale * (color[c] - originalY), 0.0, 1.0)));
         }
         ++affectedPixels;
     }

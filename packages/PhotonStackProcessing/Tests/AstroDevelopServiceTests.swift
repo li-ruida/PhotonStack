@@ -3,11 +3,13 @@ import PhotonStackAppCore
 import Testing
 @testable import PhotonStackProcessing
 
-@Test func astroDevelopSettingsReplayRoundTrips() {
+@Test(arguments: [true, false]) func astroDevelopSettingsReplayRoundTrips(linearDisplayColor: Bool) throws {
     var settings = AstroDevelopSettings()
+    settings.linearDisplayColor = linearDisplayColor
     settings.stellarBalance = false
     settings.brightness = 2.3
     settings.background = 0.06
+    settings.skyPercentile = 0.2
     settings.saturation = 1.2
     settings.shadowNeutralization = 0.65
     settings.starExposure = 0.2
@@ -20,9 +22,12 @@ import Testing
     settings.blueGain = 1.17
     #expect(AstroDevelopSettings(operationParameters: settings.operationParameters) == settings)
     #expect(settings.operationParameters["mode"] == "astro-v1")
+    #expect(settings.operationParameters["linearDisplayColor"] == String(linearDisplayColor))
+    let portable = try WorkflowStep.capture(EditOperation(kind: .stretch, parameters: settings.operationParameters))
+    #expect(AstroDevelopSettings(operationParameters: portable.parameters) == settings)
 }
 
-@Test func astroDevelopServiceRequiresCreatedOutput() async throws {
+@Test(arguments: [true, false]) func astroDevelopServiceRequiresCreatedOutput(newOperation: Bool) async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackDevelop-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -32,8 +37,9 @@ import Testing
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
     let output = directory.appendingPathComponent("result.tiff")
     let service = CLIProcessingService(executableURL: executable)
-    var settings = AstroDevelopSettings()
+    var settings = newOperation ? AstroDevelopSettings() : AstroDevelopSettings(operationParameters: ["mode": "astro-v1"])
     settings.starExposure = 0.35
+    settings.skyPercentile = 0.2
     settings.starPeakThreshold = 0.75
     settings.starColorCleanup = 0.65
     do {
@@ -44,7 +50,11 @@ import Testing
     }
     let args = try String(contentsOf: arguments, encoding: .utf8).split(separator: "\n").map(String.init)
     #expect(args.first == "develop")
+    let transfer = try #require(args.firstIndex(of: "--color-transfer"))
+    #expect(args[transfer + 1] == (newOperation ? "linear-light" : "legacy-code"))
     #expect(args.contains("--stellar-balance"))
+    let skyIndex = try #require(args.firstIndex(of: "--sky-percentile"))
+    #expect(args[skyIndex + 1] == "0.2")
     #expect(args.contains("0.35"))
     #expect(args.contains("--star-exposure"))
     let thresholdIndex = try #require(args.firstIndex(of: "--star-peak-threshold"))
@@ -55,12 +65,14 @@ import Testing
 
 @Test func legacyAstroDevelopKeepsOriginalCurve() {
     let old = AstroDevelopSettings(operationParameters: ["mode": "astro-v1", "starExposure": "0.25"])
+    #expect(!old.linearDisplayColor && AstroDevelopSettings().linearDisplayColor)
     #expect(old.toneCurve == "rational")
     #expect(old.starExposure == 0.25)
     #expect(old.starPeakThreshold == 0)
     #expect(old.starColorCleanup == 0)
     #expect(AstroDevelopSettings().starColorCleanup == 0.8)
     #expect(old.toneScale == 0)
+    #expect(old.skyPercentile == 0.5)
     #expect(old.shadowNeutralization == 0)
     #expect(AstroDevelopSettings().toneCurve == "asinh")
     #expect(AstroDevelopSettings().starExposure == 1)
@@ -76,6 +88,7 @@ func astroDevelopRealM31BrightStarThresholdMatchesReference() async throws {
     let output = folder.appendingPathComponent("develop-\(UUID().uuidString).tiff")
     var settings = AstroDevelopSettings()
     settings.stellarBalance = false
+    settings.linearDisplayColor = false
     // This reference used the CLI's default brightness (1), not the App's 1.5.
     settings.brightness = 1
     settings.toneCurve = "asinh"

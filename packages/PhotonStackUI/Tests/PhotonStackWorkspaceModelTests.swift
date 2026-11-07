@@ -7217,14 +7217,17 @@ import Testing
     settings.starExposure = 0.25
     settings.redGain = 0.92
     settings.starPeakThreshold = 0.75
+    settings.skyPercentile = 0.2
     await model.astroDevelopPreview(settings: settings)
     let operation = try #require(model.project.editGraph.operations.last)
     #expect(operation.kind == .stretch)
     #expect(operation.parameters["mode"] == "astro-v1")
+    #expect(operation.parameters["linearDisplayColor"] == "true")
     #expect(operation.parameters["starExposure"] == "0.25")
     #expect(operation.parameters["redGain"] == "0.92")
     #expect(operation.parameters["starPeakThreshold"] == "0.75")
     #expect(operation.parameters["starColorCleanup"] == "0.8")
+    #expect(operation.parameters["skyPercentile"] == "0.2")
     #expect(operation.parameters["input"] == input.path)
     #expect(operation.parameters["output"]?.hasSuffix(".tiff") == true)
     let replayService = RecordingProcessingService()
@@ -7234,9 +7237,13 @@ import Testing
     try await waitForStartedProcessingCompletion(in: replay)
     let snapshot = await replayService.snapshot()
     #expect(snapshot.cliArguments.first == "develop")
+    let transfer = try #require(snapshot.cliArguments.firstIndex(of: "--color-transfer"))
+    #expect(snapshot.cliArguments[transfer + 1] == "linear-light")
     #expect(snapshot.cliArguments.contains("0.25"))
     #expect(snapshot.cliArguments.contains("--star-peak-threshold"))
     #expect(snapshot.cliArguments.contains("--star-color-cleanup"))
+    let skyIndex = try #require(snapshot.cliArguments.firstIndex(of: "--sky-percentile"))
+    #expect(snapshot.cliArguments[skyIndex + 1] == "0.2")
     #expect(snapshot.cliArguments.contains("0.75"))
     #expect(snapshot.autoStretchCalls == 0)
     #expect(replay.latestJob?.status == .succeeded)
@@ -8512,6 +8519,151 @@ import Testing
     #expect(model.project.name == "Replacement")
     #expect(model.project.template == .mosaic)
     #expect(model.hasUnsavedChanges)
+}
+
+@Test @MainActor func newProjectReusesOnlyOriginalAssetReferences() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackNewAssets-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let input = directory.appendingPathComponent("light.fits")
+    let bytes = Data("original stays unchanged".utf8)
+    try bytes.write(to: input)
+    let asset = PhotonStackAsset(originalURL: input, kind: .fits, role: .flat,
+        metadata: AssetMetadata(width: 100, height: 80, exposureTimeSeconds: 30))
+    let output = directory.appendingPathComponent("old-result.fits")
+    var original = PhotonStackProject(name: "Original", assets: [asset],
+        artifacts: [ProcessingArtifact(kind: .stackMaster, name: "Old result", outputURLs: [output])],
+        layers: [ProcessingLayer(name: "Old layer", kind: .baseImage, inputURL: output)],
+        batchQueue: [BatchQueueItem(title: "Old export", kind: .export, inputURL: output)],
+        batchOutputDirectory: directory.appendingPathComponent("old-exports"),
+        workspaceState: ProjectWorkspaceState(previewURL: output, canvasMode: .layerComposite))
+    original.deepSkySettings = DeepSkySettings()
+    original.deepSkySettings?.overrides[input.path] = "exclude"
+    let model = PhotonStackWorkspaceModel(project: original, autosaveEnabled: false,
+        processingService: RecordingProcessingService(),
+        settingsRepository: AppSettingsRepository(settingsURL: directory.appendingPathComponent("settings.json")))
+    var adjusted = model.parameters
+    adjusted.rawProcessingOptions.exposureBias = 2
+    adjusted.replaceCurvePoints([CurveEditorPoint(input: 0, output: 0.1), CurveEditorPoint(input: 1, output: 0.9)])
+    model.setProcessingParameters(adjusted)
+    let savedDirectory = directory.appendingPathComponent("original-project")
+    await model.saveProject(to: savedDirectory)
+    // Compare the persisted project before and after creating its independent
+    // successor; JSON date precision is unrelated to project isolation.
+    let savedBaseline = try await ProjectRepository().load(from: savedDirectory)
+    let projectFile = savedDirectory.appendingPathComponent(ProjectRepository.projectFileName)
+    let savedBytes = try Data(contentsOf: projectFile)
+
+    #expect(model.requestCreateProject(template: .deepSky, name: "Independent", reuseCurrentAssets: true))
+
+    let copied = try #require(model.project.assets.first)
+    #expect(model.project.id != original.id)
+    #expect(copied.id != asset.id)
+    #expect(copied.originalURL == input)
+    #expect(copied.role == .flat)
+    #expect(copied.metadata == asset.metadata)
+    #expect(model.selectedAssetID == copied.id)
+    #expect(model.previewURL == input)
+    #expect(model.previewOperationID == nil)
+    #expect(model.activeLayerID == nil)
+    #expect(model.canvasMode == .sourcePreview)
+    #expect(model.project.artifacts.isEmpty)
+    #expect(model.project.layers.isEmpty)
+    #expect(model.project.batchQueue.isEmpty)
+    #expect(model.batchQueue.isEmpty)
+    #expect(model.jobs.isEmpty)
+    #expect(model.project.batchOutputDirectory == nil)
+    #expect(model.project.workspaceState == nil)
+    #expect(model.project.deepSkySettings == nil)
+    #expect(model.currentProjectDirectory == nil)
+    #expect(model.hasUnsavedChanges)
+    #expect(model.canStepBack == false)
+    #expect(model.canUndoEditGraph == false)
+    #expect(model.parameters == ProcessingParameters())
+    let saved = try await ProjectRepository().load(from: savedDirectory)
+    #expect(saved.id == original.id)
+    #expect(saved == savedBaseline)
+    #expect(try Data(contentsOf: projectFile) == savedBytes)
+    #expect(try Data(contentsOf: input) == bytes)
+}
+
+@Test @MainActor func reuseCurrentAssetsHonorsCancelAndSaveDecisions() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackNewGuard-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let asset = PhotonStackAsset(originalURL: directory.appendingPathComponent("light.fits"), kind: .fits)
+    let original = PhotonStackProject(name: "Current", assets: [asset])
+    let model = PhotonStackWorkspaceModel(project: original, autosaveEnabled: false,
+        processingService: RecordingProcessingService(),
+        settingsRepository: AppSettingsRepository(settingsURL: directory.appendingPathComponent("settings.json")))
+    model.setRole(.dark, for: asset)
+    #expect(model.requestCreateProject(template: .deepSky, name: "New", reuseCurrentAssets: true) == false)
+    #expect(model.pendingProjectTransition == .createUsingCurrentAssets(template: .deepSky, name: "New"))
+    model.cancelPendingProjectTransition()
+    #expect(model.project.id == original.id)
+    #expect(model.project.assets.first?.id == asset.id)
+    #expect(model.hasUnsavedChanges)
+
+    _ = model.requestCreateProject(template: .deepSky, name: "New", reuseCurrentAssets: true)
+    let savedDirectory = directory.appendingPathComponent("saved")
+    let transition = await model.saveChangesAndPerformPendingProjectTransition(to: savedDirectory)
+    #expect(transition == .createUsingCurrentAssets(template: .deepSky, name: "New"))
+    #expect(model.project.id != original.id)
+    #expect(model.project.assets.first?.role == .dark)
+    #expect(model.currentProjectDirectory == nil)
+    #expect(model.hasUnsavedChanges)
+    let saved = try await ProjectRepository().load(from: savedDirectory)
+    #expect(saved.id == original.id)
+    #expect(saved.assets.first?.id == asset.id)
+    #expect(saved.assets.first?.role == .dark)
+}
+
+@Test @MainActor func newProjectCancelsQueuedCurvePreviewBeforeReplacingWorkspace() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackNewCurve-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let input = directory.appendingPathComponent("old.png")
+    try writeSolidPNG(to: input, red: 0.2, green: 0.3, blue: 0.4, width: 12, height: 8)
+    let service = RecordingProcessingService()
+    let model = PhotonStackWorkspaceModel(
+        project: PhotonStackProject(name: "Old", assets: [PhotonStackAsset(originalURL: input, kind: .png)]),
+        autosaveEnabled: false, processingService: service,
+        settingsRepository: AppSettingsRepository(settingsURL: directory.appendingPathComponent("settings.json")),
+        previewDirectory: directory.appendingPathComponent("previews"))
+    model.scheduleCurvePreview(points: model.parameters.curveEditorPoints)
+    #expect(model.hasActiveProcessing == false)
+    model.createProject(template: .singleFrame, name: "Blank")
+    #expect(model.cancelCurvePreview(restoreBasePreview: true) == false)
+    try await Task.sleep(for: .milliseconds(150))
+    #expect(model.previewURL == nil)
+    #expect(model.commandOutput.isEmpty)
+    #expect(model.project.assets.isEmpty)
+    #expect(model.histogram == nil)
+    #expect(model.curveReferenceHistogram == nil)
+    #expect(model.rawDecodeStatus == nil)
+    #expect(await service.snapshot().makeCurvePreviewCalls == 0)
+}
+
+@Test @MainActor func newProjectDropsCompletedCurvePreviewBaseInput() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackCompletedCurve-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let input = directory.appendingPathComponent("old.png")
+    try writeSolidPNG(to: input, red: 0.2, green: 0.3, blue: 0.4, width: 12, height: 8)
+    let model = PhotonStackWorkspaceModel(
+        project: PhotonStackProject(name: "Old", assets: [PhotonStackAsset(originalURL: input, kind: .png)]),
+        autosaveEnabled: false, processingService: RecordingProcessingService(),
+        settingsRepository: AppSettingsRepository(settingsURL: directory.appendingPathComponent("settings.json")),
+        previewDirectory: directory.appendingPathComponent("previews"))
+    model.scheduleCurvePreview(points: model.parameters.curveEditorPoints)
+    try await waitForCurvePreviewCompletion(in: model)
+    #expect(model.previewURL != input)
+    model.createProject(template: .singleFrame, name: "Blank")
+    // Restoring the old editor base must be impossible after project replacement.
+    #expect(model.cancelCurvePreview(restoreBasePreview: true) == false)
+    #expect(model.previewURL == nil)
+    #expect(model.project.layers.isEmpty)
+    #expect(model.canStepBack == false)
 }
 
 @Test @MainActor func savingBeforeProjectReplacementPreservesOldProjectSnapshot() async throws {

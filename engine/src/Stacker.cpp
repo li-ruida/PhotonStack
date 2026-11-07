@@ -20,6 +20,8 @@
 #include "photonstack/ImageCodec.hpp"
 #include "photonstack/Registration.hpp"
 
+#include "StreamingStackAccumulator.hpp"
+
 namespace photonstack {
 namespace {
 
@@ -59,10 +61,6 @@ ImageBuffer createOutputLike(const ImageBuffer& image) {
 
 bool hasAlpha(const ImageBuffer& image) {
     return image.channels >= 4;
-}
-
-bool isAlphaChannel(const ImageBuffer& image, std::uint16_t channel) {
-    return hasAlpha(image) && channel == 3;
 }
 
 float pixelCoverage(const ImageBuffer& image, std::size_t pixel) {
@@ -324,96 +322,25 @@ bool isExtremaMethod(StackMethod method) {
     return method == StackMethod::Maximum || method == StackMethod::Minimum;
 }
 
-void combineStreamingSample(float& output, float sample, float weight, StackMethod method) {
-    if (method == StackMethod::Maximum) output = std::max(output, sample);
-    else if (method == StackMethod::Minimum) output = std::min(output, sample);
-    else output += sample * weight;
-}
+using detail::StreamingStackAccumulator;
 
-void accumulateStreamingFrame(ImageBuffer& accumulator, const ImageBuffer& frame, float weight,
+void accumulateStreamingFrame(StreamingStackAccumulator& accumulator, const ImageBuffer& frame, double weight,
                               StackProgressReporter& progress, std::size_t frameNumber,
-                              double start, double end, StackMethod method = StackMethod::Average) {
-    progress.report(StackProgressStage::Accumulating, start, frameNumber, 0, accumulator.height);
-    for (std::uint32_t y = 0; y < accumulator.height; ++y) {
-        for (std::uint32_t x = 0; x < accumulator.width; ++x) {
-            const auto pixel = static_cast<std::size_t>(y) * accumulator.width + x;
-            const float coverage = pixelCoverage(frame, pixel);
-            if (coverage <= 1.0e-6F) {
-                continue;
-            }
-            const auto inputOffset = pixel * frame.channels;
-            const auto outputOffset = pixel * accumulator.channels;
-            const float contributionWeight = weight * coverage;
-            for (std::uint16_t channel = 0; channel < accumulator.channels; ++channel) {
-                if (!isAlphaChannel(accumulator, channel)) {
-                    combineStreamingSample(accumulator.pixels[outputOffset + channel],
-                                           frame.pixels[inputOffset + channel], contributionWeight, method);
-                }
-            }
-            if (hasAlpha(accumulator)) {
-                accumulator.pixels[outputOffset + 3] += contributionWeight;
-            }
-        }
-        progress.reportRow(StackProgressStage::Accumulating, y, accumulator.height, start, end, frameNumber);
+                              double start, double end) {
+    progress.report(StackProgressStage::Accumulating, start, frameNumber, 0, accumulator.height());
+    for (std::uint32_t y = 0; y < accumulator.height(); ++y) {
+        accumulator.addRow(y, frame.pixels.data() + y * accumulator.rowSamples(), accumulator.rowSamples(), weight);
+        progress.reportRow(StackProgressStage::Accumulating, y, accumulator.height(), start, end, frameNumber);
     }
 }
 
-bool accumulateStreamingRow(ImageBuffer& accumulator, float weight, std::uint32_t row, const float* samples,
-                            std::size_t sampleCount, StackMethod method = StackMethod::Average) {
-    const auto expectedSamples = static_cast<std::size_t>(accumulator.width) * accumulator.channels;
-    if (row >= accumulator.height || samples == nullptr || sampleCount != expectedSamples) {
-        return false;
-    }
-    for (std::uint32_t x = 0; x < accumulator.width; ++x) {
-        const auto inputOffset = static_cast<std::size_t>(x) * accumulator.channels;
-        const float coverage = rowPixelCoverage(samples, accumulator.channels, inputOffset);
-        if (coverage <= 1.0e-6F) {
-            continue;
-        }
-        const auto outputOffset = (static_cast<std::size_t>(row) * accumulator.width + x) * accumulator.channels;
-        const float contributionWeight = weight * coverage;
-        for (std::uint16_t channel = 0; channel < accumulator.channels; ++channel) {
-            if (!isAlphaChannel(accumulator, channel)) {
-                combineStreamingSample(accumulator.pixels[outputOffset + channel],
-                                       samples[inputOffset + channel], contributionWeight, method);
-            }
-        }
-        if (hasAlpha(accumulator)) {
-            accumulator.pixels[outputOffset + 3] += contributionWeight;
-        }
-    }
-    return true;
-}
-
-void finalizeStreamingAccumulator(ImageBuffer& accumulator, float totalWeight,
-                                  StackProgressReporter& progress, double start, double end,
-                                  StackMethod method = StackMethod::Average) {
-    progress.report(StackProgressStage::Finalizing, start, 0, 0, accumulator.height);
-    for (std::uint32_t y = 0; y < accumulator.height; ++y) {
-        for (std::uint32_t x = 0; x < accumulator.width; ++x) {
-            const auto pixel = static_cast<std::size_t>(y) * accumulator.width + x;
-            const auto offset = pixel * accumulator.channels;
-            const float validWeight = hasAlpha(accumulator) ? accumulator.pixels[offset + 3] : totalWeight;
-            if (isExtremaMethod(method)) {
-                // Alpha retains the same mean coverage convention as other stack modes.
-                // It is not part of the extremum; missing pixels must not win a minimum.
-                for (std::uint16_t channel = 0; channel < accumulator.channels; ++channel) {
-                    if (!isAlphaChannel(accumulator, channel) && !std::isfinite(accumulator.pixels[offset + channel]))
-                        accumulator.pixels[offset + channel] = 0;
-                }
-            } else if (validWeight > 0.0F) {
-                for (std::uint16_t channel = 0; channel < accumulator.channels; ++channel) {
-                    if (!isAlphaChannel(accumulator, channel)) {
-                        accumulator.pixels[offset + channel] /= validWeight;
-                    }
-                }
-            }
-            if (hasAlpha(accumulator)) {
-                accumulator.pixels[offset + 3] =
-                    totalWeight > 0.0F ? std::clamp(validWeight / totalWeight, 0.0F, 1.0F) : 0.0F;
-            }
-        }
-        progress.reportRow(StackProgressStage::Finalizing, y, accumulator.height, start, end);
+void finalizeStreamingAccumulator(StreamingStackAccumulator& accumulator, double totalWeight,
+                                  StackProgressReporter& progress, double start, double end) {
+    accumulator.beginFinalization();
+    progress.report(StackProgressStage::Finalizing, start, 0, 0, accumulator.height());
+    for (std::uint32_t y = 0; y < accumulator.height(); ++y) {
+        accumulator.finalizeRow(y, totalWeight);
+        progress.reportRow(StackProgressStage::Finalizing, y, accumulator.height(), start, end);
     }
 }
 
@@ -444,7 +371,7 @@ StackResult writeCachedAlignedFrame(const std::filesystem::path& path, const Ima
                                     const AlignmentPlan& alignment, std::vector<float>* luminance = nullptr,
                                     StackProgressReporter* progress = nullptr, std::size_t frameNumber = 0,
                                     double start = 0.0, double end = 0.0);
-StackResult accumulateCachedFrame(const std::filesystem::path& path, ImageBuffer& accumulator, float weight,
+StackResult accumulateCachedFrame(const std::filesystem::path& path, StreamingStackAccumulator& accumulator, double weight,
                                   StackProgressReporter* progress = nullptr, std::size_t frameNumber = 0,
                                   double start = 0.0, double end = 0.0);
 
@@ -497,13 +424,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
     const auto referenceHeight = reference.height;
     const auto referenceChannels = reference.channels;
     const auto referenceColorEncoding = reference.colorEncoding;
-    ImageBuffer accumulator = createOutputLike(reference);
-    if (isExtremaMethod(options.method)) {
-        const float initial = options.method == StackMethod::Maximum
-            ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity();
-        for (std::size_t i = 0; i < accumulator.pixels.size(); ++i)
-            if (!isAlphaChannel(accumulator, i % accumulator.channels)) accumulator.pixels[i] = initial;
-    }
+    StreamingStackAccumulator accumulator(reference, options.method);
     TemporaryFrameCache weightedAlignmentCache;
     if (weighted && requiresAlignment) {
         const auto cacheResult = createTemporaryFrameCache(weightedAlignmentCache, options.temporaryDirectory);
@@ -518,7 +439,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
     }
     const FrameQualityAnalyzer analyzer;
     const auto frameWeight = [&](const ImageBuffer& frame, std::size_t index) {
-        const float explicitWeight = options.frameWeights.empty() ? 1.0F : options.frameWeights[index];
+        const double explicitWeight = options.frameWeights.empty() ? 1.0F : options.frameWeights[index];
         if (!weighted) {
             return explicitWeight;
         }
@@ -526,10 +447,10 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
         return explicitWeight * (quality.ok ? std::max(0.01F, quality.score) : 1.0F);
     };
 
-    float totalWeight = 0;
+    double totalWeight = 0;
     if (!externalReference) {
         totalWeight = frameWeight(reference, referenceIndex);
-        accumulateStreamingFrame(accumulator, reference, totalWeight, progress, 1, referenceReadEnd, frameSpan, options.method);
+        accumulateStreamingFrame(accumulator, reference, totalWeight, progress, 1, referenceReadEnd, frameSpan);
         const auto released = notifyInputConsumed(options, referenceIndex);
         if (!released.ok) return released;
     }
@@ -582,7 +503,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
                             readResult.image.height);
             const bool rendered = renderAlignmentRows(
                 readResult.image, alignmentPlan, [&](std::uint32_t row, const float* samples, std::size_t sampleCount) {
-                    const bool accumulated = accumulateStreamingRow(accumulator, weight, row, samples, sampleCount, options.method);
+                    const bool accumulated = accumulator.addRow(row, samples, sampleCount, weight);
                     if (accumulated) {
                         progress.reportRow(StackProgressStage::Accumulating, row, readResult.image.height,
                                            alignmentEnd, frameEnd, processedFrames);
@@ -605,7 +526,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
                 return writeResult;
             }
             const auto quality = analyzer.analyzeLuminance(referenceWidth, referenceHeight, luminance);
-            const float weight = (quality.ok ? std::max(0.01F, quality.score) : 1.0F) *
+            const double weight = static_cast<double>(quality.ok ? std::max(0.01F, quality.score) : 1.0F) *
                                  (options.frameWeights.empty() ? 1.0F : options.frameWeights[index]);
             std::vector<float>().swap(luminance);
             const auto accumulationResult = accumulateCachedFrame(cachePath, accumulator, weight, &progress,
@@ -615,10 +536,10 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
             }
             totalWeight += weight;
         } else {
-            const float weight = frameWeight(readResult.image, index);
+            const double weight = frameWeight(readResult.image, index);
             totalWeight += weight;
             accumulateStreamingFrame(accumulator, readResult.image, weight, progress, processedFrames,
-                                     readEnd, frameEnd, options.method);
+                                     readEnd, frameEnd);
         }
         const auto released = notifyInputConsumed(options, index);
         if (!released.ok) return released;
@@ -639,8 +560,11 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
     if (totalWeight <= 0.0F) {
         return stackError("StackWeightInvalid", "Average produced zero total weight");
     }
-    finalizeStreamingAccumulator(accumulator, totalWeight, progress, framePhaseEnd, 1.0, options.method);
-    metrics.image = std::move(accumulator);
+    // Alignment no longer needs its reference. Release it before allocating
+    // the Float32 output alongside the double-precision accumulator.
+    std::vector<float>().swap(reference.pixels);
+    finalizeStreamingAccumulator(accumulator, totalWeight, progress, framePhaseEnd, 1.0);
+    metrics.image = accumulator.takeImage();
     return metrics;
 }
 
@@ -791,29 +715,29 @@ StackResult writeCachedAlignedFrame(const std::filesystem::path& path, const Ima
     return result;
 }
 
-StackResult accumulateCachedFrame(const std::filesystem::path& path, ImageBuffer& accumulator, float weight,
+StackResult accumulateCachedFrame(const std::filesystem::path& path, StreamingStackAccumulator& accumulator, double weight,
                                   StackProgressReporter* progress, std::size_t frameNumber,
                                   double start, double end) {
     std::ifstream input(path, std::ios::binary);
     if (!input) {
         return stackError("TemporaryStorageReadFailed", "Unable to open stack cache file: " + path.string());
     }
-    const auto rowSamples = static_cast<std::size_t>(accumulator.width) * accumulator.channels;
+    const auto rowSamples = accumulator.rowSamples();
     const auto rowBytes = rowSamples * sizeof(float);
     std::vector<float> row(rowSamples, 0.0F);
     if (progress != nullptr) {
-        progress->report(StackProgressStage::Accumulating, start, frameNumber, 0, accumulator.height);
+        progress->report(StackProgressStage::Accumulating, start, frameNumber, 0, accumulator.height());
     }
-    for (std::uint32_t y = 0; y < accumulator.height; ++y) {
+    for (std::uint32_t y = 0; y < accumulator.height(); ++y) {
         input.read(reinterpret_cast<char*>(row.data()), static_cast<std::streamsize>(rowBytes));
         if (input.gcount() != static_cast<std::streamsize>(rowBytes)) {
             return stackError("TemporaryStorageReadFailed", "Unable to read stack cache file: " + path.string());
         }
-        if (!accumulateStreamingRow(accumulator, weight, y, row.data(), row.size())) {
+        if (!accumulator.addRow(y, row.data(), row.size(), weight)) {
             return stackError("ImageBufferInvalid", "Cached alignment row does not match the output image");
         }
         if (progress != nullptr) {
-            progress->reportRow(StackProgressStage::Accumulating, y, accumulator.height, start, end, frameNumber);
+            progress->reportRow(StackProgressStage::Accumulating, y, accumulator.height(), start, end, frameNumber);
         }
     }
     StackResult result;
@@ -920,7 +844,7 @@ struct PixelRejections {
 };
 
 float robustStackValue(std::vector<WeightedValue>& values, std::vector<WeightedValue>& scratch,
-                       const StackOptions& options, PixelRejections& rejections) {
+                       std::vector<WeightedValue>& retained, const StackOptions& options, PixelRejections& rejections) {
     switch (options.method) {
     case StackMethod::Median:
         rejections.count(values, -std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity());
@@ -930,15 +854,24 @@ float robustStackValue(std::vector<WeightedValue>& values, std::vector<WeightedV
             // A sparse contaminant must not inflate the center/scale used to
             // judge itself. Fewer than five covered samples lack enough robust
             // evidence: retain them instead of inventing a zero-MAD rejection.
-            auto retained = values;
+            // Reuse worker-local storage across pixels/channels (and optional
+            // half-stacks); neither ordering nor rejection arithmetic changes.
+            retained.assign(values.begin(), values.end());
             double low = -std::numeric_limits<double>::infinity();
             double high = std::numeric_limits<double>::infinity();
+            double scale = 0;
             for (std::uint32_t iteration = 0; iteration < options.sigma.iterations && retained.size() >= 5; ++iteration) {
                 scratch = retained;
                 const double center = weightedQuantile(scratch, .5F);
-                for (auto& v : scratch) v.value = float(std::abs(double(v.value) - center));
-                const double scale = std::max({double(weightedQuantile(scratch, .5F)) * 1.4826022185,
-                    std::abs(center) * double(std::numeric_limits<float>::epsilon()) * 2, 1.e-6});
+                if (iteration == 0) {
+                    // Estimate scatter before cutting off the tails. Re-estimating
+                    // it from the survivors can progressively discard ordinary
+                    // noise on one side, shifting just one RGB channel. Later
+                    // passes may refine the center using the original scatter.
+                    for (auto& v : scratch) v.value = float(std::abs(double(v.value) - center));
+                    scale = std::max({double(weightedQuantile(scratch, .5F)) * 1.4826022185,
+                        std::abs(center) * double(std::numeric_limits<float>::epsilon()) * 2, 1.e-6});
+                }
                 const double candidateLow = std::max(low, center - options.sigma.sigmaLow * scale);
                 const double candidateHigh = std::min(high, center + options.sigma.sigmaHigh * scale);
                 scratch.clear();
@@ -1071,11 +1004,13 @@ void processRobustRange(const std::vector<float>& tileData, std::size_t frameCou
     const auto tileSamples = tilePixels * channels;
     std::vector<WeightedValue> values;
     std::vector<WeightedValue> scratch;
+    std::vector<WeightedValue> retained;
     std::vector<WeightedValue> halves[2];
     if (noise) for (auto& half : halves) half.reserve((frameCount + 1) / 2);
     std::vector<float> coverages(frameCount, 0.0F);
     values.reserve(frameCount);
     scratch.reserve(frameCount);
+    if (options.method == StackMethod::SigmaClip && options.sigma.medianMad) retained.reserve(frameCount);
     const double totalFrameWeight = options.frameWeights.empty() ? static_cast<double>(frameCount)
         : std::accumulate(options.frameWeights.begin(), options.frameWeights.end(), 0.0);
 
@@ -1108,7 +1043,7 @@ void processRobustRange(const std::vector<float>& tileData, std::size_t frameCou
             if (!values.empty()) {
                 PixelRejections rejected;
                 rejected.report = counters;
-                output.pixels[outputOffset + channel] = robustStackValue(values, scratch, options, rejected);
+                output.pixels[outputOffset + channel] = robustStackValue(values, scratch, retained, options, rejected);
                 if (groups) recordAcceptedGroups(values, rejected, options, inputOrder, *groups, noiseOffset + channel);
                 if (noise) {
                     halves[0].clear(); halves[1].clear();
@@ -1118,7 +1053,7 @@ void processRobustRange(const std::vector<float>& tileData, std::size_t frameCou
                     for (unsigned h = 0; h < 2; ++h) {
                         if (halves[h].empty()) continue;
                         PixelRejections halfBounds;
-                        means[h] = robustStackValue(halves[h], scratch, options, halfBounds);
+                        means[h] = robustStackValue(halves[h], scratch, retained, options, halfBounds);
                         halfVariance[h] = acceptedVariance(halves[h], halfBounds, options.frameNoiseVariances);
                     }
                     const double fullVariance = acceptedVariance(values, rejected, options.frameNoiseVariances).variance();
@@ -1202,10 +1137,25 @@ void processRobustTile(const std::vector<float>& tileData, std::size_t frameCoun
     }
 }
 
+std::size_t robustTilePixelCount(const ImageBuffer& image, std::size_t frameCount, std::size_t budget) {
+    const auto sampleBytesPerPixel = static_cast<std::size_t>(image.channels) * sizeof(float);
+    if (sampleBytesPerPixel == 0 || frameCount == 0 ||
+        frameCount > std::numeric_limits<std::size_t>::max() / sampleBytesPerPixel) return 0;
+    const auto allFramesPixelBytes = sampleBytesPerPixel * frameCount;
+    const auto pixelCapacity = std::min(image.pixelCount(), budget / allFramesPixelBytes);
+    // Preserve full-row batches when they fit. Very wide/long sequences split
+    // rows instead of silently exceeding the shared tile's memory budget.
+    return pixelCapacity >= image.width ? (pixelCapacity / image.width) * image.width : pixelCapacity;
+}
+
 StackResult stackCachedRobustFrames(const TemporaryFrameCache& cache, std::size_t frameCount,
                                     const StackOptions& options, const std::vector<std::size_t>& inputOrder,
                                     ImageBuffer output, StackResult metrics,
                                     StackProgressReporter& progress, double start, double end) {
+    const auto tilePixels = robustTilePixelCount(output, frameCount, options.combineTileBytes);
+    if (tilePixels == 0)
+        return stackError("StackTileBudgetInsufficient", "Robust tile budget must hold at least one pixel from every frame");
+
     // Reads advance sequentially through each frame. A bounded shared budget
     // amortizes filebuf's small underlying reads without caching another image
     // sequence. Declare storage before streams so it outlives their buffers.
@@ -1226,10 +1176,6 @@ StackResult stackCachedRobustFrames(const TemporaryFrameCache& cache, std::size_
         }
     }
 
-    constexpr std::size_t tileBudgetBytes = 64ULL * 1024ULL * 1024ULL;
-    const auto rowSamples = static_cast<std::size_t>(output.width) * output.channels;
-    const auto allFramesRowBytes = rowSamples * sizeof(float) * frameCount;
-    const auto tileRows = std::max<std::size_t>(1, tileBudgetBytes / std::max<std::size_t>(1, allFramesRowBytes));
     std::vector<float> tileData;
     if (!options.acceptedGroups.empty()) {
         if (output.colorEncoding != ColorEncoding::Linear || (output.channels != 3 && output.channels != 4))
@@ -1260,15 +1206,15 @@ StackResult stackCachedRobustFrames(const TemporaryFrameCache& cache, std::size_
     }
     progress.report(StackProgressStage::Combining, start, 0, 0, output.height);
 
-    for (std::size_t startY = 0; startY < output.height; startY += tileRows) {
-        const auto rowCount = std::min<std::size_t>(tileRows, output.height - startY);
-        const auto tileSamples = rowCount * rowSamples;
+    for (std::size_t startPixel = 0; startPixel < output.pixelCount(); startPixel += tilePixels) {
+        const auto pixelCount = std::min(tilePixels, output.pixelCount() - startPixel);
+        const auto tileSamples = pixelCount * output.channels;
         tileData.resize(tileSamples * frameCount);
         const auto byteCount = tileSamples * sizeof(float);
 
         for (std::size_t frame = 0; frame < frameCount; ++frame) {
             auto& stream = streams[frame];
-            // Previous iterations consumed exactly their complete rows. Seeking
+            // Previous iterations consumed exactly their complete tiles. Seeking
             // to this same logical position discards useful prefetched bytes.
             stream.read(reinterpret_cast<char*>(tileData.data() + frame * tileSamples),
                         static_cast<std::streamsize>(byteCount));
@@ -1278,13 +1224,13 @@ StackResult stackCachedRobustFrames(const TemporaryFrameCache& cache, std::size_
             }
         }
 
-        processRobustTile(tileData, frameCount, rowCount * output.width, output.channels,
-                          startY * output.width, options, inputOrder, output,
+        processRobustTile(tileData, frameCount, pixelCount, output.channels,
+                          startPixel, options, inputOrder, output,
                           options.collectRejectionMaps ? &metrics : nullptr,
                           options.collectNoiseDiagnostic ? &metrics.noiseDiagnostic : nullptr,
                           options.acceptedGroups.empty() ? nullptr : &metrics);
-        const auto completedRows = static_cast<std::uint32_t>(startY + rowCount);
-        const auto previousRows = static_cast<std::uint32_t>(startY);
+        const auto completedRows = static_cast<std::uint32_t>((startPixel + pixelCount) / output.width);
+        const auto previousRows = static_cast<std::uint32_t>(startPixel / output.width);
         const auto interval = std::max<std::uint32_t>(1, output.height / 100);
         if (completedRows == output.height || completedRows / interval != previousRows / interval) {
             const double fraction = static_cast<double>(completedRows) / output.height;
@@ -1346,6 +1292,9 @@ StackResult streamRobustFiles(const std::vector<std::filesystem::path>& inputs, 
         }
         return result;
     }
+
+    if (robustTilePixelCount(referenceResult.image, inputs.size(), options.combineTileBytes) == 0)
+        return stackError("StackTileBudgetInsufficient", "Robust tile budget must hold at least one pixel from every frame");
 
     TemporaryFrameCache cache;
     const auto cacheResult = createTemporaryFrameCache(cache, options.temporaryDirectory);
@@ -1551,7 +1500,10 @@ StackResult Stacker::stack(const std::vector<std::filesystem::path>& inputs, con
             std::any_of(options.frameWeights.begin(),options.frameWeights.end(),[](float w){return !std::isfinite(w) || w<=0;}))
             return stackError("ArgumentInvalid", "Frame weights must contain one finite positive value per input");
         const float maximum = *std::max_element(options.frameWeights.begin(),options.frameWeights.end());
-        for (auto& w : options.frameWeights) w /= maximum;
+        for (auto& w : options.frameWeights) {
+            w /= maximum;
+            if (w == 0) return stackError("ArgumentInvalid", "Frame weight dynamic range is too large");
+        }
     }
     if (!isValidRawDecodeOptions(options.raw)) {
         return stackError("ArgumentInvalid", "Unsupported RAW decode options");

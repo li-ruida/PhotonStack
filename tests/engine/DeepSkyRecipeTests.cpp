@@ -16,11 +16,14 @@ int main() {
     recipe.options.darks = {"/tmp/dark \"quoted\".fit", "/tmp/dark two.fit"};
     recipe.options.backgroundDenoiseStrength = .75;
     recipe.options.develop.starColorCleanup = .6F;
+    recipe.options.develop.skyPercentile = .2F;
+    recipe.options.polynomial.degree = 4;
+    recipe.options.lockDenoiseStretch = true;
     const auto text = recipe.serialize();
     for (auto method : {StackMethod::Maximum, StackMethod::Minimum}) {
         auto extrema = recipe;
         extrema.options.stack.method = method;
-        require(invalid(extrema.serialize())); // Default MAD/maps must not be silently ignored.
+        require(invalid(extrema.serialize())); // Default rejection maps are unsupported for extrema.
         extrema.options.stack.sigma.medianMad = false;
         extrema.options.stack.collectRejectionMaps = false;
         require(DeepSkyRecipe::parse(extrema.serialize(), "/tmp").options.stack.method == method);
@@ -33,9 +36,21 @@ int main() {
     require(parsed.options.darks == recipe.options.darks);
     require(parsed.options.backgroundDenoiseStrength == .75);
     require(parsed.options.develop.starColorCleanup == .6F);
+    require(parsed.options.develop.linearDisplayColor);
+    require(parsed.options.develop.skyPercentile == .2F);
+    require(parsed.options.polynomial.degree == 4);
+    require(parsed.options.lockDenoiseStretch);
     require(!parsed.options.sensorPattern);
     require(!parsed.options.saveDenoiseStages);
+    require(parsed.options.stack.method == StackMethod::WinsorizedSigmaClip);
+    require(!parsed.options.stack.sigma.medianMad);
+    require(parsed.options.stack.winsorizedSigma.sigmaLow == 3 && parsed.options.stack.winsorizedSigma.sigmaHigh == 3);
     require(parsed.serialize() == text);
+    auto asymmetric = recipe;
+    asymmetric.options.stack.winsorizedSigma = {2, 4};
+    const auto thresholds = DeepSkyRecipe::parse(asymmetric.serialize(), "/tmp").options.stack.winsorizedSigma;
+    require(thresholds.sigmaLow == 2 && thresholds.sigmaHigh == 4);
+    recipe.options.stack.method = StackMethod::SigmaClip;
     recipe.options.noiseModel = DeepSkyNoiseModel::IndependentLuminance;
     require(DeepSkyRecipe::parse(recipe.serialize(), "/tmp").options.noiseModel == DeepSkyNoiseModel::IndependentLuminance);
     require(parsed.options.noiseModel == DeepSkyNoiseModel::Scene);
@@ -44,8 +59,33 @@ int main() {
         require(keys.insert(field.key).second);
         require(!field.label.empty() && !field.chineseLabel.empty());
         require(text.find(field.key + " ") != std::string::npos);
+        if (field.key == "stack.method") require(field.defaultValue == "winsorized");
+        if (field.key == "stack.median-mad") require(field.defaultValue == "off");
+        if (field.key == "develop.color-transfer") require(field.defaultValue == "linear-light");
     }
     const std::string header = "PHOTONSTACK_DEEP_SKY_RECIPE 1\n";
+    const auto historicColor = DeepSkyRecipe::parse(header + "develop.saturation \"0.8\"\n", "/tmp");
+    require(!historicColor.options.develop.linearDisplayColor);
+    require(historicColor.serialize().find("develop.color-transfer \"legacy-code\"\n") != std::string::npos);
+    require(DeepSkyRecipe::parse(historicColor.serialize(), "/tmp").serialize() == historicColor.serialize());
+    require(DeepSkyRecipe::parse(header + "develop.color-transfer \"linear-light\"\n", "/tmp").options.develop.linearDisplayColor);
+    require(invalid(header + "develop.color-transfer \"unknown\"\n"));
+    const auto legacy = DeepSkyRecipe::parse(header + "input \"one.fit\"\n", "/tmp").options.stack;
+    require(legacy.method == StackMethod::SigmaClip && legacy.sigma.medianMad && legacy.sigma.iterations == 3);
+    require(DeepSkyRecipe::parse(header + "stack.method \"sigma\"\n", "/tmp").options.stack.sigma.medianMad);
+    require(!DeepSkyRecipe::parse(header + "stack.method \"sigma\"\nstack.median-mad \"off\"\n", "/tmp").options.stack.sigma.medianMad);
+    require(!DeepSkyRecipe::parse(header + "stack.method \"winsorized\"\n", "/tmp").options.stack.sigma.medianMad);
+    require(invalid(header + "stack.method \"winsorized\"\nstack.median-mad \"on\"\n"));
+    require(!DeepSkyRecipe::parse(header, "/tmp").options.lockDenoiseStretch);
+    require(!DeepSkyRecipe{}.options.lockDenoiseStretch);
+    require(invalid(header + "develop.lock-denoise-stretch \"yes\"\n"));
+    require(DeepSkyRecipe::parse(header, "/tmp").options.polynomial.degree == 2);
+    for (auto bad : {"0", "5", "2.5", "NaN", "-1"})
+        require(invalid(header + "background.polynomial-degree \"" + bad + "\"\n"));
+    require(DeepSkyRecipe::parse(header, "/tmp").options.develop.skyPercentile == .5F);
+    require(invalid(header + "develop.sky-percentile \"0.01\"\n"));
+    require(invalid(header + "develop.sky-percentile \"0.51\"\n"));
+    require(invalid(header + "develop.sky-percentile \"NaN\"\n"));
     require(DeepSkyRecipe::parse(header, "/tmp").options.develop.starColorCleanup == 0);
     require(invalid(header + "develop.star-color-cleanup \"1.1\"\n"));
     require(invalid(header + "develop.star-color-cleanup \"NaN\"\n"));

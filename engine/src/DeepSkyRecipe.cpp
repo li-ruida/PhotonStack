@@ -164,7 +164,7 @@ std::vector<Binding> fields(DeepSkyWorkflowOptions& o) {
     f.boolean("stack.median-mad", "Robust iterative MAD (sigma)", "迭代 MAD 剔除（Sigma）", "stack", o.stack.sigma.medianMad);
     f.numeric("stack.sigma-low", "Negative rejection sigma", "负向剔除阈值", "stack", o.stack.sigma.sigmaLow, .1, 20);
     f.numeric("stack.sigma-high", "Positive rejection sigma", "正向剔除阈值", "stack", o.stack.sigma.sigmaHigh, .1, 20);
-    f.numeric("stack.iterations", "Rejection iterations", "剔除迭代次数", "stack", o.stack.sigma.iterations, 1, 10);
+    f.numeric("stack.iterations", "MAD rejection iterations (sigma)", "MAD 剔除迭代次数（Sigma）", "stack", o.stack.sigma.iterations, 1, 10);
     f.numeric("stack.percentile-low", "Lower percentile", "低端百分位", "stack", o.stack.percentile.low, 0, 1);
     f.numeric("stack.percentile-high", "Upper percentile", "高端百分位", "stack", o.stack.percentile.high, 0, 1);
     f.boolean("stack.rejection-maps", "Save signed rejection maps", "保存正负剔除图", "stack", o.stack.collectRejectionMaps);
@@ -183,7 +183,7 @@ std::vector<Binding> fields(DeepSkyWorkflowOptions& o) {
     f.numeric("selection.minimum-coverage", "Minimum valid coverage", "最低有效覆盖率", "selection", o.quality.minimumCoverage, 0, 1);
     f.numeric("selection.maximum-noise-ratio", "Maximum relative noise", "最大相对噪声", "selection", o.quality.maximumNoiseRatio, 1, 100);
     f.numeric("selection.maximum-fwhm-ratio", "Maximum relative FWHM", "最大相对星点宽度", "selection", o.quality.maximumFwhmRatio, 1, 100);
-    f.numeric("selection.maximum-eccentricity", "Maximum eccentricity", "最大星点偏心率", "selection", o.quality.maximumEccentricity, 0, 1);
+    f.numeric("selection.maximum-eccentricity", "Eccentricity review threshold", "星点偏心率复查阈值", "selection", o.quality.maximumEccentricity, 0, 1);
     f.numeric("selection.minimum-star-ratio", "Minimum relative star count", "最低相对星点数量", "selection", o.quality.minimumStarRatio, 0, 1);
     f.numeric("selection.maximum-residual-fraction", "Broad residual fraction", "大范围残差比例阈值", "selection", o.quality.maximumResidualFraction, 0, 1);
     f.numeric("selection.minimum-peers", "Minimum temporal peers", "最少时间比较帧", "selection", o.quality.minimumTemporalPeers, 4, 1999);
@@ -200,6 +200,7 @@ std::vector<Binding> fields(DeepSkyWorkflowOptions& o) {
     f.choice<DeepSkyBackground>("background.model", "Background model", "背景模型", "background", o.background,
         {{"none", DeepSkyBackground::None}, {"polynomial", DeepSkyBackground::Polynomial}, {"grid", DeepSkyBackground::Grid}, {"polynomial-grid", DeepSkyBackground::PolynomialAndGrid}});
     f.numeric("background.polynomial-strength", "Polynomial strength", "多项式校正强度", "background", o.polynomial.extraction.strength, 0, 1);
+    f.numeric("background.polynomial-degree", "Polynomial degree (2 default; protect the target)", "多项式阶数（默认2；高阶须保护主体）", "background", o.polynomial.degree, 1, 4);
     f.numeric("background.polynomial-columns", "Polynomial sample columns", "多项式采样列数", "background", o.polynomial.columns, 4, 512);
     f.numeric("background.polynomial-rows", "Polynomial sample rows", "多项式采样行数", "background", o.polynomial.rows, 4, 512);
     f.numeric("background.grid-strength", "Grid strength", "网格校正强度", "background", o.grid.extraction.strength, 0, 1);
@@ -228,13 +229,17 @@ std::vector<Binding> fields(DeepSkyWorkflowOptions& o) {
     f.numeric("denoise.background-strength", "Residual background denoise", "背景纹理降噪", "denoise", o.backgroundDenoiseStrength, 0, 1);
     f.choice<AstroToneCurve>("develop.curve", "Tone curve", "显影曲线", "develop", o.develop.toneCurve,
         {{"asinh", AstroToneCurve::Asinh}, {"rational", AstroToneCurve::Rational}});
+    f.choice<bool>("develop.color-transfer", "Display color rendering", "显影色彩模式", "develop", o.develop.linearDisplayColor,
+        {{"linear-light", true}, {"legacy-code", false}});
     f.boolean("develop.align-channels", "Automatic RGB channel alignment", "自动对齐 RGB 通道（可靠星点才启用）", "develop", o.alignChannels);
+    f.boolean("develop.lock-denoise-stretch", "Use pre-denoise tone reference", "固定降噪前的色调参考", "develop", o.lockDenoiseStretch);
     f.numeric("develop.shadow-neutralization", "Low-SNR background color suppression", "低信噪比背景彩色抑制", "develop", o.develop.shadowNeutralization, 0, 1);
     f.boolean("develop.stellar-balance", "Statistical stellar balance", "恒星统计白平衡", "develop", o.develop.stellarBalance);
     f.numeric("develop.red-gain", "Red gain", "红色增益", "develop", o.develop.gains[0], .1, 10);
     f.numeric("develop.green-gain", "Green gain", "绿色增益", "develop", o.develop.gains[1], .1, 10);
     f.numeric("develop.blue-gain", "Blue gain", "蓝色增益", "develop", o.develop.gains[2], .1, 10);
     f.numeric("develop.background", "Display background", "显示背景亮度", "develop", o.develop.background, 0, .3);
+    f.numeric("develop.sky-percentile", "Sky reference quantile (0.5 legacy)", "背景参考分位（0.5 原方式）", "develop", o.develop.skyPercentile, .05, .5);
     f.numeric("develop.tone-scale", "Tone scale (0 auto)", "拉伸尺度（0 自动）", "develop", o.develop.toneScale, 0, 1000000000);
     f.numeric("develop.white-point", "Highlight reference (0 auto)", "高光参考（0 自动）", "develop", o.develop.whitePoint, 0, 1000000000);
     f.numeric("develop.brightness", "Brightness", "亮度", "develop", o.develop.brightness, .1, 10);
@@ -264,6 +269,7 @@ DeepSkyRecipe DeepSkyRecipe::parse(const std::string& text, const std::filesyste
     recipe.options.stack.fitsDemosaic = FitsDemosaic::Malvar;
     // Recipes saved before this display adjustment must replay identically.
     recipe.options.develop.starColorCleanup = 0;
+    recipe.options.develop.linearDisplayColor = false;
     auto bindings = fields(recipe.options);
     std::map<std::string, Binding*> lookup;
     for (auto& binding : bindings) lookup[binding.field.key] = &binding;
@@ -287,6 +293,10 @@ DeepSkyRecipe DeepSkyRecipe::parse(const std::string& text, const std::filesyste
         }
     }
     auto& o = recipe.options;
+    // Version 1 predates the Winsorized default. Sparse saved recipes must
+    // still select their original method. New recipes serialize it explicitly.
+    if (!seen.contains("stack.method")) o.stack.method = StackMethod::SigmaClip;
+    if (!seen.contains("stack.median-mad")) o.stack.sigma.medianMad = o.stack.method == StackMethod::SigmaClip;
     for (auto* paths : {&o.darks, &o.biases, &o.flats})
         for (auto& path : *paths) path = std::filesystem::absolute(base / path).lexically_normal();
     if ((!o.darks.empty() && !o.biases.empty() && o.darkBiasState == CalibrationBiasState::Unknown) ||
@@ -311,6 +321,10 @@ DeepSkyRecipe DeepSkyRecipe::parse(const std::string& text, const std::filesyste
 
 std::string DeepSkyRecipe::serialize() const {
     auto copy = options;
+    if (copy.stack.method == StackMethod::WinsorizedSigmaClip) {
+        copy.stack.sigma.sigmaLow = copy.stack.winsorizedSigma.sigmaLow;
+        copy.stack.sigma.sigmaHigh = copy.stack.winsorizedSigma.sigmaHigh;
+    }
     std::ostringstream out;
     out << "PHOTONSTACK_DEEP_SKY_RECIPE 1\n";
     for (const auto& binding : fields(copy)) out << binding.field.key << ' ' << std::quoted(binding.get()) << '\n';

@@ -29,6 +29,9 @@ struct DeepSkyWorkflowOptions {
     // -1 selects a reference by measured stellar width/shape and coverage.
     int referenceIndex = -1;
     bool analysisOnly = false;
+    // Execution limit for analysis-only frame reads. Zero selects a budget from
+    // hardware and FITS geometry; one forces serial scheduling. Not a recipe field.
+    std::size_t analysisWorkers = 0;
     // Estimate and subtract sensor-fixed high-frequency residuals before CFA
     // interpolation. Requires uncalibrated FITS and sufficient field movement.
     bool sensorPattern = false;
@@ -49,6 +52,9 @@ struct DeepSkyWorkflowOptions {
     // Background-corrected input and final developed output remain mandatory.
     bool saveDenoiseStages = false;
     bool alignChannels = true;
+    // Estimate global development statistics after background correction but
+    // before any denoiser, keeping them stable as denoise strengths change.
+    bool lockDenoiseStretch = false;
     AstroDevelopOptions develop;
     DeepSkyWorkflowOptions();
 };
@@ -59,6 +65,8 @@ struct DeepSkyFrameReport {
     std::int64_t modifiedTicks = 0;
     std::string sha256;
     int sensorPatternModel = -1;
+    // Native scalar metrics only. Temporal luminance/coverage grids are transient
+    // implementation data and are not retained in a completed frame report.
     SequenceFrameSample native;
     RegistrationResult registration;
     SequenceFrameAssessment assessment;
@@ -79,6 +87,7 @@ struct DeepSkyWorkflowResult {
     std::filesystem::path sensorPatternReport;
     std::filesystem::path noiseReference, noiseReferenceManifest, noiseReferenceInputs;
     bool independentLuminanceNoise = false;
+    bool denoiseStretchLocked = false;
     double denoiseH = 0;
     ChannelAlignmentResult channelAlignment;
     AstroDevelopResult development;

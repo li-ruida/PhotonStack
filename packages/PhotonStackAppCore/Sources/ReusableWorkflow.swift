@@ -67,6 +67,9 @@ public struct WorkflowStep: Codable, Equatable, Sendable {
         self.kind = kind
         self.parameters = parameters
         self.deepSkyValues = deepSkyValues
+        if let values = deepSkyValues, values["develop.color-transfer"] == nil {
+            self.deepSkyValues?["develop.color-transfer"] = "linear-light"
+        }
         self.calibration = calibration
     }
 
@@ -167,7 +170,7 @@ public struct WorkflowStep: Codable, Equatable, Sendable {
         .crop: ["aspect", "margin"],
         .background: ["model", "mode", "strength", "preserveBrightness", "protectBrightTargets"],
         .normalize: ["targetBackground", "targetScale"],
-        .stretch: ["mode", "targetBackground", "stellarBalance", "toneCurve", "toneScale", "whitePoint", "brightness", "background", "starExposure", "starPeakThreshold", "starColorCleanup", "shadowNeutralization", "saturation", "redGain", "blueGain"],
+        .stretch: ["mode", "targetBackground", "linearDisplayColor", "stellarBalance", "toneCurve", "toneScale", "whitePoint", "brightness", "background", "skyPercentile", "starExposure", "starPeakThreshold", "starColorCleanup", "shadowNeutralization", "saturation", "redGain", "blueGain"],
         .curves: ["black", "midInput", "midOutput", "white", "channel", "points"],
         .localContrast: ["mode", "amount", "radius", "fineRadius", "starChroma", "points"],
         .denoise: ["mode", "amount", "chromaAmount", "radius"],

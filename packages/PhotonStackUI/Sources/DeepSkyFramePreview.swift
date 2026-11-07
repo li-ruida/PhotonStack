@@ -10,7 +10,8 @@ final class DeepSkyReviewPreviewStore: ObservableObject {
 
     private func key(_ input: String, model: PhotonStackWorkspaceModel) -> String {
         let attributes = try? FileManager.default.attributesOfItem(atPath: input)
-        return "\(input)|\((attributes?[.modificationDate] as? Date ?? .distantPast).timeIntervalSince1970)|\(attributes?[.size] ?? 0)|\(model.deepSkyReviewDecodeKey)"
+        let decode = model.deepSkyReviewDecodeKey(for: URL(fileURLWithPath: input))
+        return "\(input)|\((attributes?[.modificationDate] as? Date ?? .distantPast).timeIntervalSince1970)|\(attributes?[.size] ?? 0)|\(decode)"
     }
 
     func cachedURL(_ input: String, model: PhotonStackWorkspaceModel) -> URL? {
@@ -58,6 +59,11 @@ struct DeepSkyFramePreview: View {
     @State private var fit = true
     private var chinese: Bool { model.language == .simplifiedChinese }
     private var displayedURL: URL? { showingReference ? referenceURL : currentURL }
+    private var requestKey: [String] {
+        [frame.input, reference?.input].compactMap { $0 }.flatMap {
+            [$0, model.deepSkyReviewDecodeKey(for: URL(fileURLWithPath: $0))]
+        }
+    }
 
     var body: some View {
         VStack(spacing: 6) {
@@ -100,7 +106,7 @@ struct DeepSkyFramePreview: View {
             Text(chinese ? "单张拉伸预览 · 未对齐 · 不改原片；用于检查星形与轨迹，不直接比较亮度。" : "Stretched original, unregistered. Inspect star shape and trails; brightness is not directly comparable.")
                 .font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
         }
-        .task(id: frame.input + "|" + model.deepSkyReviewDecodeKey) {
+        .task(id: requestKey) {
             referenceURL = nil; showingReference = false; failure = nil; loading = true
             do {
                 if previews.cachedURL(frame.input, model: model) == nil {

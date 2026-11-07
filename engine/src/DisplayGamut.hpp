@@ -1,6 +1,16 @@
 #pragma once
 
+#include <cmath>
+
 namespace photonstack::detail {
+
+inline double decodeSRGB(double code) {
+    return code <= .04045 ? code / 12.92 : std::pow((code + .055) / 1.055, 2.4);
+}
+
+inline double encodeSRGB(double light) {
+    return light <= .0031308 ? 12.92 * light : 1.055 * std::pow(light, 1 / 2.4) - .055;
+}
 
 // Unit adjustment with a smooth knee at 80% of the available distance.
 // Infinity means no boundary is approached. A rational shoulder retains

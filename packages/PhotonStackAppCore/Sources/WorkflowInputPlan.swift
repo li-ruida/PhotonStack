@@ -67,6 +67,11 @@ public struct WorkflowInputPlan: Identifiable, Codable, Equatable, Sendable {
         guard let values = step.deepSkyValues else { throw WorkflowError("不是完整堆栈步骤 / Not a deep-sky step") }
         var settings = DeepSkySettings()
         settings.values = values
+        // Newly captured steps name their rendering mode. Older on-disk
+        // steps have no color-transfer key and retain the original algorithm.
+        if values["develop.color-transfer"] == nil && schema.fields.contains(where: { $0.key == "develop.color-transfer" }) {
+            settings.values["develop.color-transfer"] = "legacy-code"
+        }
         settings.values["registration.reference"] = "-1"
         settings.values["stack.weights"] = ""
         settings.values["background.exclusions"] = ""

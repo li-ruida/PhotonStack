@@ -22,6 +22,15 @@ function(expect_invalid_numeric name expected_message)
   endif()
 endfunction()
 
+foreach(bad_degree 0 5 2.5 nan -1)
+  expect_invalid_numeric(background_invalid_degree "--polynomial-degree requires an integer in [1,4]"
+    background --input missing.fits --output output.fits --model polynomial --polynomial-degree ${bad_degree})
+endforeach()
+expect_invalid_numeric(background_missing_degree "--polynomial-degree requires an integer in [1,4]"
+  background --polynomial-degree)
+expect_invalid_numeric(background_degree_wrong_model "--polynomial-degree requires the polynomial model"
+  background --input missing.fits --output output.fits --model grid --polynomial-degree 3)
+
 expect_invalid_numeric(green_invalid_method "--green-method requires background or average-neutral"
   color remove-green --green-method other)
 expect_invalid_numeric(green_invalid_preserve "--preserve-lightness requires on or off"
@@ -84,6 +93,11 @@ expect_invalid_numeric(
   develop_nonfinite_star_peak_threshold
   "--star-peak-threshold requires a finite number"
   develop --input missing.fits --output output.tiff --star-peak-threshold nan
+)
+expect_invalid_numeric(
+  develop_nonfinite_sky_percentile
+  "--sky-percentile requires a finite number"
+  develop --input missing.fits --output output.tiff --sky-percentile nan
 )
 
 expect_invalid_numeric(

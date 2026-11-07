@@ -25,7 +25,7 @@ import Testing
     let captured = try WorkflowStep.deepSky(values: ["calibration.darks": "\"/old/dark.fit\"", "stack.method": "maximum",
         "selection.overrides": "reject,keep", "registration.reference": "4", "stack.weights": "0.2,0.8"])
     #expect(captured.step.calibration == [.darks])
-    #expect(captured.step.deepSkyValues == ["stack.method": "maximum"])
+    #expect(captured.step.deepSkyValues == ["stack.method": "maximum", "develop.color-transfer": "linear-light"])
     #expect(!captured.notices.isEmpty)
     #expect(throws: WorkflowError.self) { try WorkflowStep.deepSky(values: ["background.exclusions": "20,30,4,5,0"]) }
 }

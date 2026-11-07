@@ -38,6 +38,9 @@ struct BackgroundGridOptions {
 struct BackgroundPolynomialOptions {
     BackgroundExtractionOptions extraction;
     std::uint32_t columns=32, rows=48;
+    // Total degree, not degree per axis. Two retains the historical quadratic;
+    // higher orders need well-distributed sky samples and target exclusions.
+    std::uint32_t degree=2;
     std::vector<BackgroundExclusionEllipse> exclusions;
 };
 

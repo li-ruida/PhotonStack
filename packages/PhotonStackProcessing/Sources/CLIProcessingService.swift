@@ -113,16 +113,17 @@ private final class ProcessBox: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
     private var cancelled = false
+    private var terminationRequested = false
     private var forceTerminationWorkItem: DispatchWorkItem?
 
     func set(_ process: Process) {
         lock.lock()
         self.process = process
-        let shouldTerminate = cancelled
+        let shouldTerminate = terminationRequested
         lock.unlock()
 
         if shouldTerminate {
-            terminate()
+            terminate(markCancelled: false)
         }
     }
 
@@ -136,12 +137,16 @@ private final class ProcessBox: @unchecked Sendable {
         workItem?.cancel()
     }
 
-    func terminate() {
+    func terminate(markCancelled: Bool = true) {
         lock.lock()
-        cancelled = true
+        cancelled = cancelled || markCancelled
+        terminationRequested = true
         let process = process
         let workItem: DispatchWorkItem?
-        if let process, forceTerminationWorkItem == nil {
+        // A cancellation can arrive before Process.run() launches the child.
+        // Start the grace period only once it is running; run() checks the
+        // request again, so a slow launch cannot consume the escalation timer.
+        if let process, process.isRunning, forceTerminationWorkItem == nil {
             let newWorkItem = DispatchWorkItem { [weak self, weak process] in
                 guard let self, let process else {
                     return
@@ -173,126 +178,20 @@ private final class ProcessBox: @unchecked Sendable {
         return result
     }
 
+    func shouldTerminate() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return terminationRequested
+    }
+
     private func forceTerminateIfNeeded(_ expectedProcess: Process) {
         lock.lock()
-        let shouldTerminate = cancelled && process === expectedProcess
+        let shouldTerminate = terminationRequested && process === expectedProcess
         lock.unlock()
 
         if shouldTerminate, expectedProcess.isRunning {
             Darwin.kill(expectedProcess.processIdentifier, SIGKILL)
         }
-    }
-}
-
-private final class ProcessOutputAccumulator: @unchecked Sendable {
-    private let lock = NSLock()
-    private let jobID: UUID?
-    private let progressScope: ProcessingProgressScope?
-    private var stdout = ""
-    private var stderr = Data()
-    private var stdoutRemainder = Data()
-    private var pendingProgress: ProcessingProgressEvent?
-    private var lastProgressEmission: ContinuousClock.Instant?
-
-    init(jobID: UUID?, progressScope: ProcessingProgressScope?) {
-        self.jobID = jobID
-        self.progressScope = progressScope
-    }
-
-    func appendStdout(_ data: Data) {
-        guard data.isEmpty == false else {
-            return
-        }
-
-        lock.lock()
-        stdoutRemainder.append(data)
-        while let newlineIndex = stdoutRemainder.firstIndex(of: 0x0A) {
-            let lineData = stdoutRemainder[..<newlineIndex]
-            appendStdoutLine(String(decoding: lineData, as: UTF8.self))
-            stdoutRemainder.removeSubrange(stdoutRemainder.startIndex...newlineIndex)
-        }
-        lock.unlock()
-    }
-
-    func finishStdout() {
-        lock.lock()
-        if stdoutRemainder.isEmpty == false {
-            appendStdoutLine(String(decoding: stdoutRemainder, as: UTF8.self))
-            stdoutRemainder.removeAll(keepingCapacity: false)
-        }
-        flushProgress()
-        lock.unlock()
-    }
-
-    func appendStderr(_ data: Data) {
-        guard data.isEmpty == false else {
-            return
-        }
-
-        lock.lock()
-        stderr.append(data)
-        lock.unlock()
-    }
-
-    func snapshot() -> (stdout: String, stderr: String) {
-        lock.lock()
-        let result = (stdout, String(decoding: stderr, as: UTF8.self))
-        lock.unlock()
-        return result
-    }
-
-    private func appendStdoutLine(_ line: String) {
-        if let event = Self.progressEvent(from: line, jobID: jobID, progressScope: progressScope) {
-            // Large stacks emit row-level progress much faster than the UI can
-            // redraw. Keep the newest event, with a guaranteed final flush at EOF.
-            pendingProgress = event
-            let now = ContinuousClock.now
-            if lastProgressEmission.map({ $0.duration(to: now) >= .milliseconds(200) }) ?? true {
-                flushProgress()
-            }
-        } else {
-            stdout += line
-            stdout += "\n"
-        }
-    }
-
-    private func flushProgress() {
-        guard let event = pendingProgress else { return }
-        pendingProgress = nil
-        lastProgressEmission = .now
-        NotificationCenter.default.post(name: .photonStackProcessingProgress, object: event)
-    }
-
-    private static func progressEvent(
-        from line: String,
-        jobID: UUID?,
-        progressScope: ProcessingProgressScope?
-    ) -> ProcessingProgressEvent? {
-        guard line.first(where: { $0.isWhitespace == false }) == "{",
-              let data = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["type"] as? String == "progress",
-              let task = object["task"] as? String,
-              let command = object["command"] as? String,
-              let stage = object["stage"] as? String,
-              let progressNumber = object["progress"] as? NSNumber,
-              CFGetTypeID(progressNumber) != CFBooleanGetTypeID(),
-              progressNumber.doubleValue.isFinite
-        else {
-            return nil
-        }
-
-        let progress = progressNumber.doubleValue
-
-        return ProcessingProgressEvent(
-            jobID: jobID,
-            task: task,
-            command: command,
-            stage: stage,
-            progress: progressScope?.map(progress) ?? progress,
-            step: (object["step"] as? NSNumber)?.intValue,
-            total: (object["total"] as? NSNumber)?.intValue
-        )
     }
 }
 
@@ -1045,7 +944,9 @@ public final class CLIProcessingService: ProcessingService {
                             outputGroup.leave()
                             return
                         }
-                        accumulator.appendStdout(data)
+                        if !accumulator.appendStdout(data) {
+                            processBox.terminate(markCancelled: false)
+                        }
                     }
                 }
                 outputGroup.enter()
@@ -1072,6 +973,11 @@ public final class CLIProcessingService: ProcessingService {
                         if processBox.isCancelled() {
                             outputTransaction?.cleanUp()
                             continuation.resume(throwing: CancellationError())
+                        } else if output.stdoutExceededLimit {
+                            outputTransaction?.cleanUp()
+                            continuation.resume(throwing: ProcessingServiceError.commandOutputLimitExceeded(
+                                maximumBytes: ProcessOutputAccumulator.standardOutputLimit
+                            ))
                         } else if process.terminationStatus == 0 {
                             if let expectedOutput = Self.expectedOutput(in: processArguments) {
                                 let outputPath = outputTransaction?.destinationURL.path ?? expectedOutput.path
@@ -1123,11 +1029,16 @@ public final class CLIProcessingService: ProcessingService {
 
                 do {
                     try process.run()
-                    if processBox.isCancelled() {
-                        processBox.terminate()
+                    if processBox.shouldTerminate() {
+                        processBox.terminate(markCancelled: false)
                     }
                 } catch {
                     processBox.clear()
+                    // No child owns these writers after a failed launch. Closing
+                    // them releases the pipe-draining workers instead of leaving
+                    // each worker waiting for EOF while it retains its own pipe.
+                    try? outputPipe.fileHandleForWriting.close()
+                    try? errorPipe.fileHandleForWriting.close()
                     outputTransaction?.cleanUp()
                     continuation.resume(throwing: error)
                 }

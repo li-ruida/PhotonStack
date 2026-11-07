@@ -5,6 +5,11 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#ifdef __APPLE__
+#include <CommonCrypto/CommonDigest.h>
+#else
+#include <openssl/evp.h>
+#endif
 #include <limits>
 #include <new>
 #include <vector>
@@ -17,13 +22,112 @@ double median(std::vector<double> values) {
     return *mid;
 }
 struct PixelChange { std::size_t offset; double lift, capacity; };
+
+using Digest = std::array<unsigned char, 32>;
+
+// Hash the actual scientific mosaic consumed by Malvar, including the
+// finite-pixel mask. No second file read or pathname-only identity check.
+std::optional<Digest> digestMosaic(std::span<const float> mosaic) {
+    Digest digest{};
+    const auto bytes = std::as_bytes(mosaic);
+#ifdef __APPLE__
+    CC_SHA256_CTX context;
+    if (!CC_SHA256_Init(&context)) return {};
+    for (std::size_t offset = 0; offset < bytes.size();) {
+        const auto n = std::min<std::size_t>(bytes.size() - offset, std::numeric_limits<CC_LONG>::max());
+        if (!CC_SHA256_Update(&context, bytes.data() + offset, static_cast<CC_LONG>(n))) return {};
+        offset += n;
+    }
+    if (!CC_SHA256_Final(digest.data(), &context)) return {};
+#else
+    unsigned int length = 0;
+    if (EVP_Digest(bytes.data(), bytes.size(), digest.data(), &length, EVP_sha256(), nullptr) != 1 ||
+        length != digest.size()) return {};
+#endif
+    return digest;
 }
 
-void guardDemosaicStars(ImageBuffer& image, std::span<const float> mosaic,
-                       const std::array<int, 4>& colors,
-                       const std::array<float, 3>& gains) {
+bool repairAperture(ImageBuffer& image, std::span<const float> mosaic,
+                    const std::array<int, 4>& colors, const GuardAperture& aperture) {
+    const int w = image.width, x = std::lround(aperture.x), y = std::lround(aperture.y);
+    const double radius = aperture.radius;
+    const auto color = [&](int xx, int yy) { return colors[(yy % 2) * 2 + xx % 2]; };
+    const int extent = std::ceil(radius);
+    std::array<std::vector<PixelChange>, 3> changes;
+    std::array<double, 3> lifted{}, capacity{};
+    for (int dy = -extent; dy <= extent; ++dy)
+        for (int dx = -extent; dx <= extent; ++dx) {
+            if (std::hypot(x + dx - aperture.x, y + dy - aperture.y) >= radius) continue;
+            const auto p = std::size_t(y + dy) * w + x + dx;
+            for (int c = 0; c < 3; ++c) {
+                if (color(x + dx, y + dy) == c) continue;
+                // A negative scientific sky is legitimate. The bound is
+                // relative to measured local sky and its noise, never zero.
+                double lower = aperture.sky[c];
+                for (int yy = -1; yy <= 1; ++yy)
+                    for (int xx = -1; xx <= 1; ++xx)
+                        if (color(x + dx + xx, y + dy + yy) == c)
+                            lower = std::min(lower, double(mosaic[std::size_t(y + dy + yy) * w + x + dx + xx]));
+                lower -= 3 * aperture.noise[c];
+                const double original = image.pixels[p * 4 + c];
+                const double lift = std::max(0., lower - original);
+                const double positive = std::max(0., original - aperture.sky[c] - 3 * aperture.noise[c]);
+                changes[c].push_back({p * 4 + c, lift, positive});
+                lifted[c] += lift; capacity[c] += positive;
+            }
+        }
+    bool changed = false;
+    for (int c = 0; c < 3; ++c) {
+        if (lifted[c] <= 0 || capacity[c] <= 0 || lifted[c] > .75 * capacity[c]) continue;
+        // Redistribute only among interpolated samples of this aperture.
+        // Clamping alone would systematically brighten weak color channels.
+        const double fraction = lifted[c] / capacity[c];
+        for (const auto& change : changes[c])
+            image.pixels[change.offset] = static_cast<float>(image.pixels[change.offset] +
+                change.lift - fraction * change.capacity);
+        changed = true;
+    }
+    return changed;
+}
+}
+
+void GuardReplay::discard() {
+    identity_.reset();
+    std::vector<GuardAperture>().swap(apertures_);
+    use_ = Use::unused;
+}
+
+bool GuardReplay::append(const GuardAperture& aperture) {
+    if (apertures_.size() >= limit_) return false;
+    try {
+        if (apertures_.size() == apertures_.capacity()) {
+            const auto next = std::max<std::size_t>(8, 2 * apertures_.size());
+            apertures_.reserve(std::min(next, limit_));
+        }
+        apertures_.push_back(aperture);
+        return true;
+    } catch (const std::bad_alloc&) {
+        return false;
+    }
+}
+
+bool guardDemosaicStars(ImageBuffer& image, std::span<const float> mosaic,
+                        const std::array<int, 4>& colors, const std::array<float, 3>& gains,
+                        GuardReplay* replay, bool maskNonFinite) {
     const int w = image.width, h = image.height;
-    if (w < 48 || h < 48) return;
+    if (w < 48 || h < 48) return true;
+    std::optional<GuardReplay::Identity> identity;
+    if (replay && replay->limit_) {
+        if (const auto digest = digestMosaic(mosaic))
+            identity = GuardReplay::Identity{*digest, image.width, image.height, colors, gains, maskNonFinite};
+        if (identity && replay->identity_ == identity) {
+            replay->use_ = GuardReplay::Use::replayed;
+            for (const auto& aperture : replay->apertures_)
+                if (!repairAperture(image, mosaic, colors, aperture)) return false;
+            return true;
+        }
+        replay->discard();
+    }
     const auto color = [&](int x, int y) { return colors[(y % 2) * 2 + x % 2]; };
     ImageBuffer mono;
     mono.width = w; mono.height = h; mono.channels = 1;
@@ -38,7 +142,7 @@ void guardDemosaicStars(ImageBuffer& image, std::span<const float> mosaic,
     options.minPeak = std::numeric_limits<float>::lowest(); options.sigmaThreshold = 8; options.border = 22;
     options.maxStars = 5000; options.robustStatistics = true; options.countAllDetections = true;
     const auto detected = StarDetector().detectLuminance(w, h, mono.pixels, options);
-    if (!detected.ok) return;
+    if (!detected.ok) return true;
     for (std::size_t p = 0; p < image.pixelCount(); ++p)
         if (!std::isfinite(mosaic[p])) mono.pixels[p] = std::numeric_limits<float>::quiet_NaN();
     const auto& stars = detected.stars;
@@ -97,46 +201,24 @@ void guardDemosaicStars(ImageBuffer& image, std::span<const float> mosaic,
         const double noiseL = std::sqrt(std::pow(.2126 * gains[0] * noise[0], 2) +
             std::pow(.7152 * gains[1] * noise[1], 2) + std::pow(.0722 * gains[2] * noise[2], 2));
         if (stars[i].peak - skyL < 50 * noiseL) continue;
-        const int extent = std::ceil(radius);
-        std::array<std::vector<PixelChange>, 3> changes;
-        std::array<double, 3> lifted{}, capacity{};
-        for (int dy = -extent; dy <= extent; ++dy)
-            for (int dx = -extent; dx <= extent; ++dx) {
-                if (std::hypot(x + dx - fit.x, y + dy - fit.y) >= radius) continue;
-                const auto p = std::size_t(y + dy) * w + x + dx;
-                for (int c = 0; c < 3; ++c) {
-                    if (color(x + dx, y + dy) == c) continue;
-                    // A negative scientific sky is legitimate. The bound is
-                    // relative to measured local sky and its noise, never zero.
-                    double lower = sky[c];
-                    for (int yy = -1; yy <= 1; ++yy)
-                        for (int xx = -1; xx <= 1; ++xx)
-                            if (color(x + dx + xx, y + dy + yy) == c)
-                                lower = std::min(lower, double(mosaic[std::size_t(y + dy + yy) * w + x + dx + xx]));
-                    lower -= 3 * noise[c];
-                    const double original = image.pixels[p * 4 + c];
-                    const double lift = std::max(0., lower - original);
-                    const double positive = std::max(0., original - sky[c] - 3 * noise[c]);
-                    changes[c].push_back({p * 4 + c, lift, positive});
-                    lifted[c] += lift; capacity[c] += positive;
-                }
+        const GuardAperture aperture{fit.x, fit.y, radius, sky, noise};
+        if (repairAperture(image, mosaic, colors, aperture)) {
+            if (identity && !replay->append(aperture)) {
+                // Partial aperture lists can never be replayed.
+                identity.reset();
+                replay->discard();
             }
-        bool changed = false;
-        for (int c = 0; c < 3; ++c) {
-            if (lifted[c] <= 0 || capacity[c] <= 0 || lifted[c] > .75 * capacity[c]) continue;
-            // Redistribute only among interpolated samples of this aperture.
-            // Clamping alone would systematically brighten weak color channels.
-            const double fraction = lifted[c] / capacity[c];
-            for (const auto& change : changes[c])
-                image.pixels[change.offset] = static_cast<float>(image.pixels[change.offset] +
-                    change.lift - fraction * change.capacity);
-            changed = true;
-        }
-        if (changed)
+            const int extent = std::ceil(radius);
             for (int dy = -extent; dy <= extent; ++dy)
                 for (int dx = -extent; dx <= extent; ++dx)
                     if (std::hypot(x + dx - fit.x, y + dy - fit.y) < radius)
                         occupied[std::size_t(y + dy) * w + x + dx] = 1;
+        }
     }
+    if (identity) {
+        replay->identity_ = identity;
+        replay->use_ = GuardReplay::Use::captured;
+    }
+    return true;
 }
 }

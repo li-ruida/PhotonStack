@@ -38,10 +38,20 @@ tools/scripts/build.sh debug
 tools/scripts/test.sh debug
 ```
 
+Run the macOS Swift tests with the isolated runner. Some workspace tests save recent projects and settings through the default Application Support directory.
+
+```bash
+tools/scripts/test-swift.sh
+tools/scripts/test-swift.sh --filter savedProjectRestoresSelectedAssetAndPreviewBranchForExport
+```
+
+The runner creates a private temporary Foundation home and build directory, and macOS blocks writes from the test processes to your real home directory. Set `PHOTONSTACK_TEST_CLI` to the absolute path of a built CLI to enable the CLI integration tests. To reuse build products across runs, set `PHOTONSTACK_TEST_SCRATCH_PATH` to a private directory outside your home, such as one created with `mktemp -d /private/tmp/PhotonStackSwiftBuild.XXXXXXXX`.
+
 ## Script Reference
 
 - `tools/scripts/build.sh`: configure and build the CMake targets
-- `tools/scripts/test.sh`: configure, build, and run the test suite
+- `tools/scripts/test.sh`: configure, build, and run the CMake tests
+- `tools/scripts/test-swift.sh`: run SwiftPM tests with isolated app settings on macOS
 - `tools/scripts/format.sh`: apply the repository C++ formatting rules
 - `tools/scripts/build-macos.sh`: build the SwiftPM macOS app target
 - `tools/scripts/package-macos.sh`: package the macOS app bundle and embedded CLI

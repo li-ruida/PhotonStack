@@ -14,6 +14,7 @@ let package = Package(
         .library(name: "PhotonStackProcessing", targets: ["PhotonStackProcessing"]),
         .library(name: "PhotonStackUI", targets: ["PhotonStackUI"]),
         .executable(name: "PhotonStackMac", targets: ["PhotonStackMac"]),
+        .executable(name: "PhotonStackQualityQA", targets: ["PhotonStackQualityQA"]),
     ],
     targets: [
         .target(
@@ -127,6 +128,12 @@ let package = Package(
             name: "PhotonStackUITests",
             dependencies: ["PhotonStackUI"],
             path: "packages/PhotonStackUI/Tests"
+        ),
+        .executableTarget(
+            name: "PhotonStackQualityQA",
+            dependencies: ["PhotonStackAppCore", "PhotonStackProcessing", "PhotonStackUI"],
+            path: "tools/PhotonStackQualityQA",
+            exclude: ["Info.plist"]
         ),
         .executableTarget(
             name: "PhotonStackMac",

@@ -1,4 +1,5 @@
 #include "photonstack/StarColorCleanup.hpp"
+#include "DisplayPhotometry.hpp"
 #include "photonstack/AstroDevelop.hpp"
 #include <algorithm>
 #include <cmath>
@@ -106,7 +107,8 @@ int main() {
     require(before.ok && after.ok && after.colorCleanedStars>0 && after.adjustedStars>0,"cleanup composes with star exposure");
     for (std::size_t p=0;p<im.pixelCount();++p) {
         double delta=0; const double w[]={.2126,.7152,.0722};
-        for(int c=0;c<3;++c)delta+=w[c]*(after.image.pixels[p*4+c]-before.image.pixels[p*4+c]);
+        for (int c = 0; c < 3; ++c)
+            delta += w[c] * (displayLight(after.image.pixels[p*4+c]) - displayLight(before.image.pixels[p*4+c]));
         require(std::abs(delta)<.000002,"developed luminance preserved after exposure adjustment");
     }
     std::cout << "Stars " << cleaned.correctedStars << ", max linear luminance difference " << maxL << '\n';

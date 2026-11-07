@@ -98,8 +98,22 @@ int main(int argc, char**) {
                 equal(serial, Stacker().stack(paths, options));
                 require(fs::is_empty(cache));
             }
+            // Force a tile smaller than one row, not a multiple of the width.
+            // All methods, masks, signed rejection counters and independent
+            // half-stack diagnostics must match the default full-row path.
+            auto splitRows = options;
+            splitRows.combineTileBytes = frameCount * 4 * sizeof(float) * 17 + 13;
+            equal(serial, Stacker().stack(paths, splitRows));
+            require(fs::is_empty(cache));
         }
     }
+    auto insufficientBudget = options;
+    insufficientBudget.combineTileBytes = frameCount * 4 * sizeof(float) - 1;
+    std::size_t released = 0;
+    insufficientBudget.inputConsumed = [&](std::size_t) { ++released; };
+    const auto insufficient = Stacker().stack(paths, insufficientBudget);
+    require(!insufficient.ok && insufficient.errorCode == "StackTileBudgetInsufficient" && released == 0);
+    require(fs::is_empty(cache));
     // A UI cancellation/progress exception happens on its original caller and
     // cleans the cache after workers are joined; it must not strand a thread.
     options.method = StackMethod::SigmaClip;
@@ -145,4 +159,27 @@ int main(int argc, char**) {
         require(rowResult.image.pixels[p + 3] == 1);
     }
     for (const auto count : rowResult.comparedSamples) require(count == 1024 * 701 * 3);
+
+    // A one-pixel tile exercises every row boundary and the minimum legal
+    // budget. Analytical means expose cursor errors even if both modes share
+    // the same implementation. Keep this fixture small enough for fast tests.
+    std::vector<fs::path> singlePixelPaths;
+    for (unsigned frame = 0; frame < 6; ++frame) {
+        ImageBuffer a;
+        a.width = 7; a.height = 5; a.pixels.resize(a.sampleCount());
+        for (std::size_t pixel = 0; pixel < a.pixelCount(); ++pixel) {
+            for (unsigned c = 0; c < 3; ++c) a.pixels[pixel * 4 + c] = float(pixel * 10 + frame) + .25F * c;
+            a.pixels[pixel * 4 + 3] = 1;
+        }
+        singlePixelPaths.push_back(root / ("single-pixel-" + std::to_string(frame) + ".fits"));
+        require(FitsCodec().write(a, singlePixelPaths.back()).ok);
+    }
+    rowsOptions.combineTileBytes = 6 * 4 * sizeof(float);
+    const auto singlePixel = Stacker().stack(singlePixelPaths, rowsOptions);
+    require(singlePixel.ok && fs::is_empty(cache));
+    for (std::size_t pixel = 0; pixel < 35; ++pixel) {
+        for (unsigned c = 0; c < 3; ++c)
+            require(singlePixel.image.pixels[pixel * 4 + c] == float(pixel * 10) + 2.5F + .25F * c);
+        require(singlePixel.image.pixels[pixel * 4 + 3] == 1);
+    }
 }

@@ -18,7 +18,34 @@ public struct DeepSkySettings: Codable, Equatable, Sendable {
     /// Path-keyed overrides remain attached to the correct exposure after reordering.
     public var overrides: [String: String] = [:]
     public var lastReport: DeepSkyReport?
+    // Saved projects keep sparse overrides. Distinguish historical implicit
+    // Sigma/MAD settings from a new project's current engine defaults.
+    private var stackDefaultsVersion = 2
+    // Old project files stored only changed values, so an absent color mode
+    // referred to the original rendering. New sparse files record their default.
+    private var colorTransferDefaultsVersion = 2
     public init() {}
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        values = try container.decode([String: String].self, forKey: .values)
+        overrides = try container.decode([String: String].self, forKey: .overrides)
+        lastReport = try container.decodeIfPresent(DeepSkyReport.self, forKey: .lastReport)
+        if let saved = try container.decodeIfPresent(Int.self, forKey: .colorTransferDefaultsVersion) {
+            colorTransferDefaultsVersion = saved
+        } else if values["develop.color-transfer"] == nil {
+            values["develop.color-transfer"] = "legacy-code"
+        }
+        let savedDefaults = try container.decodeIfPresent(Int.self, forKey: .stackDefaultsVersion) ?? 1
+        if savedDefaults == 1 {
+            let method = values["stack.method"] ?? "sigma"
+            values["stack.method"] = method
+            values["stack.median-mad"] = values["stack.median-mad"] ?? (method == "sigma" ? "on" : "off")
+        } else {
+            stackDefaultsVersion = savedDefaults
+        }
+    }
 
     private static func quoted(_ value: String) -> String {
         "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
@@ -55,17 +82,18 @@ public struct DeepSkySettings: Codable, Equatable, Sendable {
             guard !text.contains("\n"), !text.contains("\r"), !text.contains("\0") else { throw DeepSkyRecipeError.invalidText }
             return "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
         }
+        let paths = inputs.map(PhotonStackProject.assetIdentityPath(for:))
         var lines = ["PHOTONSTACK_DEEP_SKY_RECIPE \(version)"]
         for field in schema.fields {
             let value: String
             if field.key == "selection.overrides" {
-                value = inputs.map { overrides[PhotonStackProject.assetIdentityPath(for: $0)] ?? "auto" }.joined(separator: ",")
+                value = paths.map { overrides[$0] ?? "auto" }.joined(separator: ",")
             } else {
                 value = values[field.key] ?? field.defaultValue
             }
             lines.append("\(field.key) \(try quote(value))")
         }
-        for input in inputs { lines.append("input \(try quote(PhotonStackProject.assetIdentityPath(for: input)))") }
+        for path in paths { lines.append("input \(try quote(path))") }
         return lines.joined(separator: "\n") + "\n"
     }
 }
@@ -94,6 +122,7 @@ public struct DeepSkyInspectedRecipe: Decodable, Sendable {
 public struct DeepSkyReport: Codable, Equatable, Sendable {
     public var version: Int
     public var success, analysisOnly: Bool
+    public var masterReused: Bool? = nil
     public var inputCount, selectedCount, referenceIndex: Int
     public var recipe, errorCode, message: String
     public var master, backgroundMaster, developed, rejectionLow, rejectionHigh: String
@@ -102,6 +131,9 @@ public struct DeepSkyReport: Codable, Equatable, Sendable {
     public var noiseReferenceManifest: String? = nil
     public var noiseReferenceInputs: String? = nil
     public var independentLuminanceNoise: Bool? = nil
+    /// Uses this run's background-corrected image for global tone statistics.
+    /// Missing in historical reports means unknown, not a verified lock.
+    public var denoiseStretchLocked: Bool? = nil
     public var noiseReferencePaths: [String] {
         [noiseReference, noiseReferenceManifest, noiseReferenceInputs].compactMap { $0 }.filter { !$0.isEmpty }
     }
@@ -109,6 +141,15 @@ public struct DeepSkyReport: Codable, Equatable, Sendable {
     public var crop: Crop? = nil
     public var masterSHA256: String? = nil
     public var developedSHA256: String? = nil
+    /// Display-domain measurements, not a quality pass or acquisition clipping.
+    /// Missing on historical reports means unavailable, never zero defects.
+    public var displayReview: DisplayReview? = nil
+    public struct DisplayReview: Codable, Equatable, Sendable {
+        public var version: Int
+        public var pixels, nearBlackPixels, nearWhitePixels: UInt64
+        public var nearBlackFraction: Double { pixels > 0 ? Double(nearBlackPixels) / Double(pixels) : 0 }
+        public var nearWhiteFraction: Double { pixels > 0 ? Double(nearWhitePixels) / Double(pixels) : 0 }
+    }
     public struct Crop: Codable, Equatable, Sendable {
         public var x, y, width, height: Int
     }
@@ -140,6 +181,16 @@ public struct DeepSkyReport: Codable, Equatable, Sendable {
         }
     }
     public func validate() throws {
+        if denoiseStretchLocked == true && (!success || analysisOnly) {
+            throw DeepSkyRecipeError.invalidReport
+        }
+        if let review = displayReview {
+            guard success, !analysisOnly, review.version == 1, review.pixels > 0,
+                  review.nearBlackPixels <= review.pixels,
+                  review.nearWhitePixels <= review.pixels - review.nearBlackPixels else {
+                throw DeepSkyRecipeError.invalidReport
+            }
+        }
         guard version == 1, inputCount >= 0, inputCount <= 2000, inputCount == frames.count,
               Set(frames.map(\.index)) == Set(0..<inputCount),
               Set(frames.map(\.input)).count == inputCount,

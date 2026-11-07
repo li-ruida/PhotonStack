@@ -31,7 +31,7 @@ Reports identify complete star counting with `starCountEstimator: "deduplicated-
 1. Optional dark, bias and flat masters. Calibration is linear and preserves negative samples. FITS calibration runs on sensor samples before CFA interpolation, using the original Bayer pattern and offsets. Camera RAW calibration uses the existing linear RAW decoder. Explicit bias-included/removed states prevent subtracting bias twice.
 2. Scientific decoding, default `malvar-guarded` FITS CFA reconstruction, and native quality measurements. The guard constrains significant negative interpolation lobes around isolated bright stars, retaining measured CFA samples and each repaired aperture's integrated RGB. It does not sharpen stars or reconstruct saturated cores. Existing recipes with `malvar`, or with no decoder field, retain the original interpolation. Changing this setting requires rebuilding the stack; finish-only processing cannot apply it to an existing master. An automatically chosen reference or explicit zero-based reference index defines the output coordinates. Similarity registration and bicubic interpolation are defaults. A frame is interpolated once; the stack does not register it again.
 3. Frame assessment and manual overrides. Invalid decoding/registration cannot be overridden into a valid frame. The default selection safeguard requires at least three frames and half of the input sequence.
-4. Additive background normalization and stack rejection. Sigma clipping defaults to three iterations of weighted median/MAD rejection at ±3 sigma. `stack.method` accepts `average`, `weighted`, `median`, `sigma`, `winsorized`, `percentile`, `maximum`, and `minimum`. MAD is only valid for Sigma; average and extrema modes have no rejection maps. Weights follow recipe input order and are invalid for maximum/minimum. The app clears incompatible dependencies when switching modes; imported recipes remain strictly validated.
+4. Additive background normalization and stack rejection. New deep-sky recipes use a Winsorized mean: bound extreme samples at ±3 robust sigma and average their contributions. This reduces isolated color peaks caused by one-sided rejection in short sequences. In explicit iterative Sigma/MAD mode, the first pass estimates scatter from all covered samples; later passes may refine the center using that same scatter. Historical v1 text recipes that omit the method still select Sigma/MAD. Saved projects with historical implicit stack settings retain their method when reopened. `stack.method` accepts `average`, `weighted`, `median`, `sigma`, `winsorized`, `percentile`, `maximum`, and `minimum`. MAD is only valid for Sigma; average and extrema modes have no rejection maps. Weights follow recipe input order and are invalid for maximum/minimum. The app clears incompatible dependencies when switching modes; imported recipes remain strictly validated.
 
    Maximum (Lighten) and Minimum (Darken) select finite covered samples independently per color channel, preserving signed/HDR values. Missing samples cannot win; fully uncovered pixels are zero. Alpha records mean input coverage, consistently with the other modes. Extrema use streaming accumulation rather than a full-sequence scratch cache. For star trails select maximum and `registration.mode=none`; maximum also preserves aircraft/satellite lights, so artifact cleanup is separate. The app's star-trail composition shortcut also turns off per-frame sky normalization and automatic frame rejection, retaining explicit manual decisions and all finishing settings. It is not an automatic cleanup/finishing preset.
 
@@ -39,11 +39,33 @@ Reports identify complete star counting with `starCountEstimator: "deduplicated-
 
 ### Channel alignment and low-SNR display color
 
+New projects and generated recipes use `develop.color-transfer "linear-light"` for display development. It applies color in linear RGB before encoding the displayed channels. Saved version-1 recipes, project settings and reusable workflows that predate this field retain `legacy-code` for historical rendering. To use the new mode on an existing result, open **Color & development → Display color rendering → Linear light (default)** and choose **Reprocess master**. The setting affects the developed image and can reuse the existing scientific stack and frame assessment.
+
+`develop.sky-percentile` controls the per-channel background reference used by
+display development, in [0.05, 0.5]. The default 0.5 retains the historical
+whole-frame median and replays old recipes unchanged. On an extended nebula,
+that median may contain real emission; a lower reference such as 0.2 can retain
+more diffuse signal. This is not an automatic sky measurement or photometric
+calibration, and it may lift noise, gradients and channel-dependent bias. Remove
+gradients first and compare faint structure before adoption. It is distinct from
+`develop.background`, which sets the displayed brightness at the reference.
+Statistical stellar white-balance selection remains independent of this control. Sky percentiles use a bounded, repeatable sample of fully covered pixels. The bright-star cutoff uses full-resolution peaks. If fewer than eight usable stars survive the first measurement, the engine retries detection against median/MAD sky statistics and requires significant local flux in all three bands for additional calibrators.
+The linear master is unchanged; `development.sky` in the report records the
+actual subtracted references in input units. Only finishing needs to be rerun.
+
 After common-coverage cropping, `develop.align-channels` (on by default) estimates red/blue displacement relative to green from compact stellar Gaussian fits. A correction requires at least 12 consistent matches spread over at least three image quadrants, low median scatter, and a significant shift between 0.05 and 1.5 pixels. Spatially inconsistent offsets, insufficient stars and already aligned channels are left unchanged. This corrects a global translation, not field-dependent aberration or every CFA artifact. Normalized separable Lanczos-3 shifts only the accepted color channels; green and alpha are unchanged. Samples beyond the image boundary use reflection. Original stack files are never overwritten. `report.json` records accepted shifts, scatter and sample counts for each channel.
 
 `develop.shadow-neutralization` (workflow default 0.8, 0 disables) reduces display chroma when the linear signal is weak relative to three robust sky-noise sigmas. It retains the luminance transfer exactly and leaves high-SNR color almost unchanged. This changes the rendering, not the linear master, and may reduce real but low-SNR faint color; it does not recover missing detail. The standalone `develop --shadow-neutralization` option defaults to 0 for explicit command-line reproduction. The App exposes this as **Background color noise** in development controls and preserves it in operation replay; historical records without the field retain their prior rendering.
 
 ### Background and correlated color noise
+
+`background.polynomial-degree` selects total degree 1–4, default 2 for unchanged
+legacy replay. Higher orders may fit complex gradients, but may also overfit
+nebular emission or extrapolate poorly across large protected areas. Use target
+exclusions and well-distributed sky samples; compare faint structure as well as
+background smoothness. Insufficient or singular samples fail explicitly rather
+than silently falling back to another degree. Changing this finishing option
+does not require a new stack. The schema-driven App exposes the same parameter.
 
 `background.extrapolate-edges` continues the grid surface by at most half a cell beyond its outer sample centers. This avoids leaving the image border uncorrected on a sloping background. Target exclusion ellipses apply to both the polynomial and grid stages, in the original reference-frame coordinates. Grid resolution should remain coarse enough to distinguish sky variation from the subject; exclusion regions are particularly useful when increasing the grid density.
 
@@ -60,7 +82,7 @@ by the App/recipe workflow. In particular, a noise realization before nonlinear
 denoising is not a valid substitute for noise after that operation. With no
 reference supplied, the existing processing path is unchanged.
 
-The workbench's **Reprocess master / 更新背景与降噪** action reuses the last completed scientific master when inputs, selection, calibration and stack settings match. Only crop, background, denoising and development settings may differ. The App checks source sizes and nanosecond modification times before reuse, keeps the original assessment and rejection-map provenance, and writes a new output directory. An imported recipe with the same input sequence retains the previous report so this route remains available. A new analysis-only report does not itself provide a reusable master.
+The workbench's **Reprocess master / 从母版重新显影** action reuses the last completed scientific master when inputs, selection, calibration and stack settings match. Only crop, background, denoising and development settings may differ. The App checks source sizes and nanosecond modification times before reuse, keeps the original assessment and rejection-map provenance, and writes a new output directory. An imported recipe with the same input sequence retains the previous report so this route remains available. A new analysis-only report does not itself provide a reusable master.
 
 Changing finishing settings keeps the frame assessment and planned count valid. The workbench and overview identify the displayed image as the previous result until reprocessing succeeds (or the original settings are restored). Changing manual selections also leaves frame measurements valid, but requires a new stack. Source, calibration, registration and assessment-setting changes still invalidate the assessment. Saving diagnostic denoise stages affects file retention only and does not mark the rendered image out of date. Older recipes that omit the scene-based noise estimator use the same default as an explicit `denoise.noise-model "scene"`.
 
@@ -82,7 +104,7 @@ The App exposes all fields returned by the recipe schema. Color/development cont
 
 ## Interpreting assessment
 
-Scientific noise is measured with a local diagonal high-pass MAD estimator in input units. It rejects a planar gradient and is not a scene-wide min/max-normalized brightness spread. Stellar detection for assessment uses median/MAD thresholds so an isolated bright trail does not suppress stars throughout the image. Stellar width and shape are measured on a bounded image and reported in native-pixel units; they are comparative quality metrics, not a calibrated optical PSF measurement. Detection retains at most 1,000 stars, so the reported count is not a full star catalog.
+Scientific noise is measured with a local diagonal high-pass MAD estimator in input units. It rejects a planar gradient and is not a scene-wide min/max-normalized brightness spread. Stellar detection for assessment uses median/MAD thresholds so an isolated bright trail does not suppress stars throughout the image. Detection counts all separated candidates on a bounded image, retaining the brightest candidates for native-pixel shape fitting (up to 512 attempts and 128 accepted fits). Stellar widths and shapes are comparative quality metrics, not a calibrated optical PSF measurement or a full star catalog. Older reports may contain the capped count and older shape estimator; see the estimator identifiers and native stellar shape section below.
 
 After registration, additive sky levels are removed before comparing each sampled pixel with the median of the other covered frames. Both positive and negative residual fractions are reported. Persistent nebula structure is present in the comparison frames and is not, by itself, a transient. Too few comparison frames are explicitly reported as insufficient evidence.
 
@@ -108,6 +130,72 @@ structure and star profiles as well as grain; a cleaner background alone does
 not demonstrate improved detail.
 
 ## Outputs and storage
+
+### Stable tone while tuning noise reduction
+
+`develop.lock-denoise-stretch "on"` estimates global sky, statistical stellar
+balance, shadow-noise scale, automatic tone scale and white point from this run's
+background-corrected image **before all denoisers**. It is the same image already
+saved as `stack-background.fits`, with the same calibration, channel alignment,
+crop and physical units. No external reference is selected. Changing NLM,
+multiscale or background-denoise strengths then cannot re-estimate the global
+transfer from their changing noise. Local star-exposure and color-cleanup
+operations still depend on each processed image; disable them for an exactly
+shared pointwise comparison. This feature does not restore missing signal or
+guarantee preserved structure within the denoisers themselves.
+
+The default is `off`, including old recipes that omit the field. The App exposes
+the switch in **Color & development**, persists it with the project/recipe and
+marks the displayed result outdated when toggled. It can reuse the current
+scientific master without repeating frame assessment or stacking, provided the
+usual source/master checks still pass. A rendered report's `denoiseStretchLocked`
+records whether this reference was actually used; false for analysis-only runs,
+absent/unknown on historical reports. The result-review panel displays the source.
+
+Changing background correction, crop, channel alignment, or development settings
+still changes the reference or its transfer: this is not a lock across arbitrary
+edits or runs. For comparisons keep those settings fixed. The option retains one
+additional full-size float image in memory (about127MiB for2160×3840 RGBA), but
+adds no extra disk snapshot. It is independent of `denoise.noise-model`: the scene
+tone reference is not the independent zero-signal noise diagnostic.
+
+### Display review is not quality approval
+
+Successful rendered runs include `displayReview` in `report.json`: `version: 1`,
+`pixels`, `nearBlackPixels`, and `nearWhitePixels`. Counts describe final
+display-domain RGB before export quantization, not the linear master or sensor
+clipping. Near black requires **all three channels <= 1/255**; near white requires
+**all three channels >= 0.995**. Uncovered or invalid input pixels are excluded
+from the denominator. Failed and analysis-only runs report `null`; older reports
+may omit the field. Missing measurements are unavailable, not zero defects.
+Adding these counters does not change the rendered pixels.
+
+The App's completed-result panel offers image review, a return to finishing,
+and a return to source-frame review when source records exist. The last action
+clears the search and opens Attention (or All if no frame needs attention),
+without changing any keep/reject decisions. Its source summary distinguishes
+stacked frames, excluded frames, and stacked frames with assessment cues.
+Repeated codes count once per exposure; different cues may describe the same
+frame. Alignment/decode failures are reported separately as excluded, not as
+contributors to the final image. No total exposure is inferred from frame count.
+Selected-frame reasons and warnings remain visible, including unfamiliar codes
+from newer reports. Transient candidates are not proof of residual airplane
+trails: inspect their locations and pixel rejection results before discarding
+entire exposures. Missing stellar/temporal measurements are not quality passes.
+The expandable details scroll within the fixed-height workspace.
+
+It prompts review at >=1% near-black or >=0.1% near-white pixels, with additional
+cues for fewer than eight selected frames, manually retained non-recommended
+frames, and reused masters. These are review thresholds, not quality grades:
+dark sky may legitimately be near black, and bright stars may be near white.
+Inspect the entire image and native 100% detail for texture, color, stellar
+profiles and gradients. These counters cannot detect or repair those defects.
+Opening the image uses the existing preview; choose its 100% zoom explicitly.
+Master reuse preserves earlier frame assessment but does not repeat screening,
+registration or stacking. Later standalone image edits do not refresh this run's
+measurements; they describe the deep-sky run's own output only.
+
+### Retained files
 
 Full runs retain `stack-linear.fits`, `stack-background.fits`, `developed.tiff`, optional `rejection-low.fits`/`rejection-high.fits`, calibration masters when supplied, `recipe.txt` and `report.json`. The rejection images give per-channel rejected fractions of covered input samples. Per-frame report counters distinguish compared samples from low/high rejected samples; Winsorized counters describe samples bounded rather than removed. The linear stack retains coverage in alpha. Background fitting and denoising precede display development.
 

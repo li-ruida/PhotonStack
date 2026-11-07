@@ -1042,40 +1042,76 @@ void populateSimilaritySummary(RegistrationResult& result, const AffineTransform
     };
 }
 
-RegistrationResult detectMatchedPairs(const ImageBuffer& reference, const ImageBuffer& moving,
+// Matching hypotheses share detections from the same pixels and detection options.
+// Distortion's denser local fit builds its own catalogs when it raises the star limit.
+struct RegistrationCatalogs {
+    const ImageBuffer& reference;
+    const ImageBuffer& moving;
+    std::vector<Star> ownedReferenceStars;
+    std::span<const Star> referenceStars;
+    std::vector<Star> movingStars;
+    RegistrationResult status;
+
+    RegistrationCatalogs(const ImageBuffer& ref, const ImageBuffer& target, const RegistrationOptions& options,
+                         const StarDetectionResult* prepared = nullptr)
+        : reference(ref), moving(target) {
+        const bool referenceValid = prepared && prepared->ok ? validImageStructure(reference) : validImageBuffer(reference);
+        if (!referenceValid || !validImageBuffer(moving) || reference.channels != moving.channels) {
+            status = registrationError("ImageBufferInvalid", "Reference and moving images must be finite matching buffers");
+            return;
+        }
+        if (!validRegistrationOptions(options)) {
+            status = registrationError("ArgumentInvalid", "Registration options are outside valid ranges");
+            return;
+        }
+        if (prepared) {
+            if (!prepared->ok) {
+                status = registrationError(prepared->errorCode, prepared->message);
+                return;
+            }
+            // The separated catalogue is brightness-ranked before truncation.
+            // A dense distortion reference supplies the identical coarse prefix.
+            referenceStars = std::span(prepared->stars).first(std::min(prepared->stars.size(), options.starDetection.maxStars));
+        } else {
+            auto first = StarDetector().detect(reference, options.starDetection);
+            if (!first.ok) {
+                status = registrationError(first.errorCode, first.message);
+                return;
+            }
+            ownedReferenceStars = std::move(first.stars);
+            referenceStars = ownedReferenceStars;
+        }
+        auto second = StarDetector().detect(moving, options.starDetection);
+        if (!second.ok) {
+            status = registrationError(second.errorCode, second.message);
+            return;
+        }
+        movingStars = std::move(second.stars);
+        status.ok = true;
+    }
+};
+
+RegistrationResult detectMatchedPairs(const RegistrationCatalogs& catalogs,
                                       const RegistrationOptions& options, Translation prealign,
                                       std::vector<MatchedStarPair>& pairs) {
-    if (!validImageStructure(reference) || !validImageStructure(moving) ||
-        reference.channels != moving.channels) {
-        return registrationError("ImageBufferInvalid",
-                                 "Reference and moving images must be finite matching buffers");
-    }
-
-    const StarDetector detector;
-    const auto referenceStars = detector.detect(reference, options.starDetection);
-    if (!referenceStars.ok) {
-        return registrationError(referenceStars.errorCode, referenceStars.message);
-    }
-    const auto movingStars = detector.detect(moving, options.starDetection);
-    if (!movingStars.ok) {
-        return registrationError(movingStars.errorCode, movingStars.message);
-    }
-    if (referenceStars.stars.empty() || movingStars.stars.empty()) {
+    const auto& referenceStars = catalogs.referenceStars;
+    const auto& movingStars = catalogs.movingStars;
+    if (referenceStars.empty() || movingStars.empty()) {
         return registrationError("RegistrationInsufficientStars", "Both images need at least one detected star");
     }
 
     pairs.clear();
-    std::vector<int> referenceAssignments(referenceStars.stars.size(), -1);
-    for (std::size_t movingIndex = 0; movingIndex < movingStars.stars.size(); ++movingIndex) {
-        const auto& movingStar = movingStars.stars[movingIndex];
+    std::vector<int> referenceAssignments(referenceStars.size(), -1);
+    for (std::size_t movingIndex = 0; movingIndex < movingStars.size(); ++movingIndex) {
+        const auto& movingStar = movingStars[movingIndex];
         std::size_t bestReferenceIndex = 0;
         float bestDistance = std::numeric_limits<float>::max();
         const Star projectedMoving = {
             .x = movingStar.x + prealign.dx,
             .y = movingStar.y + prealign.dy,
         };
-        for (std::size_t referenceIndex = 0; referenceIndex < referenceStars.stars.size(); ++referenceIndex) {
-            const auto& referenceStar = referenceStars.stars[referenceIndex];
+        for (std::size_t referenceIndex = 0; referenceIndex < referenceStars.size(); ++referenceIndex) {
+            const auto& referenceStar = referenceStars[referenceIndex];
             const float candidateDistance = distanceSquared(referenceStar, projectedMoving);
             if (candidateDistance < bestDistance) {
                 bestDistance = candidateDistance;
@@ -1087,11 +1123,11 @@ RegistrationResult detectMatchedPairs(const ImageBuffer& reference, const ImageB
             continue;
         }
 
-        const auto& bestReference = referenceStars.stars[bestReferenceIndex];
+        const auto& bestReference = referenceStars[bestReferenceIndex];
         std::size_t reciprocalMovingIndex = 0;
         float reciprocalDistance = std::numeric_limits<float>::max();
-        for (std::size_t candidateMovingIndex = 0; candidateMovingIndex < movingStars.stars.size(); ++candidateMovingIndex) {
-            const auto& candidateMoving = movingStars.stars[candidateMovingIndex];
+        for (std::size_t candidateMovingIndex = 0; candidateMovingIndex < movingStars.size(); ++candidateMovingIndex) {
+            const auto& candidateMoving = movingStars[candidateMovingIndex];
             const Star projectedCandidate = {
                 .x = candidateMoving.x + prealign.dx,
                 .y = candidateMoving.y + prealign.dy,
@@ -1137,14 +1173,14 @@ RegistrationResult detectMatchedPairs(const ImageBuffer& reference, const ImageB
     RegistrationResult result;
     result.ok = true;
     result.matches = pairs.size();
-    result.detectedReferenceStars = referenceStars.stars.size();
-    result.detectedMovingStars = movingStars.stars.size();
-    const auto denominator = std::max<std::size_t>(1, std::min(referenceStars.stars.size(), movingStars.stars.size()));
+    result.detectedReferenceStars = referenceStars.size();
+    result.detectedMovingStars = movingStars.size();
+    const auto denominator = std::max<std::size_t>(1, std::min(referenceStars.size(), movingStars.size()));
     result.inlierRatio = static_cast<float>(pairs.size()) / static_cast<float>(denominator);
     return result;
 }
 
-std::vector<StarDescriptor> buildStarDescriptors(const std::vector<Star>& stars, std::size_t neighborCount) {
+std::vector<StarDescriptor> buildStarDescriptors(std::span<const Star> stars, std::size_t neighborCount) {
     std::vector<StarDescriptor> descriptors;
     descriptors.reserve(stars.size());
     for (std::size_t index = 0; index < stars.size(); ++index) {
@@ -1181,35 +1217,19 @@ float descriptorScore(const StarDescriptor& left, const StarDescriptor& right) {
     return score / static_cast<float>(left.distances.size());
 }
 
-RegistrationResult detectDescriptorMatchedPairs(const ImageBuffer& reference, const ImageBuffer& moving,
-                                                const RegistrationOptions& options,
-                                                std::vector<MatchedStarPair>& pairs) {
-    if (!validImageStructure(reference) || !validImageStructure(moving) ||
-        reference.channels != moving.channels) {
-        return registrationError("ImageBufferInvalid",
-                                 "Reference and moving images must be finite matching buffers");
-    }
-
-    const StarDetector detector;
-    auto referenceStars = detector.detect(reference, options.starDetection);
-    if (!referenceStars.ok) {
-        return registrationError(referenceStars.errorCode, referenceStars.message);
-    }
-    auto movingStars = detector.detect(moving, options.starDetection);
-    if (!movingStars.ok) {
-        return registrationError(movingStars.errorCode, movingStars.message);
-    }
-    if (referenceStars.stars.size() < 6 || movingStars.stars.size() < 6) {
+RegistrationResult detectDescriptorMatchedPairs(const RegistrationCatalogs& catalogs,
+                                               std::vector<MatchedStarPair>& pairs) {
+    const auto& referenceStars = catalogs.referenceStars;
+    const auto& movingStars = catalogs.movingStars;
+    if (referenceStars.size() < 6 || movingStars.size() < 6) {
         return registrationError("RegistrationInsufficientStars", "Descriptor matching needs at least six stars");
     }
 
-    const std::size_t starLimit = std::min<std::size_t>(180, std::min(referenceStars.stars.size(), movingStars.stars.size()));
-    referenceStars.stars.resize(std::min(referenceStars.stars.size(), starLimit));
-    movingStars.stars.resize(std::min(movingStars.stars.size(), starLimit));
+    const std::size_t starLimit = std::min<std::size_t>(180, std::min(referenceStars.size(), movingStars.size()));
 
     const std::size_t neighborCount = std::min<std::size_t>(6, starLimit - 1);
-    const auto referenceDescriptors = buildStarDescriptors(referenceStars.stars, neighborCount);
-    const auto movingDescriptors = buildStarDescriptors(movingStars.stars, neighborCount);
+    const auto referenceDescriptors = buildStarDescriptors(std::span(referenceStars).first(starLimit), neighborCount);
+    const auto movingDescriptors = buildStarDescriptors(std::span(movingStars).first(starLimit), neighborCount);
     if (referenceDescriptors.empty() || movingDescriptors.empty()) {
         return registrationError("RegistrationInsufficientStars", "Descriptor matching could not build star neighborhoods");
     }
@@ -1245,8 +1265,8 @@ RegistrationResult detectDescriptorMatchedPairs(const ImageBuffer& reference, co
         const auto& referenceDescriptor = referenceDescriptors[static_cast<std::size_t>(referenceIndex)];
         const auto& movingDescriptor = movingDescriptors[movingIndex];
         pairs.push_back({
-            .reference = referenceStars.stars[referenceDescriptor.index],
-            .moving = movingStars.stars[movingDescriptor.index],
+            .reference = referenceStars[referenceDescriptor.index],
+            .moving = movingStars[movingDescriptor.index],
         });
     }
 
@@ -1257,61 +1277,48 @@ RegistrationResult detectDescriptorMatchedPairs(const ImageBuffer& reference, co
     RegistrationResult result;
     result.ok = true;
     result.matches = pairs.size();
-    result.detectedReferenceStars = referenceStars.stars.size();
-    result.detectedMovingStars = movingStars.stars.size();
-    const auto denominator = std::max<std::size_t>(1, std::min(referenceStars.stars.size(), movingStars.stars.size()));
+    result.detectedReferenceStars = starLimit;
+    result.detectedMovingStars = starLimit;
+    const auto denominator = starLimit;
     result.inlierRatio = static_cast<float>(pairs.size()) / static_cast<float>(denominator);
     return result;
 }
 
-RegistrationResult detectSimilarityProjectedPairs(const ImageBuffer& reference, const ImageBuffer& moving,
+RegistrationResult detectSimilarityProjectedPairs(const RegistrationCatalogs& catalogs,
                                                   const RegistrationOptions& options, SimilarityTransform transform,
                                                   std::vector<MatchedStarPair>& pairs) {
-    if (!validImageStructure(reference) || !validImageStructure(moving) ||
-        reference.channels != moving.channels) {
-        return registrationError("ImageBufferInvalid",
-                                 "Reference and moving images must be finite matching buffers");
-    }
-
-    const StarDetector detector;
-    const auto referenceStars = detector.detect(reference, options.starDetection);
-    if (!referenceStars.ok) {
-        return registrationError(referenceStars.errorCode, referenceStars.message);
-    }
-    const auto movingStars = detector.detect(moving, options.starDetection);
-    if (!movingStars.ok) {
-        return registrationError(movingStars.errorCode, movingStars.message);
-    }
-    if (referenceStars.stars.empty() || movingStars.stars.empty()) {
+    const auto& referenceStars = catalogs.referenceStars;
+    const auto& movingStars = catalogs.movingStars;
+    if (referenceStars.empty() || movingStars.empty()) {
         return registrationError("RegistrationInsufficientStars", "Both images need at least one detected star");
     }
 
     const float toleranceSquared = options.matchTolerance * options.matchTolerance;
     std::vector<IndexedPoint> referencePoints;
-    referencePoints.reserve(referenceStars.stars.size());
-    for (std::size_t referenceIndex = 0; referenceIndex < referenceStars.stars.size(); ++referenceIndex) {
+    referencePoints.reserve(referenceStars.size());
+    for (std::size_t referenceIndex = 0; referenceIndex < referenceStars.size(); ++referenceIndex) {
         referencePoints.push_back({
             .index = referenceIndex,
-            .x = referenceStars.stars[referenceIndex].x,
-            .y = referenceStars.stars[referenceIndex].y,
+            .x = referenceStars[referenceIndex].x,
+            .y = referenceStars[referenceIndex].y,
         });
     }
     std::vector<IndexedPoint> projectedMovingPoints;
-    projectedMovingPoints.reserve(movingStars.stars.size());
-    for (std::size_t movingIndex = 0; movingIndex < movingStars.stars.size(); ++movingIndex) {
-        const auto projected = applySimilarityToStar(movingStars.stars[movingIndex], transform);
+    projectedMovingPoints.reserve(movingStars.size());
+    for (std::size_t movingIndex = 0; movingIndex < movingStars.size(); ++movingIndex) {
+        const auto projected = applySimilarityToStar(movingStars[movingIndex], transform);
         projectedMovingPoints.push_back({.index = movingIndex, .x = projected.x, .y = projected.y});
     }
 
     const SpatialPointIndex referencePointIndex(
-        static_cast<float>(reference.width), static_cast<float>(reference.height), options.matchTolerance, std::move(referencePoints));
+        static_cast<float>(catalogs.reference.width), static_cast<float>(catalogs.reference.height), options.matchTolerance, std::move(referencePoints));
     const SpatialPointIndex movingPointIndex(
-        static_cast<float>(reference.width), static_cast<float>(reference.height), options.matchTolerance, std::move(projectedMovingPoints));
+        static_cast<float>(catalogs.reference.width), static_cast<float>(catalogs.reference.height), options.matchTolerance, std::move(projectedMovingPoints));
 
     pairs.clear();
-    std::vector<int> referenceAssignments(referenceStars.stars.size(), -1);
-    for (std::size_t movingIndex = 0; movingIndex < movingStars.stars.size(); ++movingIndex) {
-        const auto& movingStar = movingStars.stars[movingIndex];
+    std::vector<int> referenceAssignments(referenceStars.size(), -1);
+    for (std::size_t movingIndex = 0; movingIndex < movingStars.size(); ++movingIndex) {
+        const auto& movingStar = movingStars[movingIndex];
         const auto projectedMoving = applySimilarityToStar(movingStar, transform);
         const auto bestReference = referencePointIndex.nearest(projectedMoving.x, projectedMoving.y, options.matchTolerance);
         const std::size_t bestReferenceIndex = bestReference.index;
@@ -1321,7 +1328,7 @@ RegistrationResult detectSimilarityProjectedPairs(const ImageBuffer& reference, 
         }
 
         const auto reciprocalMoving = movingPointIndex.nearest(
-            referenceStars.stars[bestReferenceIndex].x, referenceStars.stars[bestReferenceIndex].y, options.matchTolerance);
+            referenceStars[bestReferenceIndex].x, referenceStars[bestReferenceIndex].y, options.matchTolerance);
         if (!reciprocalMoving.found || reciprocalMoving.index != movingIndex) {
             continue;
         }
@@ -1329,7 +1336,7 @@ RegistrationResult detectSimilarityProjectedPairs(const ImageBuffer& reference, 
         const int currentAssignment = referenceAssignments[bestReferenceIndex];
         if (currentAssignment < 0) {
             referenceAssignments[bestReferenceIndex] = static_cast<int>(pairs.size());
-            pairs.push_back({.reference = referenceStars.stars[bestReferenceIndex], .moving = movingStar});
+            pairs.push_back({.reference = referenceStars[bestReferenceIndex], .moving = movingStar});
             continue;
         }
 
@@ -1337,7 +1344,7 @@ RegistrationResult detectSimilarityProjectedPairs(const ImageBuffer& reference, 
         const float assignedDistance = distanceSquared(pairs[static_cast<std::size_t>(currentAssignment)].reference, assignedProjection);
         if (bestDistance < assignedDistance) {
             pairs[static_cast<std::size_t>(currentAssignment)] = {
-                .reference = referenceStars.stars[bestReferenceIndex],
+                .reference = referenceStars[bestReferenceIndex],
                 .moving = movingStar,
             };
         }
@@ -1350,20 +1357,22 @@ RegistrationResult detectSimilarityProjectedPairs(const ImageBuffer& reference, 
     RegistrationResult result;
     result.ok = true;
     result.matches = pairs.size();
-    result.detectedReferenceStars = referenceStars.stars.size();
-    result.detectedMovingStars = movingStars.stars.size();
-    const auto denominator = std::max<std::size_t>(1, std::min(referenceStars.stars.size(), movingStars.stars.size()));
+    result.detectedReferenceStars = referenceStars.size();
+    result.detectedMovingStars = movingStars.size();
+    const auto denominator = std::max<std::size_t>(1, std::min(referenceStars.size(), movingStars.size()));
     result.inlierRatio = static_cast<float>(pairs.size()) / static_cast<float>(denominator);
     return result;
 }
 
-bool refineSimilarityCentroids(const ImageBuffer& reference, const ImageBuffer& moving,
+bool refineSimilarityCentroids(const RegistrationCatalogs& catalogs,
                                const RegistrationOptions& options, SimilarityFit& fit,
                                std::size_t& matchCount, std::vector<std::array<float, 4>>& acceptedPairs) {
+    const auto& reference = catalogs.reference;
+    const auto& moving = catalogs.moving;
     RegistrationOptions local = options;
     local.matchTolerance = std::max(4.0F, options.matchTolerance * 2);
     std::vector<MatchedStarPair> candidates;
-    if (!detectSimilarityProjectedPairs(reference, moving, local, fit.transform, candidates).ok) return false;
+    if (!detectSimilarityProjectedPairs(catalogs, local, fit.transform, candidates).ok) return false;
     // Bound the cost and avoid letting a dense region dominate the transform.
     constexpr int grid = 8, perCell = 6;
     std::array<int, grid * grid> cellCounts{};
@@ -1540,42 +1549,29 @@ void selectCentroidAffine(const ImageBuffer& reference, const ImageBuffer& movin
     result.usedCentroidAffine = true;
 }
 
-RegistrationResult detectProjectiveProjectedPairs(const ImageBuffer& reference, const ImageBuffer& moving,
+RegistrationResult detectProjectiveProjectedPairs(const RegistrationCatalogs& catalogs,
                                                   const RegistrationOptions& options, ProjectiveTransform transform,
                                                   std::vector<MatchedStarPair>& pairs) {
-    if (!validImageStructure(reference) || !validImageStructure(moving) ||
-        reference.channels != moving.channels) {
-        return registrationError("ImageBufferInvalid",
-                                 "Reference and moving images must be finite matching buffers");
-    }
-
-    const StarDetector detector;
-    const auto referenceStars = detector.detect(reference, options.starDetection);
-    if (!referenceStars.ok) {
-        return registrationError(referenceStars.errorCode, referenceStars.message);
-    }
-    const auto movingStars = detector.detect(moving, options.starDetection);
-    if (!movingStars.ok) {
-        return registrationError(movingStars.errorCode, movingStars.message);
-    }
-    if (referenceStars.stars.empty() || movingStars.stars.empty()) {
+    const auto& referenceStars = catalogs.referenceStars;
+    const auto& movingStars = catalogs.movingStars;
+    if (referenceStars.empty() || movingStars.empty()) {
         return registrationError("RegistrationInsufficientStars", "Both images need at least one detected star");
     }
 
     const float toleranceSquared = options.matchTolerance * options.matchTolerance;
     std::vector<IndexedPoint> referencePoints;
-    referencePoints.reserve(referenceStars.stars.size());
-    for (std::size_t referenceIndex = 0; referenceIndex < referenceStars.stars.size(); ++referenceIndex) {
+    referencePoints.reserve(referenceStars.size());
+    for (std::size_t referenceIndex = 0; referenceIndex < referenceStars.size(); ++referenceIndex) {
         referencePoints.push_back({
             .index = referenceIndex,
-            .x = referenceStars.stars[referenceIndex].x,
-            .y = referenceStars.stars[referenceIndex].y,
+            .x = referenceStars[referenceIndex].x,
+            .y = referenceStars[referenceIndex].y,
         });
     }
     std::vector<IndexedPoint> projectedMovingPoints;
-    projectedMovingPoints.reserve(movingStars.stars.size());
-    for (std::size_t movingIndex = 0; movingIndex < movingStars.stars.size(); ++movingIndex) {
-        const auto projected = applyProjectiveToStar(movingStars.stars[movingIndex], transform);
+    projectedMovingPoints.reserve(movingStars.size());
+    for (std::size_t movingIndex = 0; movingIndex < movingStars.size(); ++movingIndex) {
+        const auto projected = applyProjectiveToStar(movingStars[movingIndex], transform);
         if (!std::isfinite(projected.x) || !std::isfinite(projected.y)) {
             continue;
         }
@@ -1583,14 +1579,14 @@ RegistrationResult detectProjectiveProjectedPairs(const ImageBuffer& reference, 
     }
 
     const SpatialPointIndex referencePointIndex(
-        static_cast<float>(reference.width), static_cast<float>(reference.height), options.matchTolerance, std::move(referencePoints));
+        static_cast<float>(catalogs.reference.width), static_cast<float>(catalogs.reference.height), options.matchTolerance, std::move(referencePoints));
     const SpatialPointIndex movingPointIndex(
-        static_cast<float>(reference.width), static_cast<float>(reference.height), options.matchTolerance, std::move(projectedMovingPoints));
+        static_cast<float>(catalogs.reference.width), static_cast<float>(catalogs.reference.height), options.matchTolerance, std::move(projectedMovingPoints));
 
     pairs.clear();
-    std::vector<int> referenceAssignments(referenceStars.stars.size(), -1);
-    for (std::size_t movingIndex = 0; movingIndex < movingStars.stars.size(); ++movingIndex) {
-        const auto& movingStar = movingStars.stars[movingIndex];
+    std::vector<int> referenceAssignments(referenceStars.size(), -1);
+    for (std::size_t movingIndex = 0; movingIndex < movingStars.size(); ++movingIndex) {
+        const auto& movingStar = movingStars[movingIndex];
         const auto projectedMoving = applyProjectiveToStar(movingStar, transform);
         if (!std::isfinite(projectedMoving.x) || !std::isfinite(projectedMoving.y)) {
             continue;
@@ -1603,7 +1599,7 @@ RegistrationResult detectProjectiveProjectedPairs(const ImageBuffer& reference, 
         }
 
         const auto reciprocalMoving = movingPointIndex.nearest(
-            referenceStars.stars[bestReferenceIndex].x, referenceStars.stars[bestReferenceIndex].y, options.matchTolerance);
+            referenceStars[bestReferenceIndex].x, referenceStars[bestReferenceIndex].y, options.matchTolerance);
         if (!reciprocalMoving.found || reciprocalMoving.index != movingIndex) {
             continue;
         }
@@ -1611,7 +1607,7 @@ RegistrationResult detectProjectiveProjectedPairs(const ImageBuffer& reference, 
         const int currentAssignment = referenceAssignments[bestReferenceIndex];
         if (currentAssignment < 0) {
             referenceAssignments[bestReferenceIndex] = static_cast<int>(pairs.size());
-            pairs.push_back({.reference = referenceStars.stars[bestReferenceIndex], .moving = movingStar});
+            pairs.push_back({.reference = referenceStars[bestReferenceIndex], .moving = movingStar});
             continue;
         }
 
@@ -1620,7 +1616,7 @@ RegistrationResult detectProjectiveProjectedPairs(const ImageBuffer& reference, 
             distanceSquared(pairs[static_cast<std::size_t>(currentAssignment)].reference, assignedProjection);
         if (bestDistance < assignedDistance) {
             pairs[static_cast<std::size_t>(currentAssignment)] = {
-                .reference = referenceStars.stars[bestReferenceIndex],
+                .reference = referenceStars[bestReferenceIndex],
                 .moving = movingStar,
             };
         }
@@ -1633,9 +1629,9 @@ RegistrationResult detectProjectiveProjectedPairs(const ImageBuffer& reference, 
     RegistrationResult result;
     result.ok = true;
     result.matches = pairs.size();
-    result.detectedReferenceStars = referenceStars.stars.size();
-    result.detectedMovingStars = movingStars.stars.size();
-    const auto denominator = std::max<std::size_t>(1, std::min(referenceStars.stars.size(), movingStars.stars.size()));
+    result.detectedReferenceStars = referenceStars.size();
+    result.detectedMovingStars = movingStars.size();
+    const auto denominator = std::max<std::size_t>(1, std::min(referenceStars.size(), movingStars.size()));
     result.inlierRatio = static_cast<float>(pairs.size()) / static_cast<float>(denominator);
     return result;
 }
@@ -1726,49 +1722,81 @@ LocalCorrection fitLocalAffineCorrection(const std::vector<LocalGridControl>& co
     };
 }
 
-} // namespace
-
-RegistrationResult Registration::estimateTranslation(const ImageBuffer& reference, const ImageBuffer& moving,
-                                                     const RegistrationOptions& options) const {
-    if (!validImageBuffer(reference) || !validImageBuffer(moving) || reference.channels != moving.channels) {
-        return registrationError("ImageBufferInvalid", "Reference and moving images must be finite matching buffers");
-    }
-    if (!validRegistrationOptions(options)) {
-        return registrationError("ArgumentInvalid", "Registration options are outside valid ranges");
-    }
-
-    const StarDetector detector;
-    const auto referenceStars = detector.detect(reference, options.starDetection);
-    if (!referenceStars.ok) {
-        return registrationError(referenceStars.errorCode, referenceStars.message);
-    }
-    const auto movingStars = detector.detect(moving, options.starDetection);
-    if (!movingStars.ok) {
-        return registrationError(movingStars.errorCode, movingStars.message);
-    }
-    if (referenceStars.stars.empty() || movingStars.stars.empty()) {
-        return registrationError("RegistrationInsufficientStars", "Both images need at least one detected star");
-    }
-
-    const float tolerance = std::max(0.25F, options.matchTolerance);
+// Preserve the old unordered string-key iteration order when equally strong
+// offset peaks make the answer depend on the container's tie break.
+std::vector<Translation> legacyPeakOffsets(const RegistrationCatalogs& catalogs, float tolerance) {
     std::unordered_map<std::string, OffsetBin> bins;
-    bins.reserve(referenceStars.stars.size() * movingStars.stars.size());
-    for (const auto& movingStar : movingStars.stars) {
-        for (const auto& referenceStar : referenceStars.stars) {
-            const float dx = referenceStar.x - movingStar.x;
-            const float dy = referenceStar.y - movingStar.y;
+    bins.reserve(catalogs.referenceStars.size() * catalogs.movingStars.size());
+    for (const auto& moving : catalogs.movingStars) {
+        for (const auto& reference : catalogs.referenceStars) {
+            const float dx = reference.x - moving.x, dy = reference.y - moving.y;
             const int bx = static_cast<int>(std::lround(dx / tolerance));
             const int by = static_cast<int>(std::lround(dy / tolerance));
             bins[std::to_string(bx) + ":" + std::to_string(by)].offsets.push_back({.dx = dx, .dy = dy});
         }
     }
+    const OffsetBin* best = nullptr;
+    for (const auto& entry : bins)
+        if (!best || entry.second.offsets.size() > best->offsets.size()) best = &entry.second;
+    return best ? best->offsets : std::vector<Translation>{};
+}
 
-    std::vector<Translation> offsets;
-    for (const auto& [_, bin] : bins) {
-        if (bin.offsets.size() > offsets.size()) {
-            offsets = bin.offsets;
+std::vector<Translation> peakTranslationOffsets(const RegistrationCatalogs& catalogs, float tolerance) {
+    const auto& reference = catalogs.referenceStars;
+    const auto& moving = catalogs.movingStars;
+    const auto pairs = reference.size() * moving.size();
+    // Use a bounded rectangular accumulator for sensor-sized offset ranges.
+    // For sparse or very wide coordinate ranges, preserve the original path.
+    constexpr std::size_t maximumCells = 4 * 1024 * 1024;
+    const auto extent = [&](std::uint32_t size) { return std::llround(float(size) / tolerance); };
+    const auto xOrigin = extent(catalogs.moving.width), yOrigin = extent(catalogs.moving.height);
+    const auto width = std::uint64_t(xOrigin + extent(catalogs.reference.width)) + 1;
+    const auto height = std::uint64_t(yOrigin + extent(catalogs.reference.height)) + 1;
+    if (pairs < 1024 || pairs > std::numeric_limits<std::uint32_t>::max() ||
+        width > maximumCells / height || width * height / 8 > pairs) {
+        return legacyPeakOffsets(catalogs, tolerance);
+    }
+    const auto cell = [&](float dx, float dy) {
+        const auto x = std::lround(dx / tolerance) + xOrigin;
+        const auto y = std::lround(dy / tolerance) + yOrigin;
+        return std::size_t(y) * width + std::size_t(x);
+    };
+    std::size_t best = 0;
+    std::uint32_t maximum = 0;
+    bool tied = false;
+    {
+        std::vector<std::uint32_t> votes(width * height);
+        for (const auto& m : moving) for (const auto& r : reference) {
+            const auto bin = cell(r.x - m.x, r.y - m.y);
+            const auto count = ++votes[bin];
+            if (count > maximum) {
+                maximum = count;
+                best = bin;
+                tied = false;
+            } else if (count == maximum) {
+                tied = true;
+            }
         }
     }
+    if (tied) return legacyPeakOffsets(catalogs, tolerance);
+    std::vector<Translation> offsets;
+    offsets.reserve(maximum);
+    for (const auto& m : moving) for (const auto& r : reference) {
+        const float dx = r.x - m.x, dy = r.y - m.y;
+        if (cell(dx, dy) == best) offsets.push_back({dx, dy});
+    }
+    return offsets;
+}
+
+RegistrationResult matchTranslation(const RegistrationCatalogs& catalogs, const RegistrationOptions& options) {
+    const auto& referenceStars = catalogs.referenceStars;
+    const auto& movingStars = catalogs.movingStars;
+    if (referenceStars.empty() || movingStars.empty()) {
+        return registrationError("RegistrationInsufficientStars", "Both images need at least one detected star");
+    }
+
+    const float tolerance = std::max(0.25F, options.matchTolerance);
+    const auto offsets = peakTranslationOffsets(catalogs, tolerance);
     if (offsets.empty()) {
         return registrationError("RegistrationNoMatches", "No matching star offset was found");
     }
@@ -1786,12 +1814,12 @@ RegistrationResult Registration::estimateTranslation(const ImageBuffer& referenc
     const Translation medianOffset = {.dx = dxs[dxs.size() / 2], .dy = dys[dys.size() / 2]};
 
     std::size_t inliers = 0;
-    for (const auto& movingStar : movingStars.stars) {
+    for (const auto& movingStar : movingStars) {
         const Star projected = {
             .x = movingStar.x + medianOffset.dx,
             .y = movingStar.y + medianOffset.dy,
         };
-        const bool matched = std::any_of(referenceStars.stars.begin(), referenceStars.stars.end(), [&](const Star& referenceStar) {
+        const bool matched = std::any_of(referenceStars.begin(), referenceStars.end(), [&](const Star& referenceStar) {
             return distanceSquared(referenceStar, projected) <= tolerance * tolerance;
         });
         if (matched) {
@@ -1804,8 +1832,8 @@ RegistrationResult Registration::estimateTranslation(const ImageBuffer& referenc
     }
 
     std::vector<Translation> inlierOffsets;
-    for (const auto& movingStar : movingStars.stars) {
-        for (const auto& referenceStar : referenceStars.stars) {
+    for (const auto& movingStar : movingStars) {
+        for (const auto& referenceStar : referenceStars) {
             const Translation candidate = {.dx = referenceStar.x - movingStar.x, .dy = referenceStar.y - movingStar.y};
             const float dx = candidate.dx - medianOffset.dx;
             const float dy = candidate.dy - medianOffset.dy;
@@ -1825,37 +1853,113 @@ RegistrationResult Registration::estimateTranslation(const ImageBuffer& referenc
     result.transform = {.scale = 1.0F, .rotationRadians = 0.0F, .dx = refinedOffset.dx, .dy = refinedOffset.dy};
     result.affine = {.a = 1.0F, .b = 0.0F, .c = 0.0F, .d = 1.0F, .dx = refinedOffset.dx, .dy = refinedOffset.dy};
     result.matches = inliers;
-    result.detectedReferenceStars = referenceStars.stars.size();
-    result.detectedMovingStars = movingStars.stars.size();
-    const auto denominator = std::max<std::size_t>(1, std::min(referenceStars.stars.size(), movingStars.stars.size()));
+    result.detectedReferenceStars = referenceStars.size();
+    result.detectedMovingStars = movingStars.size();
+    const auto denominator = std::max<std::size_t>(1, std::min(referenceStars.size(), movingStars.size()));
     result.inlierRatio = static_cast<float>(inliers) / static_cast<float>(denominator);
     return result;
 }
 
-RegistrationResult Registration::estimateSimilarity(const ImageBuffer& reference, const ImageBuffer& moving,
-                                                    const RegistrationOptions& options) const {
-    if (!validRegistrationOptions(options)) {
-        return registrationError("ArgumentInvalid", "Registration options are outside valid ranges");
+// Fit consensus before least squares: a rotated dense field can contain more
+// accidental proximity pairs than true pairs. Raw pair count is not evidence.
+SimilarityFit similarityConsensus(const std::vector<MatchedStarPair>& pairs,
+                                 std::size_t required, float limit,
+                                 std::vector<std::size_t>& inliers) {
+    inliers.clear();
+    if (pairs.size() < required) return {};
+    float bestRms = std::numeric_limits<float>::max();
+    const auto consider = [&](const SimilarityFit& candidate) {
+        if (!candidate.ok || !finiteSimilarityTransform(candidate.transform) ||
+            candidate.transform.scale < .25F || candidate.transform.scale > 4.F) return;
+        std::vector<std::size_t> accepted;
+        double sum = 0;
+        for (std::size_t j=0; j<pairs.size(); ++j) {
+            const float r = similarityResidual(pairs[j], candidate.transform);
+            if (r <= limit) { accepted.push_back(j); sum += r*r; }
+        }
+        if (accepted.size() < required) return;
+        const float rms = std::sqrt(sum / accepted.size());
+        if (accepted.size() > inliers.size() || (accepted.size() == inliers.size() && rms < bestRms)) {
+            inliers = std::move(accepted); bestRms = rms;
+        }
+    };
+    std::vector<std::size_t> all(pairs.size());
+    for (std::size_t j=0; j<all.size(); ++j) all[j]=j;
+    consider(fitSimilarityTransform(pairs, all));
+    std::uint32_t state = 0x9e3779b9U ^ static_cast<std::uint32_t>(pairs.size());
+    const auto nextIndex = [&]() {
+        state = state * 1664525U + 1013904223U;
+        return static_cast<std::size_t>(state % pairs.size());
+    };
+    for (int iteration=0; iteration<1200; ++iteration) {
+        const auto a=nextIndex(), b=nextIndex();
+        if (a == b || distanceSquared(pairs[a].moving, pairs[b].moving) < 100) continue;
+        consider(fitSimilarityTransform(pairs, {a,b}));
     }
-    const auto translationResult = estimateTranslation(reference, moving, options);
-    if (!translationResult.ok && translationResult.errorCode == "ImageBufferInvalid") {
-        return translationResult;
+    if (inliers.size() < required) return {};
+    for (int iteration=0; iteration<5; ++iteration) {
+        const auto fit = fitSimilarityTransform(pairs, inliers);
+        if (!fit.ok) return {};
+        std::vector<std::size_t> next;
+        for (std::size_t j=0; j<pairs.size(); ++j)
+            if (similarityResidual(pairs[j], fit.transform) <= limit) next.push_back(j);
+        if (next.size() < required) { inliers.clear(); return {}; }
+        if (next == inliers) return fit;
+        inliers = std::move(next);
     }
+    const auto fit = fitSimilarityTransform(pairs, inliers);
+    if (!fit.ok || !std::all_of(inliers.begin(), inliers.end(), [&](std::size_t j) {
+        return similarityResidual(pairs[j], fit.transform) <= limit;
+    })) { inliers.clear(); return {}; }
+    return fit;
+}
+RegistrationResult matchSimilarity(const RegistrationCatalogs& catalogs, const RegistrationOptions& options) {
+    const auto translationResult = matchTranslation(catalogs, options);
     const Translation prealign = translationResult.ok ? translationResult.translation : Translation{};
+    // Preserve the explicitly labelled legacy fallback for genuinely sparse
+    // images, not sparse accidental matches in a richly populated star field.
+    const bool translationSupported = translationResult.ok &&
+        (translationResult.matches >= options.minimumMatches ||
+         (std::max(translationResult.detectedReferenceStars, translationResult.detectedMovingStars) < options.minimumMatches &&
+          translationResult.matches == std::min(translationResult.detectedReferenceStars, translationResult.detectedMovingStars)));
     RegistrationOptions similarityOptions = options;
     similarityOptions.matchTolerance = std::max(options.matchTolerance * 10.0F, 30.0F);
 
     std::vector<MatchedStarPair> pairs;
-    auto matchResult = detectMatchedPairs(reference, moving, similarityOptions, prealign, pairs);
+    auto matchResult = detectMatchedPairs(catalogs, similarityOptions, prealign, pairs);
     std::vector<MatchedStarPair> descriptorPairs;
-    const auto descriptorMatchResult = detectDescriptorMatchedPairs(reference, moving, similarityOptions, descriptorPairs);
-    if (descriptorMatchResult.ok && descriptorPairs.size() >= std::max<std::size_t>(options.minimumMatches, 2) &&
-        (!matchResult.ok || descriptorPairs.size() > pairs.size())) {
-        pairs = std::move(descriptorPairs);
-        matchResult = descriptorMatchResult;
+    const auto descriptorMatchResult = detectDescriptorMatchedPairs(catalogs, descriptorPairs);
+    const auto consensusRequired = std::max<std::size_t>(2, options.minimumMatches);
+    const float consensusLimit = std::max(options.matchTolerance, 1.0F);
+    SimilarityFit consensus;
+    std::vector<std::size_t> consensusInliers;
+    RegistrationResult consensusMatch;
+    std::vector<MatchedStarPair> consensusPairs;
+    // Assess both hypotheses on full-field projected correspondences. A sparse
+    // descriptor solution can correctly seed hundreds of stars after rotation.
+    for (const auto* candidatePairs : {&pairs, &descriptorPairs}) {
+        std::vector<std::size_t> candidateInliers;
+        auto candidate = similarityConsensus(*candidatePairs, consensusRequired, consensusLimit, candidateInliers);
+        if (!candidate.ok) continue;
+        std::vector<MatchedStarPair> projected;
+        auto projectedResult = detectSimilarityProjectedPairs(catalogs, options, candidate.transform, projected);
+        if (!projectedResult.ok) continue;
+        candidate = similarityConsensus(projected, consensusRequired, consensusLimit, candidateInliers);
+        if (!candidate.ok) continue;
+        if (!consensus.ok || candidateInliers.size() > consensusInliers.size() ||
+            (candidateInliers.size() == consensusInliers.size() && candidate.rms < consensus.rms)) {
+            consensus = candidate; consensusInliers = std::move(candidateInliers);
+            consensusPairs = std::move(projected); consensusMatch = projectedResult;
+        }
+    }
+    if (consensus.ok) {
+        pairs = std::move(consensusPairs);
+        matchResult = consensusMatch;
+    } else if (descriptorMatchResult.ok && !matchResult.ok) {
+        pairs = std::move(descriptorPairs); matchResult = descriptorMatchResult;
     }
     if (!matchResult.ok) {
-        if (translationResult.ok && options.similarityFallbackToTranslation) {
+        if (translationSupported && options.similarityFallbackToTranslation) {
             auto fallback = translationResult;
             fallback.usedFallback = true;
             fallback.message = "Similarity matching failed; using translation fallback";
@@ -1866,7 +1970,7 @@ RegistrationResult Registration::estimateSimilarity(const ImageBuffer& reference
 
     const auto requiredMatches = std::max<std::size_t>(2, options.minimumMatches);
     if (pairs.size() < requiredMatches) {
-        if (translationResult.ok && options.similarityFallbackToTranslation) {
+        if (translationSupported && options.similarityFallbackToTranslation) {
             auto fallback = translationResult;
             fallback.usedFallback = true;
             fallback.message = "Similarity matching had too few matches; using translation fallback";
@@ -1882,7 +1986,7 @@ RegistrationResult Registration::estimateSimilarity(const ImageBuffer& reference
     }
 
     SimilarityFit fit;
-    std::vector<std::size_t> inliers = indices;
+    std::vector<std::size_t> inliers = consensus.ok ? consensusInliers : indices;
     // Matching searches a deliberately broad neighbourhood. Acceptance must
     // remain bounded by the requested geometric tolerance: a poor fit cannot
     // justify its own large residuals by increasing that tolerance from RMS.
@@ -1929,7 +2033,7 @@ RegistrationResult Registration::estimateSimilarity(const ImageBuffer& reference
     std::size_t finalMatches = inliers.size();
     std::vector<std::array<float, 4>> refinedPairs;
     const bool centroidRefined = options.refineSimilarityCentroids &&
-        refineSimilarityCentroids(reference, moving, options, fit, finalMatches, refinedPairs);
+        refineSimilarityCentroids(catalogs, options, fit, finalMatches, refinedPairs);
     RegistrationResult result;
     result.ok = true;
     result.usedCentroidRefinement = centroidRefined;
@@ -1946,28 +2050,23 @@ RegistrationResult Registration::estimateSimilarity(const ImageBuffer& reference
     return result;
 }
 
-RegistrationResult Registration::estimateAffine(const ImageBuffer& reference, const ImageBuffer& moving,
-                                                const RegistrationOptions& options) const {
-    if (!validRegistrationOptions(options)) {
-        return registrationError("ArgumentInvalid", "Registration options are outside valid ranges");
-    }
+RegistrationResult matchAffine(const RegistrationCatalogs& catalogs, const RegistrationOptions& options) {
+    const auto& reference = catalogs.reference;
+    const auto& moving = catalogs.moving;
     if (options.refineSimilarityCentroids) {
-        auto result = estimateSimilarity(reference, moving, options);
+        auto result = matchSimilarity(catalogs, options);
         if (result.ok) selectCentroidAffine(reference, moving, options, result);
         return result;
     }
-    const auto translationResult = estimateTranslation(reference, moving, options);
-    if (!translationResult.ok && translationResult.errorCode == "ImageBufferInvalid") {
-        return translationResult;
-    }
+    const auto translationResult = matchTranslation(catalogs, options);
     const Translation prealign = translationResult.ok ? translationResult.translation : Translation{};
     RegistrationOptions affineOptions = options;
     affineOptions.matchTolerance = std::max(options.matchTolerance * 3.0F, 8.0F);
 
     std::vector<MatchedStarPair> pairs;
-    auto matchResult = detectMatchedPairs(reference, moving, affineOptions, prealign, pairs);
+    auto matchResult = detectMatchedPairs(catalogs, affineOptions, prealign, pairs);
     std::vector<MatchedStarPair> descriptorPairs;
-    const auto descriptorMatchResult = detectDescriptorMatchedPairs(reference, moving, affineOptions, descriptorPairs);
+    const auto descriptorMatchResult = detectDescriptorMatchedPairs(catalogs, descriptorPairs);
     const auto requiredMatches = std::max<std::size_t>(3, options.minimumMatches);
     std::vector<std::size_t> descriptorInliers;
     const auto descriptorRequiredMatches = std::max<std::size_t>(6, requiredMatches);
@@ -1989,7 +2088,7 @@ RegistrationResult Registration::estimateAffine(const ImageBuffer& reference, co
         return result;
     }
     if (!matchResult.ok || pairs.size() < 3) {
-        const auto similarityResult = estimateSimilarity(reference, moving, options);
+        const auto similarityResult = matchSimilarity(catalogs, options);
         if (similarityResult.ok && options.similarityFallbackToTranslation) {
             auto fallback = similarityResult;
             const float cosTheta = std::cos(fallback.transform.rotationRadians);
@@ -2040,7 +2139,7 @@ RegistrationResult Registration::estimateAffine(const ImageBuffer& reference, co
 
     fit = fitAffineTransform(pairs, inliers);
     if (!fit.ok || inliers.size() < 3) {
-        const auto similarityResult = estimateSimilarity(reference, moving, options);
+        const auto similarityResult = matchSimilarity(catalogs, options);
         if (similarityResult.ok && options.similarityFallbackToTranslation) {
             auto fallback = similarityResult;
             const float cosTheta = std::cos(fallback.transform.rotationRadians);
@@ -2072,13 +2171,17 @@ RegistrationResult Registration::estimateAffine(const ImageBuffer& reference, co
     return result;
 }
 
-RegistrationResult Registration::estimateDistortion(const ImageBuffer& reference, const ImageBuffer& moving,
-                                                    DistortionTransform& transform,
-                                                    const RegistrationOptions& options) const {
+constexpr std::size_t distortionStarLimit = 6000;
+
+RegistrationResult matchDistortion(const ImageBuffer& reference, const ImageBuffer& moving,
+                                   DistortionTransform& transform, const RegistrationOptions& options,
+                                   const StarDetectionResult* prepared = nullptr, std::size_t preparedLimit = 0) {
     if (!validRegistrationOptions(options)) {
         return registrationError("ArgumentInvalid", "Registration options are outside valid ranges");
     }
-    const auto globalResult = estimateSimilarity(reference, moving, options);
+    const RegistrationCatalogs coarse(reference, moving, options, prepared);
+    if (!coarse.status.ok) return coarse.status;
+    const auto globalResult = matchSimilarity(coarse, options);
     if (!globalResult.ok) {
         return globalResult;
     }
@@ -2107,12 +2210,15 @@ RegistrationResult Registration::estimateDistortion(const ImageBuffer& reference
 
     RegistrationOptions localOptions = options;
     localOptions.matchTolerance = std::max(options.matchTolerance * 12.0F, 36.0F);
-    localOptions.starDetection.maxStars = std::max<std::size_t>(localOptions.starDetection.maxStars, 6000);
+    localOptions.starDetection.maxStars = std::max(localOptions.starDetection.maxStars, distortionStarLimit);
+    const RegistrationCatalogs catalogs(reference, moving, localOptions,
+                                        preparedLimit >= localOptions.starDetection.maxStars ? prepared : nullptr);
+    if (!catalogs.status.ok) return catalogs.status;
     std::vector<MatchedStarPair> pairs;
-    auto matchResult = detectSimilarityProjectedPairs(reference, moving, localOptions, transform.global, pairs);
+    auto matchResult = detectSimilarityProjectedPairs(catalogs, localOptions, transform.global, pairs);
     if (!matchResult.ok || pairs.size() < std::max<std::size_t>(options.minimumMatches, 8)) {
         std::vector<MatchedStarPair> descriptorPairs;
-        const auto descriptorResult = detectDescriptorMatchedPairs(reference, moving, localOptions, descriptorPairs);
+        const auto descriptorResult = detectDescriptorMatchedPairs(catalogs, descriptorPairs);
         if (descriptorResult.ok && descriptorPairs.size() > pairs.size()) {
             pairs = std::move(descriptorPairs);
             matchResult = descriptorResult;
@@ -2146,7 +2252,7 @@ RegistrationResult Registration::estimateDistortion(const ImageBuffer& reference
         projectiveOptions.matchTolerance = std::max(options.matchTolerance * 4.0F, 12.0F);
         std::vector<MatchedStarPair> projectivePairs;
         const auto projectiveMatchResult =
-            detectProjectiveProjectedPairs(reference, moving, projectiveOptions, transform.projective, projectivePairs);
+            detectProjectiveProjectedPairs(catalogs, projectiveOptions, transform.projective, projectivePairs);
         if (projectiveMatchResult.ok && projectivePairs.size() >= requiredProjectiveMatches) {
             std::vector<std::size_t> refinedInliers;
             const auto refinedProjectiveFit =
@@ -2229,36 +2335,127 @@ RegistrationResult Registration::estimateDistortion(const ImageBuffer& reference
     return result;
 }
 
+} // namespace
+
+PreparedRegistrationReference Registration::prepareReference(ImageBuffer&& image, const RegistrationOptions& options,
+                                                            bool forDistortion) const {
+    PreparedRegistrationReference reference;
+    reference.image_ = std::move(image);
+    reference.options_ = options;
+    auto detection = options.starDetection;
+    if (forDistortion && detection.maxStars > 0) detection.maxStars = std::max(detection.maxStars, distortionStarLimit);
+    reference.detectionLimit_ = detection.maxStars;
+    if (!validImageBuffer(reference.image_)) {
+        reference.detection_.errorCode = "ImageBufferInvalid";
+        reference.detection_.message = "Reference and moving images must be finite matching buffers";
+    } else if (validRegistrationOptions(options)) {
+        reference.detection_ = StarDetector().detect(reference.image_, detection);
+    }
+    return reference;
+}
+
+RegistrationResult Registration::estimateTranslation(const ImageBuffer& reference, const ImageBuffer& moving,
+                                                     const RegistrationOptions& options) const {
+    const RegistrationCatalogs catalogs(reference, moving, options);
+    return catalogs.status.ok ? matchTranslation(catalogs, options) : catalogs.status;
+}
+
+RegistrationResult Registration::estimateSimilarity(const ImageBuffer& reference, const ImageBuffer& moving,
+                                                    const RegistrationOptions& options) const {
+    if (!validRegistrationOptions(options)) {
+        return registrationError("ArgumentInvalid", "Registration options are outside valid ranges");
+    }
+    const RegistrationCatalogs catalogs(reference, moving, options);
+    return catalogs.status.ok ? matchSimilarity(catalogs, options) : catalogs.status;
+}
+
+RegistrationResult Registration::estimateAffine(const ImageBuffer& reference, const ImageBuffer& moving,
+                                                const RegistrationOptions& options) const {
+    if (!validRegistrationOptions(options)) {
+        return registrationError("ArgumentInvalid", "Registration options are outside valid ranges");
+    }
+    const RegistrationCatalogs catalogs(reference, moving, options);
+    return catalogs.status.ok ? matchAffine(catalogs, options) : catalogs.status;
+}
+
+RegistrationResult Registration::estimateDistortion(const ImageBuffer& reference, const ImageBuffer& moving,
+                                                   DistortionTransform& transform, const RegistrationOptions& options) const {
+    return matchDistortion(reference, moving, transform, options);
+}
+
+RegistrationResult Registration::estimateTranslation(const PreparedRegistrationReference& reference, const ImageBuffer& moving) const {
+    const RegistrationCatalogs catalogs(reference.image_, moving, reference.options_, &reference.detection_);
+    return catalogs.status.ok ? matchTranslation(catalogs, reference.options_) : catalogs.status;
+}
+
+RegistrationResult Registration::estimateSimilarity(const PreparedRegistrationReference& reference, const ImageBuffer& moving) const {
+    if (!validRegistrationOptions(reference.options_))
+        return registrationError("ArgumentInvalid", "Registration options are outside valid ranges");
+    const RegistrationCatalogs catalogs(reference.image_, moving, reference.options_, &reference.detection_);
+    return catalogs.status.ok ? matchSimilarity(catalogs, reference.options_) : catalogs.status;
+}
+
+RegistrationResult Registration::estimateAffine(const PreparedRegistrationReference& reference, const ImageBuffer& moving) const {
+    if (!validRegistrationOptions(reference.options_))
+        return registrationError("ArgumentInvalid", "Registration options are outside valid ranges");
+    const RegistrationCatalogs catalogs(reference.image_, moving, reference.options_, &reference.detection_);
+    return catalogs.status.ok ? matchAffine(catalogs, reference.options_) : catalogs.status;
+}
+
+RegistrationResult Registration::estimateDistortion(const PreparedRegistrationReference& reference, const ImageBuffer& moving,
+                                                   DistortionTransform& transform) const {
+    return matchDistortion(reference.image_, moving, transform, reference.options_, &reference.detection_, reference.detectionLimit_);
+}
+
 namespace {
 
 template <typename Mapper, typename Sampler>
-bool renderMappedRows(const ImageBuffer& image, const RegistrationRowConsumer& consumer, Mapper mapper,
-                      Sampler sampler) {
-    if (!consumer || !validImageBuffer(image)) {
-        return false;
-    }
-    std::vector<float> row(static_cast<std::size_t>(image.width) * image.channels, 0.0F);
-    for (std::uint32_t y = 0; y < image.height; ++y) {
-        for (std::uint32_t x = 0; x < image.width; ++x) {
-            const auto offset = static_cast<std::size_t>(x) * image.channels;
-            const auto source = mapper(x, y);
-            for (std::uint16_t channel = 0; channel < image.channels; ++channel) {
-                row[offset + channel] = sampler(source.first, source.second, channel);
+bool renderMappedRows(const ImageBuffer& image, const RegistrationRowConsumer& consumer,
+                      const RegistrationPixelGrid* grid, Mapper mapper, Sampler sampler) {
+    if (!consumer || !validImageBuffer(image)) return false;
+    const auto render = [&](std::uint32_t width, std::uint32_t height, auto targetX, auto targetY) {
+        std::vector<float> row(static_cast<std::size_t>(width) * image.channels);
+        for (std::uint32_t y = 0; y < height; ++y) {
+            const auto sy = targetY(y);
+            for (std::uint32_t x = 0; x < width; ++x) {
+                const auto source = mapper(targetX(x), sy);
+                const auto offset = static_cast<std::size_t>(x) * image.channels;
+                for (std::uint16_t c = 0; c < image.channels; ++c)
+                    row[offset + c] = sampler(source.first, source.second, c);
             }
+            if (!consumer(y, row.data(), row.size())) return false;
         }
-        if (!consumer(y, row.data(), row.size())) {
-            return false;
-        }
-    }
-    return true;
-}
-
-RegistrationRowConsumer outputRowConsumer(ImageBuffer& output) {
-    return [&output](std::uint32_t row, const float* samples, std::size_t sampleCount) {
-        const auto offset = static_cast<std::size_t>(row) * output.width * output.channels;
-        std::copy(samples, samples + sampleCount, output.pixels.begin() + static_cast<std::ptrdiff_t>(offset));
         return true;
     };
+    if (!grid) {
+        const auto identity = [](std::uint32_t i) { return i; };
+        return render(image.width, image.height, identity, identity);
+    }
+    const auto validAxis = [](const auto& axis, std::uint32_t limit) {
+        return !axis.empty() && axis.size() <= limit && std::is_sorted(axis.begin(), axis.end()) &&
+            axis.back() < limit && std::adjacent_find(axis.begin(), axis.end()) == axis.end();
+    };
+    if (!validAxis(grid->columns, image.width) || !validAxis(grid->rows, image.height)) return false;
+    return render(static_cast<std::uint32_t>(grid->columns.size()), static_cast<std::uint32_t>(grid->rows.size()),
+        [&](std::uint32_t x) { return grid->columns[x]; }, [&](std::uint32_t y) { return grid->rows[y]; });
+}
+
+template <typename Render>
+ImageBuffer collectRegisteredRows(const ImageBuffer& image, const RegistrationPixelGrid* grid, Render render) {
+    ImageBuffer output;
+    output.width = grid ? static_cast<std::uint32_t>(grid->columns.size()) : image.width;
+    output.height = grid ? static_cast<std::uint32_t>(grid->rows.size()) : image.height;
+    output.channels = image.channels;
+    output.format = image.format;
+    output.colorEncoding = image.colorEncoding;
+    output.sourceBitsPerChannel = image.sourceBitsPerChannel;
+    // Allocate after the renderer has checked dimensions, grid and transform.
+    const auto collect = [&](std::uint32_t y, const float* row, std::size_t count) {
+        if (y == 0) output.pixels.resize(output.sampleCount());
+        std::copy_n(row, count, output.pixels.data() + static_cast<std::size_t>(y) * count);
+        return true;
+    };
+    return render(collect) ? std::move(output) : ImageBuffer{};
 }
 
 class DistortionCoordinateMapper {
@@ -2470,14 +2667,14 @@ class DistortionCoordinateMapper {
 } // namespace
 
 bool Registration::renderTranslationRows(const ImageBuffer& image, Translation translation,
-                                         const RegistrationRowConsumer& consumer) const {
+                                         const RegistrationRowConsumer& consumer, const RegistrationPixelGrid* grid) const {
     if (!std::isfinite(translation.dx) || !std::isfinite(translation.dy)) {
         return false;
     }
     if (interpolation_ != RegistrationInterpolation::Bilinear)
-        return renderSimilarityRows(image, {1, 0, translation.dx, translation.dy}, consumer);
+        return renderSimilarityRows(image, {1, 0, translation.dx, translation.dy}, consumer, grid);
     return renderMappedRows(
-        image, consumer,
+        image, consumer, grid,
         [&](std::uint32_t x, std::uint32_t y) {
             return std::pair<int, int>{
                 static_cast<int>(std::lround(static_cast<float>(x) - translation.dx)),
@@ -2490,7 +2687,7 @@ bool Registration::renderTranslationRows(const ImageBuffer& image, Translation t
 }
 
 bool Registration::renderSimilarityRows(const ImageBuffer& image, SimilarityTransform transform,
-                                        const RegistrationRowConsumer& consumer) const {
+                                        const RegistrationRowConsumer& consumer, const RegistrationPixelGrid* grid) const {
     if (!finiteSimilarityTransform(transform)) {
         return false;
     }
@@ -2498,7 +2695,7 @@ bool Registration::renderSimilarityRows(const ImageBuffer& image, SimilarityTran
     const float cosTheta = std::cos(transform.rotationRadians);
     const float sinTheta = std::sin(transform.rotationRadians);
     return renderMappedRows(
-        image, consumer,
+        image, consumer, grid,
         [&](std::uint32_t x, std::uint32_t y) {
             const float targetX = static_cast<float>(x) - transform.dx;
             const float targetY = static_cast<float>(y) - transform.dy;
@@ -2513,14 +2710,14 @@ bool Registration::renderSimilarityRows(const ImageBuffer& image, SimilarityTran
 }
 
 bool Registration::renderAffineRows(const ImageBuffer& image, AffineTransform transform,
-                                    const RegistrationRowConsumer& consumer) const {
+                                    const RegistrationRowConsumer& consumer, const RegistrationPixelGrid* grid) const {
     if (!finiteAffineTransform(transform)) {
         return false;
     }
     const float determinant = transform.a * transform.d - transform.b * transform.c;
     if (std::fabs(determinant) < 1.0e-8F) {
         return renderMappedRows(
-            image, consumer, [](std::uint32_t, std::uint32_t) { return std::pair<float, float>{0.0F, 0.0F}; },
+            image, consumer, grid, [](std::uint32_t, std::uint32_t) { return std::pair<float, float>{0.0F, 0.0F}; },
             [](float, float, std::uint16_t) { return 0.0F; });
     }
     const float invA = transform.d / determinant;
@@ -2528,7 +2725,7 @@ bool Registration::renderAffineRows(const ImageBuffer& image, AffineTransform tr
     const float invC = -transform.c / determinant;
     const float invD = transform.a / determinant;
     return renderMappedRows(
-        image, consumer,
+        image, consumer, grid,
         [&](std::uint32_t x, std::uint32_t y) {
             const float targetX = static_cast<float>(x) - transform.dx;
             const float targetY = static_cast<float>(y) - transform.dy;
@@ -2539,117 +2736,18 @@ bool Registration::renderAffineRows(const ImageBuffer& image, AffineTransform tr
         });
 }
 
-ImageBuffer Registration::applyTranslation(const ImageBuffer& image, Translation translation) const {
-    if (interpolation_ != RegistrationInterpolation::Bilinear)
-        return applySimilarity(image, {1, 0, translation.dx, translation.dy});
-    if (!validImageBuffer(image) || !std::isfinite(translation.dx) || !std::isfinite(translation.dy)) {
-        return {};
-    }
-    ImageBuffer output;
-    output.width = image.width;
-    output.height = image.height;
-    output.channels = image.channels;
-    output.format = image.format;
-    output.colorEncoding = image.colorEncoding;
-    output.sourceBitsPerChannel = image.sourceBitsPerChannel;
-    output.pixels.assign(image.sampleCount(), 0.0F);
-
-    for (std::uint32_t y = 0; y < output.height; ++y) {
-        for (std::uint32_t x = 0; x < output.width; ++x) {
-            const int sourceX = static_cast<int>(std::lround(static_cast<float>(x) - translation.dx));
-            const int sourceY = static_cast<int>(std::lround(static_cast<float>(y) - translation.dy));
-            const auto outputOffset = (static_cast<std::size_t>(y) * output.width + x) * output.channels;
-            for (std::uint16_t c = 0; c < output.channels; ++c) {
-                output.pixels[outputOffset + c] = sampleNearest(image, sourceX, sourceY, c);
-            }
-        }
-    }
-
-    return output;
-}
-
-ImageBuffer Registration::applySimilarity(const ImageBuffer& image, SimilarityTransform transform) const {
-    if (!validImageBuffer(image) || !finiteSimilarityTransform(transform)) {
-        return {};
-    }
-    ImageBuffer output;
-    output.width = image.width;
-    output.height = image.height;
-    output.channels = image.channels;
-    output.format = image.format;
-    output.colorEncoding = image.colorEncoding;
-    output.sourceBitsPerChannel = image.sourceBitsPerChannel;
-    output.pixels.assign(image.sampleCount(), 0.0F);
-
-    const float scale = std::max(1.0e-6F, transform.scale);
-    const float cosTheta = std::cos(transform.rotationRadians);
-    const float sinTheta = std::sin(transform.rotationRadians);
-    for (std::uint32_t y = 0; y < output.height; ++y) {
-        for (std::uint32_t x = 0; x < output.width; ++x) {
-            const float targetX = static_cast<float>(x) - transform.dx;
-            const float targetY = static_cast<float>(y) - transform.dy;
-            const float sourceX = (cosTheta * targetX + sinTheta * targetY) / scale;
-            const float sourceY = (-sinTheta * targetX + cosTheta * targetY) / scale;
-            const auto outputOffset = (static_cast<std::size_t>(y) * output.width + x) * output.channels;
-            for (std::uint16_t c = 0; c < output.channels; ++c) {
-                output.pixels[outputOffset + c] = sampleRegistered(image, sourceX, sourceY, c, interpolation_);
-            }
-        }
-    }
-
-    return output;
-}
-
-ImageBuffer Registration::applyAffine(const ImageBuffer& image, AffineTransform transform) const {
-    if (!validImageBuffer(image) || !finiteAffineTransform(transform)) {
-        return {};
-    }
-    ImageBuffer output;
-    output.width = image.width;
-    output.height = image.height;
-    output.channels = image.channels;
-    output.format = image.format;
-    output.colorEncoding = image.colorEncoding;
-    output.sourceBitsPerChannel = image.sourceBitsPerChannel;
-    output.pixels.assign(image.sampleCount(), 0.0F);
-
-    const float determinant = transform.a * transform.d - transform.b * transform.c;
-    if (std::fabs(determinant) < 1.0e-8F) {
-        return output;
-    }
-    const float invA = transform.d / determinant;
-    const float invB = -transform.b / determinant;
-    const float invC = -transform.c / determinant;
-    const float invD = transform.a / determinant;
-
-    for (std::uint32_t y = 0; y < output.height; ++y) {
-        for (std::uint32_t x = 0; x < output.width; ++x) {
-            const float targetX = static_cast<float>(x) - transform.dx;
-            const float targetY = static_cast<float>(y) - transform.dy;
-            const float sourceX = invA * targetX + invB * targetY;
-            const float sourceY = invC * targetX + invD * targetY;
-            const auto outputOffset = (static_cast<std::size_t>(y) * output.width + x) * output.channels;
-            for (std::uint16_t channel = 0; channel < output.channels; ++channel) {
-                output.pixels[outputOffset + channel] = sampleRegistered(image, sourceX, sourceY, channel, interpolation_);
-            }
-        }
-    }
-
-    return output;
-}
-
 bool Registration::renderDistortionRows(const ImageBuffer& image, const DistortionTransform& transform,
-                                        const RegistrationRowConsumer& consumer) const {
+                                        const RegistrationRowConsumer& consumer, const RegistrationPixelGrid* grid) const {
     if (!validImageBuffer(image) || !finiteDistortionTransform(transform)) {
         return false;
     }
     if (transform.controlPoints.empty()) {
         if (!transform.useProjective) {
-            return renderSimilarityRows(image, transform.global, consumer);
+            return renderSimilarityRows(image, transform.global, consumer, grid);
         }
 
         return renderMappedRows(
-            image, consumer,
+            image, consumer, grid,
             [&](std::uint32_t x, std::uint32_t y) {
                 const auto [baseSourceX, baseSourceY] =
                     inverseProjectivePoint(static_cast<float>(x), static_cast<float>(y), transform.projective);
@@ -2774,7 +2872,7 @@ bool Registration::renderDistortionRows(const ImageBuffer& image, const Distorti
     };
 
     return renderMappedRows(
-        image, consumer,
+        image, consumer, grid,
         [&](std::uint32_t x, std::uint32_t y) {
             const auto [baseSourceX, baseSourceY] =
                 transform.useProjective
@@ -2824,22 +2922,32 @@ bool Registration::renderDistortionForwardRows(const ImageBuffer& image, const D
     return true;
 }
 
-ImageBuffer Registration::applyDistortion(const ImageBuffer& image, const DistortionTransform& transform) const {
-    if (!validImageBuffer(image) || !finiteDistortionTransform(transform)) {
-        return {};
-    }
-    ImageBuffer output;
-    output.width = image.width;
-    output.height = image.height;
-    output.channels = image.channels;
-    output.format = image.format;
-    output.colorEncoding = image.colorEncoding;
-    output.sourceBitsPerChannel = image.sourceBitsPerChannel;
-    output.pixels.assign(image.sampleCount(), 0.0F);
-    if (!renderDistortionRows(image, transform, outputRowConsumer(output))) {
-        return {};
-    }
-    return output;
+ImageBuffer Registration::applyTranslation(const ImageBuffer& image, Translation translation,
+                                          const RegistrationPixelGrid* grid) const {
+    return collectRegisteredRows(image, grid, [&](const auto& consume) {
+        return renderTranslationRows(image, translation, consume, grid);
+    });
+}
+
+ImageBuffer Registration::applySimilarity(const ImageBuffer& image, SimilarityTransform transform,
+                                          const RegistrationPixelGrid* grid) const {
+    return collectRegisteredRows(image, grid, [&](const auto& consume) {
+        return renderSimilarityRows(image, transform, consume, grid);
+    });
+}
+
+ImageBuffer Registration::applyAffine(const ImageBuffer& image, AffineTransform transform,
+                                          const RegistrationPixelGrid* grid) const {
+    return collectRegisteredRows(image, grid, [&](const auto& consume) {
+        return renderAffineRows(image, transform, consume, grid);
+    });
+}
+
+ImageBuffer Registration::applyDistortion(const ImageBuffer& image, const DistortionTransform& transform,
+                                          const RegistrationPixelGrid* grid) const {
+    return collectRegisteredRows(image, grid, [&](const auto& consume) {
+        return renderDistortionRows(image, transform, consume, grid);
+    });
 }
 
 } // namespace photonstack

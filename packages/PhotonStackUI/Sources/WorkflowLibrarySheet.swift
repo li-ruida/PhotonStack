@@ -9,7 +9,7 @@ struct WorkflowLibrarySheet: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     @ObservedObject var batch: WorkflowBatchRun
     @Binding var presented: Bool
-    private static let repository = WorkflowRepository.shared
+    let repository: WorkflowRepository
     @State private var workflows: [ReusableWorkflow] = []
     @State private var selection: UUID?
     @State private var name = ""
@@ -59,7 +59,7 @@ struct WorkflowLibrarySheet: View {
             Button(t("删除工作流", "Delete workflow"), role: .destructive) {
                 guard let selected else { return }
                 perform {
-                    workflows = try await Self.repository.remove(id: selected.id)
+                    workflows = try await repository.remove(id: selected.id)
                     selection = workflows.first?.id
                 }
             }
@@ -83,7 +83,7 @@ struct WorkflowLibrarySheet: View {
                     HStack {
                         Button(t("确认保存工作流", "Save workflow")) {
                             perform {
-                                workflows = try await Self.repository.save(draft)
+                                workflows = try await repository.save(draft)
                                 selection = draft.id
                                 self.draft = nil
                             }
@@ -223,7 +223,7 @@ struct WorkflowLibrarySheet: View {
 
     private func load() async {
         do {
-            workflows = try await Self.repository.load()
+            workflows = try await repository.load()
             selection = selection ?? workflows.first?.id
         } catch { self.error = error.localizedDescription }
     }
@@ -252,8 +252,8 @@ struct WorkflowLibrarySheet: View {
         #if os(macOS)
         guard let url = NativeFilePanels.openCurvePresetLibraryURL(message: t("导入工作流 JSON", "Import workflow JSON")) else { return }
         perform {
-            let workflow = try await Self.repository.importWorkflow(from: url)
-            workflows = try await Self.repository.load()
+            let workflow = try await repository.importWorkflow(from: url)
+            workflows = try await repository.load()
             selection = workflow.id
         }
         #endif
@@ -261,7 +261,7 @@ struct WorkflowLibrarySheet: View {
     private func exportWorkflow() {
         #if os(macOS)
         guard let selected, let url = NativeFilePanels.exportWorkflowURL(message: t("导出可复用工作流（不含原片路径）", "Export a portable workflow without source paths")) else { return }
-        perform { try await Self.repository.exportWorkflow(selected, to: url) }
+        perform { try await repository.exportWorkflow(selected, to: url) }
         #endif
     }
 }

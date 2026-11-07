@@ -22,6 +22,31 @@ private func stackSchema() -> DeepSkySchema {
     #expect(AppLanguage.english.stackMethodName(.minimum).contains("Minimum"))
 }
 
+@Test func sparseProjectSettingsRetainTheirStackMethodAcrossTheDefaultChange() throws {
+    var current = stackSchema()
+    for index in current.fields.indices {
+        switch current.fields[index].key {
+        case "stack.method": current.fields[index].defaultValue = "winsorized"
+        case "stack.median-mad": current.fields[index].defaultValue = "off"
+        default: break
+        }
+    }
+    let fresh = try JSONDecoder().decode(DeepSkySettings.self, from: JSONEncoder().encode(DeepSkySettings()))
+    #expect(fresh.effectiveValue("stack.method", schema: current) == "winsorized")
+    #expect(!fresh.fieldIsApplicable("stack.iterations", schema: current))
+    for (overrides, method, mad) in [
+        ("{}", "sigma", "on"),
+        (#"{"stack.median-mad":"off"}"#, "sigma", "off"),
+        (#"{"stack.method":"maximum"}"#, "maximum", "off")
+    ] {
+        let old = Data(#"{"version":1,"values":\#(overrides),"overrides":{}}"#.utf8)
+        let saved = try JSONDecoder().decode(DeepSkySettings.self, from: old)
+        #expect(saved.effectiveValue("stack.method", schema: current) == method)
+        #expect(saved.effectiveValue("stack.median-mad", schema: current) == mad)
+        #expect(try JSONDecoder().decode(DeepSkySettings.self, from: JSONEncoder().encode(saved)) == saved)
+    }
+}
+
 @Test func stackModesDisableAndClearOnlyIncompatibleDependencies() {
     let schema = stackSchema()
     for method in StackMethod.allCases {

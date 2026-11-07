@@ -216,7 +216,9 @@ void printUsage() {
     std::cout << "PhotonStack CLI\n\n"
               << "Usage:\n"
               << "  photonstack --version\n"
-              << "  photonstack review-preview --input <image> --output <new.tiff> [--fits-debayer on|off] [--fits-demosaic malvar|bilinear|menon|ratio|malvar-guarded]\n"
+              << "  photonstack deep-sky --help\n"
+              << "  photonstack develop --help\n"
+              << "  photonstack review-preview --input <image> --output <new.tiff> [--fits-debayer on|off] [--fits-demosaic malvar|bilinear|menon|ratio|malvar-guarded] [--fits-cfa-gains r,g,b] [RAW decode options as for convert]\n"
               << "  photonstack deep-sky schema\n"
               << "  photonstack deep-sky --recipe <recipe.txt> --output-dir <new-directory> [--analyze-only]\n"
               << "  photonstack deep-sky --write-default-recipe <new-recipe.txt> [--input <directory>]\n"
@@ -224,8 +226,8 @@ void printUsage() {
               << "  photonstack deep-sky --recipe <recipe.txt> --from-master <linear RGB FITS> --output-dir <new-directory>\n"
               << "  photonstack color-calibrate --input <linear.fits> --reference <linear.fits> [--reference-flip-y on|off] [--input-saturation <value>] [--reference-saturation <value>]\n"
               << "  photonstack develop --input <linear> --output <image> [--stellar-balance on|off] "
-                 "[--brightness 1] [--tone-scale 0] [--tone-curve rational|asinh] [--white-point 0] [--background 0.025] [--saturation 1] [--shadow-neutralization 0] [--star-exposure 1] [--star-peak-threshold 0] [--star-color-cleanup 0] "
-                 "[--red-gain 1] [--green-gain 1] [--blue-gain 1]\n"
+                 "[--brightness 1] [--tone-scale 0] [--tone-curve rational|asinh] [--color-transfer linear-light|legacy-code] [--white-point 0] [--background 0.025] [--sky-percentile 0.5] [--saturation 1] [--shadow-neutralization 0] [--star-exposure 1] [--star-peak-threshold 0] [--star-color-cleanup 0] "
+                 "[--red-gain 1] [--green-gain 1] [--blue-gain 1] [--statistics-reference <matching-linear.fits>]\n"
               << "  photonstack inspect <image>\n"
               << "  photonstack convert --input <image> --output <image> "
                  "[--bit-depth auto|8|16] [--color-space srgb|linear-srgb] [--quality 0.92] "
@@ -263,7 +265,7 @@ void printUsage() {
                  "[--raw-temperature kelvin] [--raw-tint value] [--raw-black-value value] "
                  "[--raw-exposure-bias stops] [--raw-black-level camera|auto|manual] "
                  "[--raw-demosaic fast|high]\n"
-              << "  photonstack background --input <image> --output <image> [--model global|grid|polynomial] [--exclude-ellipse x,y,major,minor,angle] "
+              << "  photonstack background --input <image> --output <image> [--model global|grid|polynomial] [--polynomial-degree 2] [--exclude-ellipse x,y,major,minor,angle] "
                  "[--mode subtract|divide] [--strength 1] [--preserve-brightness on|off] "
                  "[--protect-bright-targets on|off]\n"
               << "  photonstack clouds detect --input <image> [--grid-x 32] [--grid-y 20]\n"
@@ -730,6 +732,7 @@ int extractBackground(const std::vector<std::string>& args) {
     photonstack::BackgroundGridOptions gridOptions;
     photonstack::BackgroundPolynomialOptions polynomialOptions;
     std::string model = "global";
+    bool explicitDegree = false;
 
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& arg = args[i];
@@ -788,6 +791,14 @@ int extractBackground(const std::vector<std::string>& args) {
             if (!parseOnOff(args, i, "--protect-bright-targets", gridOptions.protectBrightTargets)) {
                 return 1;
             }
+        } else if (arg == "--polynomial-degree") {
+            if (i + 1 >= args.size()) { printError("ArgumentMissing", "--polynomial-degree requires an integer in [1,4]"); return 1; }
+            try { polynomialOptions.degree = parseUnsignedInteger<std::uint32_t>(args[++i]); }
+            catch (...) { polynomialOptions.degree = 0; }
+            if (polynomialOptions.degree<1 || polynomialOptions.degree>4) {
+                printError("ArgumentInvalid", "--polynomial-degree requires an integer in [1,4]"); return 1;
+            }
+            explicitDegree = true;
         } else if (arg == "--exclude-ellipse") {
             if (i + 1 >= args.size()) { printError("ArgumentMissing", "--exclude-ellipse requires x,y,major,minor,angle"); return 1; }
             std::string value = args[++i];
@@ -843,6 +854,7 @@ int extractBackground(const std::vector<std::string>& args) {
     }
 
     if (!polynomialOptions.exclusions.empty() && model != "polynomial") { printError("ArgumentInvalid", "Exclusion ellipses require the polynomial model"); return 1; }
+    if (explicitDegree && model != "polynomial") { printError("ArgumentInvalid", "--polynomial-degree requires the polynomial model"); return 1; }
     const bool scientificOutput = photonstack::isFitsPath(*outputPath);
     options.clampOutput = !scientificOutput;
     const photonstack::ImageCodec codec;
@@ -877,8 +889,9 @@ int extractBackground(const std::vector<std::string>& args) {
               << "  \"preserveBrightness\": " << (options.preserveBrightness ? "true" : "false") << ",\n"
               << "  \"protectBrightTargets\": " << (gridOptions.protectBrightTargets ? "true" : "false") << ",\n"
               << "  \"backgroundEstimator\": \""
-              << (model == "polynomial" ? "robust-quadratic" : model == "grid" ? (gridOptions.protectBrightTargets ? "lower-quartile" : "median") : "global-median")
+              << (model == "polynomial" ? (polynomialOptions.degree==2 ? "robust-quadratic" : "robust-polynomial") : model == "grid" ? (gridOptions.protectBrightTargets ? "lower-quartile" : "median") : "global-median")
               << "\",\n"
+              << "  \"polynomialDegree\": " << (model == "polynomial" ? polynomialOptions.degree : 0) << ",\n"
               << "  \"sampledGridCells\": " << result.sampledGridCells << ",\n"
               << "  \"filledGridCells\": " << result.filledGridCells << ",\n"
               << "  \"divideNormalization\": \""
@@ -1301,7 +1314,42 @@ int calibrateStarColors(const std::vector<std::string>& args) {
 }
 
 int developImage(const std::vector<std::string>& args) {
-    std::optional<std::filesystem::path> inputPath, outputPath;
+    if (args.size() == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help")) {
+        std::cout << R"(PhotonStack develop: render a linear RGB image with statistical stellar balance.
+
+Usage:
+  photonstack develop --input <linear-image> --output <image> [options]
+
+Options (defaults in parentheses):
+  --stellar-balance on|off       Statistical stellar white balance (on).
+  --tone-curve rational|asinh    Tone mapping curve (rational).
+  --color-transfer linear-light|legacy-code
+                               Color mixing space (linear-light). Use legacy-code to replay earlier renders.
+  --brightness <number>         Brightness multiplier (1).
+  --tone-scale <number>         Linear tone scale; 0 estimates it automatically (0).
+  --white-point <number>        Asinh highlight reference; 0 is automatic (0).
+  --background <number>         Display background level (0.025).
+  --sky-percentile <number>     Sky reference quantile, 0.05 to 0.5 (0.5).
+  --saturation <number>         Color saturation (1).
+  --shadow-neutralization <n>   Low-signal color neutralization (0).
+  --star-exposure <number>      Stellar flux multiplier (1).
+  --star-peak-threshold <n>     Bright-star attenuation threshold (0).
+  --star-color-cleanup <n>      Stellar color-fringe cleanup (0).
+  --red-gain <number>           Additional red multiplier (1).
+  --green-gain <number>         Additional green multiplier (1).
+  --blue-gain <number>          Additional blue multiplier (1).
+  --statistics-reference <file> Use a matching linear image for tone statistics;
+                               output must be a new file.
+  --help, -h, help              Show this help without processing images.
+
+Correct background gradients before development. Statistical stellar balance
+is not catalog-based photometric calibration. A statistics reference must match
+the input's geometry, linear units and calibration; it supplies tone statistics,
+not output pixels. Inspect the result at native scale before accepting it.
+)";
+        return 0;
+    }
+    std::optional<std::filesystem::path> inputPath, outputPath, statisticsPath;
     photonstack::AstroDevelopOptions options;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& arg = args[i];
@@ -1319,16 +1367,26 @@ int developImage(const std::vector<std::string>& args) {
             inputPath = value;
         else if (arg == "--output")
             outputPath = value;
+        else if (arg == "--statistics-reference")
+            statisticsPath = value;
         else if (arg == "--tone-curve") {
             if (value != "rational" && value != "asinh") {
                 printError("ArgumentInvalid", "--tone-curve requires rational or asinh");
                 return 1;
             }
             options.toneCurve = value == "asinh" ? photonstack::AstroToneCurve::Asinh : photonstack::AstroToneCurve::Rational;
+        } else if (arg == "--color-transfer") {
+            if (value != "linear-light" && value != "legacy-code") {
+                printError("ArgumentInvalid", "--color-transfer requires linear-light or legacy-code");
+                return 1;
+            }
+            options.linearDisplayColor = value == "linear-light";
         } else {
             float* target = nullptr;
             if (arg == "--background")
                 target = &options.background;
+            else if (arg == "--sky-percentile")
+                target = &options.skyPercentile;
             else if (arg == "--brightness")
                 target = &options.brightness;
             else if (arg == "--tone-scale")
@@ -1367,6 +1425,10 @@ int developImage(const std::vector<std::string>& args) {
         printError("ArgumentMissing", "develop requires --input <linear image> --output <image>");
         return 1;
     }
+    if (statisticsPath && std::filesystem::exists(std::filesystem::symlink_status(*outputPath))) {
+        printError("ArgumentInvalid", "Shared-reference development requires a new output path");
+        return 1;
+    }
     const photonstack::ImageCodec codec;
     auto readOptions = scientificFitsReadOptions();
     readOptions.fits.debayer = true;
@@ -1375,7 +1437,16 @@ int developImage(const std::vector<std::string>& args) {
         printError(input.errorCode, input.message);
         return 1;
     }
-    const auto result = photonstack::AstroDevelop().apply(input.image, options);
+    photonstack::ImageBuffer statistics;
+    if (statisticsPath) {
+        auto reference = codec.read(*statisticsPath, readOptions);
+        if (!reference.ok) {
+            printError(reference.errorCode, reference.message);
+            return 1;
+        }
+        statistics = std::move(reference.image);
+    }
+    const auto result = photonstack::AstroDevelop().apply(input.image, options, statisticsPath ? &statistics : nullptr);
     if (!result.ok) {
         printError(result.errorCode, result.message);
         return 1;
@@ -1387,12 +1458,16 @@ int developImage(const std::vector<std::string>& args) {
     }
     std::cout << "{\n  \"type\": \"complete\",\n  \"command\": \"develop\",\n"
               << "  \"balanceMethod\": \"" << (options.stellarBalance ? "statistical-stars" : "manual") << "\",\n"
+              << "  \"colorTransfer\": \"" << (options.linearDisplayColor ? "linear-light" : "legacy-code") << "\",\n"
               << "  \"calibrationStars\": " << result.calibrationStars << ",\n"
               << "  \"adjustedStars\": " << result.adjustedStars << ",\n"
               << "  \"colorCleanedStars\": " << result.colorCleanedStars << ",\n"
+              << "  \"statisticsReference\": \"" << jsonEscape(statisticsPath ? statisticsPath->string() : "") << "\",\n"
               << "  \"gains\": [" << result.gains[0] << ", " << result.gains[1] << ", " << result.gains[2] << "],\n"
               << "  \"sky\": [" << result.sky[0] << ", " << result.sky[1] << ", " << result.sky[2] << "],\n"
+              << "  \"skyPercentile\": " << options.skyPercentile << ",\n"
               << "  \"toneScale\": " << result.toneScale << ",\n"
+              << "  \"shadowNoise\": " << result.shadowNoise << ",\n"
               << "  \"whitePoint\": " << result.whitePoint << ",\n"
               << "  \"toneCurve\": \"" << (options.toneCurve == photonstack::AstroToneCurve::Asinh ? "asinh" : "rational") << "\",\n"
               << "  \"output\": \"" << jsonEscape(outputPath->string()) << "\"\n}\n";
@@ -1408,6 +1483,14 @@ int reviewPreviewImage(const std::vector<std::string>& args) {
     readOptions.fits.demosaic = photonstack::FitsDemosaic::Malvar;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& arg = args[i];
+        if (arg == "--fits-cfa-gains") {
+            if (!parseCfaGains(args, i, readOptions.fits.cfaInterpolationGains)) return 1;
+            continue;
+        }
+        if (arg.starts_with("--raw-")) {
+            if (!parseRawDecodeArgument(args, i, readOptions.raw)) return 1;
+            continue;
+        }
         if (arg != "--input" && arg != "--output" && arg != "--fits-debayer" && arg != "--fits-demosaic") {
             printError("ArgumentInvalid", "Unknown review-preview argument: " + arg); return 1;
         }
@@ -3298,6 +3381,7 @@ bool parseRawDecodeArgument(
         }
         return true;
     }
+    printError("ArgumentInvalid", "Unknown RAW decode option: " + arg);
     return false;
 }
 

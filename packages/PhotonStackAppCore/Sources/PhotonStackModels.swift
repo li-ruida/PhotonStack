@@ -1326,7 +1326,7 @@ public enum AssetKind: String, Codable, Equatable, Sendable {
 
     public static func detect(from url: URL) -> AssetKind {
         switch url.pathExtension.lowercased() {
-        case "arw", "cr2", "cr3", "dng", "nef", "orf", "raf", "rw2", "srw":
+        case "arw", "cr2", "cr3", "dng", "nef", "nrw", "orf", "pef", "raf", "rw2", "srw":
             return .raw
         case "fit", "fits", "fts":
             return .fits

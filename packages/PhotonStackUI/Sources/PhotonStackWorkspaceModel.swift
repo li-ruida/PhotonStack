@@ -406,6 +406,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     @Published public var language: AppLanguage
     @Published public var selectedTemplate: ProjectTemplate
     @Published public var autosaveEnabled: Bool
+    @Published public private(set) var analysisWorkerCount: Int
+    @Published public private(set) var stackWorkerCount: Int
+    @Published public private(set) var computeBackend: DeepSkyComputeBackend
+    @Published public private(set) var lastPerformance: DeepSkyRunPerformance?
+    public var gpuAccelerationEnabled: Bool { computeBackend != .cpu }
     @Published public private(set) var exportOptions: ExportOptions
     @Published public private(set) var recentProjects: [RecentProject]
     @Published public private(set) var customCurvePresets: [CustomCurvePreset]
@@ -466,7 +471,6 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     private var editParameterValidationErrorMessage: String?
     private var hasLoadedUserSettings = false
     private var rawPreviewGeneration = 0
-    private var curvePreviewGeneration = 0
     private var histogramRefreshGeneration = 0
     private var metadataRefreshGeneration = 0
     private var foregroundGeneration = 0
@@ -492,6 +496,26 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     private var replayNeedsMeteorSequenceSources = false
     private var replayTemporaryDirectories: Set<URL> = []
     private var mosaicQualityReportSourceURL: URL?
+    let photoPreview = PhotoAdjustmentPreview()
+    let photoDraft = PhotoAdjustmentDraft()
+
+    func resetPhotoDraft() {
+        photoDraft.cancelPicker()
+        photoPreview.clear(releaseSource: true)
+        if !photoDraft.settings.isNeutral { photoDraft.settings = PhotoAdjustments() }
+        markPhotoDraft(for: nil)
+    }
+    @Published private(set) var pendingPhotoInput: URL?
+
+    func markPhotoDraft(for input: URL?) {
+        if pendingPhotoInput != input { pendingPhotoInput = input }
+    }
+
+    private var hasPendingPhotoEdit: Bool {
+        pendingPhotoInput != nil && pendingPhotoInput == currentInputURL
+    }
+
+    @Published private(set) var interactiveCurveURL: URL?
     private var curvePreviewBaseInputURL: URL?
     private var curvePreviewReferenceHistogram: HistogramSnapshot?
     private var pendingCurvePreviewPoints: [CurveEditorPoint]?
@@ -511,6 +535,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         language: AppLanguage = .systemDefault,
         selectedTemplate: ProjectTemplate = .deepSky,
         autosaveEnabled: Bool = true,
+        analysisWorkerCount: Int = 0,
+        stackWorkerCount: Int = 0,
+        gpuAccelerationEnabled: Bool = true,
+        computeBackend: DeepSkyComputeBackend? = nil,
         exportOptions: ExportOptions = ExportOptions(),
         recentProjects: [RecentProject] = [],
         customCurvePresets: [CustomCurvePreset] = [],
@@ -527,6 +555,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         self.language = language
         self.selectedTemplate = selectedTemplate
         self.autosaveEnabled = autosaveEnabled
+        self.analysisWorkerCount = AppSettings.normalizedAnalysisWorkerCount(analysisWorkerCount)
+        self.stackWorkerCount = AppSettings.normalizedStackWorkerCount(stackWorkerCount)
+        self.computeBackend = computeBackend ?? (gpuAccelerationEnabled ? .automatic : .cpu)
+        self.lastPerformance = project.deepSkySettings?.lastReport?.performance
         self.exportOptions = exportOptions
         self.recentProjects = AppSettings(recentProjects: recentProjects).recentProjects
         self.customCurvePresets = AppSettings(customCurvePresets: customCurvePresets).customCurvePresets
@@ -739,7 +771,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         guard canModifyProcessingConfiguration else {
             return
         }
-        parameters = Self.normalizedProcessingParameters(updatedParameters)
+        let normalized = Self.normalizedProcessingParameters(updatedParameters)
+        if parameters != normalized { parameters = normalized }
     }
 
     public var batchQueueInputsAvailable: Bool {
@@ -805,7 +838,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public var canExportCurrentImage: Bool {
-        exportCanvasInputsAvailable &&
+        !hasPendingPhotoEdit && exportCanvasInputsAvailable &&
             isProcessing == false &&
             editGraphNeedsReplay == false &&
             hasAmbiguousEditGraphProvenance == false &&
@@ -1073,6 +1106,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         language.text(key)
     }
 
+    public func localizedMessage(_ message: String) -> String {
+        language.localizedMessage(message)
+    }
+
     public func roleName(_ role: CalibrationFrameRole) -> String {
         language.roleName(role)
     }
@@ -1215,6 +1252,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         let reference = batchRegistrationAssets.first
         return PhotonStackApplicationCommandSnapshot(
             language: language,
+            analysisWorkerCount: analysisWorkerCount,
+            stackWorkerCount: stackWorkerCount,
+            computeBackend: computeBackend,
+            performance: lastPerformance,
             isWorkspaceActive: true,
             canRunBatchRegistration: isProcessing == false && canRegisterBatch(reference: reference),
             canPreviewLayerStack: isProcessing == false && canPreviewVisibleLayerStack
@@ -1696,8 +1737,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public func startApplyCurve() {
+        guard canModifyProcessingConfiguration, !editGraphNeedsReplay else { return }
         cancelCurvePreviewTask()
-        let inputOverride = curvePreviewBaseInputURL
+        let inputOverride = currentInputURL == curvePreviewBaseInputURL ? curvePreviewBaseInputURL : nil
         let referenceHistogramOverride = curvePreviewReferenceHistogram
         curvePreviewBaseInputURL = nil
         curvePreviewReferenceHistogram = nil
@@ -1709,7 +1751,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public func scheduleCurvePreview(points: [CurveEditorPoint]) {
-        guard canProcessCurrentInput,
+        guard canProcessCurrentInput, !editGraphNeedsReplay,
               activeTask == nil,
               batchTask == nil,
               isBatchRunning == false,
@@ -1717,7 +1759,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         else {
             return
         }
-        guard let input = curvePreviewBaseInputURL ?? validatedCurrentInputURL() else {
+        if curvePreviewBaseInputURL != currentInputURL { cancelCurvePreview() }
+        guard let input = validatedCurrentInputURL() else {
             return
         }
         if curvePreviewBaseInputURL == nil {
@@ -1725,7 +1768,6 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             curvePreviewReferenceHistogram = curveReferenceHistogram ?? histogram
         }
 
-        curvePreviewGeneration += 1
         pendingCurvePreviewPoints = points
         guard curvePreviewTask == nil else {
             return
@@ -1744,33 +1786,26 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     private func runInteractiveCurvePreviewLoop(input: URL) async {
-        while Task.isCancelled == false {
+        let clock = ContinuousClock()
+        var nextFrame = clock.now
+        while !Task.isCancelled, pendingCurvePreviewPoints != nil {
             do {
-                // Coalesce pointer events into a steady ~20 fps render cadence.
-                try await Task.sleep(for: .milliseconds(50))
+                try await clock.sleep(until: nextFrame)
+                nextFrame = clock.now.advanced(by: .milliseconds(32))
                 try Task.checkCancellation()
                 guard let normalizedPoints = pendingCurvePreviewPoints else {
                     return
                 }
                 pendingCurvePreviewPoints = nil
 
-                let generation = curvePreviewGeneration
                 let startedAt = Date()
                 let rawOptions = parameters.rawProcessingOptions
                 let channel = parameters.curveChannel
                 let interactiveWidth = interactiveCurvePreviewWidth(for: parameters.previewWidth)
-                let operationParameters = curveOperationParameters(
-                    points: normalizedPoints,
-                    channel: channel,
-                    previewWidth: interactiveWidth
-                )
-                let output = makeCachedPreviewOutput(
-                    prefix: "curves-interactive",
-                    input: input,
-                    parameters: operationParameters
-                        .merging(rawDecodeParameters(from: rawOptions), uniquingKeysWith: { _, new in new }),
-                    includeEditGraph: false
-                )
+                let output = previewDirectory.appendingPathComponent("curves-interactive-\(UUID().uuidString).png")
+                defer {
+                    if interactiveCurveURL != output { try? FileManager.default.removeItem(at: output) }
+                }
 
                 // Interactive previews bypass runProcessingJob, whose normal setup
                 // creates this directory. A fresh unsaved project therefore needs
@@ -1781,33 +1816,21 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 )
 
                 var executionPath = "processing-service"
-                let result = try await runValidatedCachedStep(output: output, command: "curves interactive") {
-                    let pointPairs = normalizedPoints.map { ($0.input, $0.output) }
-                    if let bridged = try await EngineCurvePreview.runIfAvailableAsync(
-                        using: processingService,
-                        input: input,
-                        output: output,
-                        width: interactiveWidth,
-                        rawOptions: rawOptions,
-                        points: pointPairs,
-                        channel: channel,
-                        retainDecodedSource: true
-                    ) {
-                        executionPath = "engine-bridge"
-                        return bridged
-                    }
-                    executionPath = "processing-service"
-                    return try await processingService.makeCurvePreview(
-                        input: input,
-                        output: output,
-                        width: interactiveWidth,
-                        rawOptions: rawOptions,
-                        points: pointPairs,
-                        channel: channel
+                let pointPairs = normalizedPoints.map { ($0.input, $0.output) }
+                if try await EngineCurvePreview.runIfAvailableAsync(
+                    using: processingService, input: input, output: output,
+                    width: interactiveWidth, rawOptions: rawOptions, points: pointPairs,
+                    channel: channel, retainDecodedSource: true
+                ) != nil {
+                    executionPath = "engine-bridge"
+                } else {
+                    _ = try await processingService.makeCurvePreview(
+                        input: input, output: output, width: interactiveWidth,
+                        rawOptions: rawOptions, points: pointPairs, channel: channel
                     )
                 }
                 try Task.checkCancellation()
-                guard generation == curvePreviewGeneration,
+                guard channel == parameters.curveChannel,
                       curvePreviewBaseInputURL.map({ Self.urlsReferenceSameFile($0, input) }) == true
                 else {
                     continue
@@ -1815,18 +1838,14 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 logCurveTelemetry(
                     event: "interactive-preview-complete",
                     startedAt: startedAt,
-                    source: isCacheHitMessage(result.standardOutput) ? "cache" : executionPath,
+                    source: executionPath,
                     width: interactiveWidth,
                     points: normalizedPoints.count
                 )
-                setPreview(
-                    output,
-                    trackHistory: false,
-                    resetCurveReferenceHistogram: false
-                )
-                if let referenceHistogram = curvePreviewReferenceHistogram {
-                    curveReferenceHistogram = referenceHistogram
-                }
+                guard currentInputURL == input else { return }
+                let previous = interactiveCurveURL
+                interactiveCurveURL = output
+                if let previous { try? FileManager.default.removeItem(at: previous) }
                 commandOutput = "Curve preview"
                 errorMessage = nil
             } catch is CancellationError {
@@ -1843,23 +1862,12 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     @discardableResult
     public func cancelCurvePreview(restoreBasePreview: Bool = false) -> Bool {
         let baseInput = curvePreviewBaseInputURL
-        let referenceHistogram = curvePreviewReferenceHistogram
-        let hadPreview = baseInput != nil
+        guard baseInput != nil || curvePreviewTask != nil else { return false }
         cancelCurvePreviewTask()
         curvePreviewBaseInputURL = nil
         curvePreviewReferenceHistogram = nil
-        Task {
-            await EngineCurvePreview.clearCachedSourceAsync()
-        }
-        guard restoreBasePreview, let baseInput else {
-            return hadPreview
-        }
-        setPreview(baseInput, trackHistory: false, resetCurveReferenceHistogram: false)
-        if let referenceHistogram {
-            curveReferenceHistogram = referenceHistogram
-            histogram = referenceHistogram
-        }
-        return true
+        Task { await EngineCurvePreview.clearCachedSourceAsync() }
+        return baseInput != nil
     }
 
     public func resetCurveEditor() {
@@ -1868,21 +1876,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
         let restoredInteractivePreview = cancelCurvePreview(restoreBasePreview: true)
         parameters.resetCurve()
-        if restoreConsecutiveAppliedCurves(command: "Curve reset") {
+        if !restoredInteractivePreview, restoreConsecutiveAppliedCurves(command: "Curve reset") {
             return
-        }
-        if restoredInteractivePreview {
-            commandOutput = "Curve reset"
-            errorMessage = nil
-            return
-        }
-        if restorePreviousPreviewState(command: "Curve reset") {
-            return
-        }
-        if project.editGraph.operations.last?.kind == .curves {
-            recordEditGraphUndoSnapshot()
-            project.editGraph.operations.removeLast()
-            triggerAutosave()
         }
         commandOutput = "Curve reset"
         errorMessage = nil
@@ -1951,6 +1946,15 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             selectedTemplate = current.selectedTemplate == baseline.selectedTemplate
                 ? settings.selectedTemplate
                 : current.selectedTemplate
+            analysisWorkerCount = current.analysisWorkerCount == baseline.analysisWorkerCount
+                ? settings.analysisWorkerCount
+                : current.analysisWorkerCount
+            stackWorkerCount = current.stackWorkerCount == baseline.stackWorkerCount
+                ? settings.stackWorkerCount
+                : current.stackWorkerCount
+            computeBackend = current.computeBackend == baseline.computeBackend
+                ? settings.computeBackend
+                : current.computeBackend
 
             var mergedExportOptions = settings.exportOptions
             if current.exportOptions.bitDepth != baseline.exportOptions.bitDepth {
@@ -1998,6 +2002,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             autosaveEnabled: autosaveEnabled,
             selectedTemplate: selectedTemplate,
             language: language,
+            analysisWorkerCount: analysisWorkerCount,
+            stackWorkerCount: stackWorkerCount,
+            computeBackend: computeBackend,
             customCurvePresets: customCurvePresets,
             exportOptions: exportOptions
         )
@@ -2043,6 +2050,30 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         if isEnabled {
             scheduleAutosaveIfNeeded()
         }
+    }
+
+    public func setAnalysisWorkerCount(_ count: Int) {
+        let count = AppSettings.normalizedAnalysisWorkerCount(count)
+        guard analysisWorkerCount != count else { return }
+        analysisWorkerCount = count
+        persistUserSettings()
+    }
+
+    public func setStackWorkerCount(_ count: Int) {
+        let count = AppSettings.normalizedStackWorkerCount(count)
+        guard stackWorkerCount != count else { return }
+        stackWorkerCount = count
+        persistUserSettings()
+    }
+
+    public func setGPUAccelerationEnabled(_ isEnabled: Bool) {
+        setComputeBackend(isEnabled ? .automatic : .cpu)
+    }
+
+    public func setComputeBackend(_ backend: DeepSkyComputeBackend) {
+        guard computeBackend != backend else { return }
+        computeBackend = backend
+        persistUserSettings()
     }
 
     public func setExportBitDepth(_ bitDepth: ExportBitDepth) {
@@ -3017,6 +3048,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         else {
             return
         }
+        cancelCurvePreview()
         cancelMetadataRefresh()
         cancelRawPreviewUpdate()
         activeLayerID = nil
@@ -3632,6 +3664,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
+    func prepareRawForFinishing() {
+        guard canModifyWorkspaceProducts, currentInputURL == selectedAsset?.originalURL else { return }
+        scheduleRawPreviewUpdate()
+    }
+
     private func scheduleRawPreviewUpdate() {
         guard let selectedAsset, selectedAsset.kind == .raw else {
             return
@@ -4047,8 +4084,15 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             defer { try? FileManager.default.removeItem(at: recipeURL) }
             let report: DeepSkyReport
             do {
-                report = try await self.processingService.deepSky(recipe: recipeURL, outputDirectory: directory, analyzeOnly: analyzeOnly,
-                    buildIdentity: self.cacheBuildIdentity)
+                report = try await self.processingService.deepSky(
+                    recipe: recipeURL,
+                    outputDirectory: directory,
+                    analyzeOnly: analyzeOnly,
+                    analysisWorkers: self.analysisWorkerCount,
+                    stackWorkers: self.stackWorkerCount,
+                    computeBackend: self.computeBackend,
+                    buildIdentity: self.cacheBuildIdentity
+                )
             } catch {
                 // Even selection safeguards return a reviewable report. Never
                 // interpret process failure as a successful stack.
@@ -4065,6 +4109,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             var settings = self.deepSkySettings
             settings.lastReport = report
+            self.lastPerformance = report.performance
             self.project.deepSkySettings = settings
             if !analyzeOnly {
                 let output = URL(fileURLWithPath: report.developed)
@@ -4876,6 +4921,38 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
+    func startPhotoAdjustment(_ adjustments: PhotoAdjustments, input: URL) {
+        guard canProcessCurrentInput, !editGraphNeedsReplay, input == currentInputURL,
+              PhotoAdjustments.supports(input), !adjustments.isNeutral else { return }
+        launch { await self.applyPhotoAdjustment(adjustments, input: input) }
+    }
+
+    func applyPhotoAdjustment(_ adjustments: PhotoAdjustments, input: URL) async {
+        guard input == validatedCurrentInputURL(), PhotoAdjustments.supports(input),
+              !editGraphNeedsReplay, !adjustments.isNeutral else { return }
+        let values = adjustments.operationParameters.merging(rawDecodeParameters()) { value, _ in value }
+        let output = photoAdjustmentOutput(input: input, settings: adjustments, rawOptions: parameters.rawProcessingOptions)
+        await runProcessingJob(title: language.processingOperationName(.photoAdjust), kind: .photoAdjust, outputURL: output) {
+            let result = try await self.runValidatedCachedStep(output: output, command: "photo-adjust") {
+                try await PhotoAdjustmentRenderer().writeTIFF(input: input, output: output, adjustments: adjustments)
+                return ProcessingCommandResult(command: ["photo-adjust"], exitCode: 0, standardOutput: "", standardError: "")
+            }
+            try Task.checkCancellation()
+            self.commitPreviewWithDeferredHistogramRefresh(output)
+            self.recordOperation(.photoAdjust, parameters: values, outputURL: output, promoteToLayer: true, sourceURL: input)
+            return result
+        }
+    }
+
+    private func photoAdjustmentOutput(input: URL, settings: PhotoAdjustments, rawOptions: RawProcessingOptions) -> URL {
+        var cacheValues = settings.operationParameters
+        if !PhotoAdjustments.supports(input) {
+            cacheValues.merge(rawDecodeParameters(from: rawOptions)) { value, _ in value }
+        }
+        return makeCachedPreviewOutput(prefix: "photo-adjust-v1", input: input, parameters: cacheValues,
+                                       extension: "tiff", includeEditGraph: false)
+    }
+
     public func startContinuumTonePreview(settings: ContinuumToneSettings) {
         launch { await self.continuumTonePreview(settings: settings) }
     }
@@ -5140,6 +5217,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public func exportCurrentImage(to output: URL) async {
+        guard !hasPendingPhotoEdit else {
+            errorMessage = language == .simplifiedChinese ? "请先应用或重置当前试调。" : "Apply or reset the pending edits before exporting."
+            return
+        }
         do { try validateExportDestination(output) }
         catch { errorMessage = error.localizedDescription; return }
         guard editGraphNeedsReplay == false else {
@@ -7239,6 +7320,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         guard canModifyWorkspaceProducts else {
             return
         }
+        cancelCurvePreview()
         _ = restorePreviousPreviewState(command: localized(.restoredPreview))
     }
 
@@ -7756,6 +7838,17 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 ]
             }
             return ["strength": .decimal(0...1)]
+        case .photoAdjust:
+            var rules = Dictionary(uniqueKeysWithValues: PhotoAdjustments.Control.allCases.map {
+                ($0.rawValue, EditOperationParameterRule.decimal($0.range))
+            })
+            rules["aspect"] = .options(PhotoAdjustments.Aspect.allCases.map(\.rawValue))
+            rules["quarterTurns"] = .integer(0...3)
+            rules["cropScale"] = .decimal(1...3)
+            rules["mirror"] = .toggle
+            rules["horizontalPosition"] = .decimal(0...1)
+            rules["verticalPosition"] = .decimal(0...1)
+            return rules
         case .colorSaturate:
             return ["amount": .decimal(-0.5...1.5)]
         case .starDetect:
@@ -7820,6 +7913,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         for kind: ProcessingOperationKind
     ) -> Bool {
         switch kind {
+        case .photoAdjust:
+            return PhotoAdjustments(operationParameters: parameters) != nil
         case .denoise:
             return parameters["mode"] == nil || DisplayGridSettings(operationParameters: parameters) != nil
         case .localContrast:
@@ -7936,6 +8031,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             return
         }
 
+        cancelCurvePreview()
         foregroundGeneration += 1
         let generation = foregroundGeneration
         rawPreviewGeneration += 1
@@ -7967,6 +8063,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         operationID: EditOperation.ID? = nil,
         canvasMode: WorkspaceCanvasMode = .sourcePreview
     ) {
+        cancelCurvePreview()
         if trackHistory {
             appendPreviewHistoryState()
         }
@@ -7996,8 +8093,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     private func cancelCurvePreviewTask() {
-        curvePreviewGeneration += 1
         pendingCurvePreviewPoints = nil
+        if let interactiveCurveURL { try? FileManager.default.removeItem(at: interactiveCurveURL) }
+        interactiveCurveURL = nil
         curvePreviewLoopID = nil
         curvePreviewTask?.cancel()
         curvePreviewTask = nil
@@ -8937,14 +9035,21 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 if let reportPath = operation.parameters["report"], let outputPath = operation.parameters["output"],
                    let verified = try await processingService.reusableDeepSkyResult(
                     reportURL: URL(fileURLWithPath: reportPath), recipe: recipe,
-                    output: URL(fileURLWithPath: outputPath), buildIdentity: cacheBuildIdentity) {
+                    output: URL(fileURLWithPath: outputPath), buildIdentity: cacheBuildIdentity, computeBackend: computeBackend) {
                     return verified
                 }
                 let directory = trackReplayTemporaryDirectory(previewDirectory.appendingPathComponent("replay-deep-sky-\(UUID().uuidString)"))
                 let recipeURL = previewDirectory.appendingPathComponent("recipe-\(UUID().uuidString).txt")
                 try recipe.write(to: recipeURL, atomically: true, encoding: .utf8)
                 defer { try? FileManager.default.removeItem(at: recipeURL) }
-                let report = try await processingService.deepSky(recipe: recipeURL, outputDirectory: directory, analyzeOnly: false)
+                let report = try await processingService.deepSky(
+                    recipe: recipeURL,
+                    outputDirectory: directory,
+                    analyzeOnly: false,
+                    analysisWorkers: analysisWorkerCount,
+                    stackWorkers: stackWorkerCount,
+                    computeBackend: computeBackend
+                )
                 return URL(fileURLWithPath: report.developed)
             }
             return try await replayStackMacro(operation, mode: mode)
@@ -9176,6 +9281,26 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             let output = makeReplayOutput(prefix: "replay-neutralize", mode: mode)
             let strength = doubleParameter("strength", in: operation, defaultValue: 1.0)
             _ = try await processingService.colorNeutralize(input: input, output: output, strength: strength)
+            return output
+        case .photoAdjust:
+            guard let settings = PhotoAdjustments(operationParameters: operation.parameters) else {
+                throw EditGraphReplayError(message: localized(.invalidEditOperationParameter))
+            }
+            let rawOptions = rawOptionsParameter(in: operation)
+            let output = photoAdjustmentOutput(input: input, settings: settings, rawOptions: rawOptions)
+            _ = try await runValidatedCachedStep(output: output, command: "photo-adjust") {
+                // A full-resolution replay can reach a scientific source where
+                // the editor was showing an already decoded display proxy.
+                let displayInput = PhotoAdjustments.supports(input) ? input :
+                    makePreviewOutput(prefix: "replay-photo-source", extension: "tiff")
+                defer { if displayInput != input { try? FileManager.default.removeItem(at: displayInput) } }
+                if displayInput != input {
+                    _ = try await processingService.convert(input: input, output: displayInput,
+                        options: ExportOptions(bitDepth: .sixteen), rawOptions: rawOptions)
+                }
+                try await PhotoAdjustmentRenderer().writeTIFF(input: displayInput, output: output, adjustments: settings)
+                return ProcessingCommandResult(command: ["photo-adjust"], exitCode: 0, standardOutput: "", standardError: "")
+            }
             return output
         case .colorSaturate:
             let output = makeReplayOutput(prefix: "replay-saturate", mode: mode)
@@ -10680,6 +10805,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             autosaveEnabled: autosaveEnabled,
             selectedTemplate: selectedTemplate,
             language: language,
+            analysisWorkerCount: analysisWorkerCount,
+            stackWorkerCount: stackWorkerCount,
+            computeBackend: computeBackend,
             customCurvePresets: customCurvePresets,
             exportOptions: exportOptions
         )
@@ -10884,7 +11012,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     private func isFullResolutionExportOperation(_ operation: EditOperation) -> Bool {
         switch operation.kind {
         case .rawDecode, .background, .normalize, .stack, .drizzle, .mosaic, .crop, .register,
-             .stretch, .curves, .localContrast, .denoise, .sharpen, .deconvolve,
+             .stretch, .curves, .photoAdjust, .localContrast, .denoise, .sharpen, .deconvolve,
              .colorNeutralize, .colorSaturate, .starReduce, .comaReduce, .cloudRemove:
             return true
         case .artifactRemove:
@@ -11030,7 +11158,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         let cache = directory.appendingPathComponent("processing", isDirectory: true)
         try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
         let worker = PhotonStackWorkspaceModel(project: jobProject, parameters: workflow.parameters,
-            language: language, autosaveEnabled: false, exportOptions: workflow.exportOptions,
+            language: language, autosaveEnabled: false,
+            analysisWorkerCount: analysisWorkerCount, stackWorkerCount: stackWorkerCount,
+            computeBackend: computeBackend,
+            exportOptions: workflow.exportOptions,
             processingService: processingService, previewDirectory: cache)
         var input = first
         for (index, step) in workflow.steps.enumerated() {

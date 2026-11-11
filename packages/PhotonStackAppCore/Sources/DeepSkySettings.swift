@@ -119,9 +119,23 @@ public struct DeepSkyInspectedRecipe: Decodable, Sendable {
     public var recipe: String
 }
 
+public struct DeepSkyRunPerformance: Codable, Equatable, Sendable {
+    public var requestedAnalysisWorkers, requestedStackWorkers, peakAnalysisFrames: Int
+    public var admissionReason: String
+    public var stages: [Stage]
+    public struct Stage: Codable, Equatable, Sendable {
+        public var name, backend, fallback: String
+        public var executed: Bool
+        public var peakWorkers: Int
+        public var wallSeconds: Double
+        public var gpuSeconds: Double?
+    }
+}
+
 public struct DeepSkyReport: Codable, Equatable, Sendable {
     public var version: Int
     public var success, analysisOnly: Bool
+    public var performance: DeepSkyRunPerformance? = nil
     public var masterReused: Bool? = nil
     public var inputCount, selectedCount, referenceIndex: Int
     public var recipe, errorCode, message: String

@@ -1061,6 +1061,9 @@ import Testing
 }
 
 @Test func localizationSupportsEnglishAndSimplifiedChinese() {
+    #expect(AppLanguage.preferred(from: ["en-US", "zh-Hans-CN"]) == .english)
+    #expect(AppLanguage.preferred(from: ["fr-FR", "zh-Hant-TW"]) == .simplifiedChinese)
+    #expect(AppLanguage.preferred(from: ["fr-FR", "ja-JP"]) == .simplifiedChinese)
     #expect(AppLanguage.english.text(.importAction) == "Import")
     #expect(AppLanguage.simplifiedChinese.text(.importAction) == "导入")
     #expect(AppLanguage.simplifiedChinese.text(.projectMenu) == "项目")
@@ -1071,6 +1074,8 @@ import Testing
     #expect(AppLanguage.simplifiedChinese.processingJobTitle("Inspect M31.fit") == "检查 M31.fit")
     #expect(AppLanguage.simplifiedChinese.processingJobTitle("工作流 / Workflow: M31") == "工作流：M31")
     #expect(AppLanguage.english.processingJobTitle("工作流 / Workflow: M31") == "Workflow: M31")
+    #expect(AppLanguage.simplifiedChinese.localizedMessage("无法绑定新原片 / Cannot bind new source") == "无法绑定新原片")
+    #expect(AppLanguage.english.localizedMessage("无法绑定新原片 / Cannot bind new source") == "Cannot bind new source")
     #expect(AppLanguage.simplifiedChinese.roleName(.light) == "亮场")
     #expect(AppLanguage.simplifiedChinese.roleName(.mosaic) == "接片")
     #expect(AppLanguage.simplifiedChinese.alignmentMethodName(.translation) == "平移")
@@ -1338,6 +1343,9 @@ import Testing
         autosaveEnabled: false,
         selectedTemplate: .mosaic,
         language: .simplifiedChinese,
+        analysisWorkerCount: 3,
+        stackWorkerCount: 6,
+        gpuAccelerationEnabled: false,
         customCurvePresets: [customPreset],
         exportOptions: ExportOptions(bitDepth: .sixteen, colorSpace: .linearSRGB, jpegQuality: 0.8)
     )
@@ -1352,6 +1360,9 @@ import Testing
     #expect(loaded.autosaveEnabled == false)
     #expect(loaded.selectedTemplate == .mosaic)
     #expect(loaded.language == .simplifiedChinese)
+    #expect(loaded.analysisWorkerCount == 3)
+    #expect(loaded.stackWorkerCount == 6)
+    #expect(loaded.gpuAccelerationEnabled == false)
     #expect(loaded.customCurvePresets.count == 1)
     #expect(loaded.customCurvePresets.first?.name == customPreset.name)
     #expect(loaded.customCurvePresets.first?.parameters == customPreset.parameters)
@@ -1518,6 +1529,41 @@ import Testing
     #expect(settings.language == .simplifiedChinese)
     #expect(settings.customCurvePresets.isEmpty)
     #expect(settings.exportOptions == ExportOptions())
+}
+
+@Test func appSettingsAcceptsLocalizedLanguageIdentifiersAndRepairsUnknownValues() throws {
+    let english = try JSONDecoder().decode(
+        AppSettings.self,
+        from: Data(#"{"language":"en-US"}"#.utf8)
+    )
+    let chinese = try JSONDecoder().decode(
+        AppSettings.self,
+        from: Data(#"{"language":"zh-Hans"}"#.utf8)
+    )
+    let unknown = try JSONDecoder().decode(
+        AppSettings.self,
+        from: Data(#"{"language":"unsupported"}"#.utf8)
+    )
+
+    #expect(english.language == .english)
+    #expect(chinese.language == .simplifiedChinese)
+    #expect(unknown.language == .simplifiedChinese)
+}
+
+@Test func appSettingsDefaultsAndRepairsProcessingWorkerCounts() throws {
+    let legacy = try JSONDecoder().decode(AppSettings.self, from: Data(#"{}"#.utf8))
+    let invalid = try JSONDecoder().decode(
+        AppSettings.self,
+        from: Data(#"{"analysisWorkerCount":99,"stackWorkerCount":-1}"#.utf8)
+    )
+
+    #expect(legacy.analysisWorkerCount == 0)
+    #expect(legacy.stackWorkerCount == 0)
+    #expect(legacy.gpuAccelerationEnabled == true)
+    #expect(invalid.analysisWorkerCount == 0)
+    #expect(invalid.stackWorkerCount == 0)
+    #expect(AppSettings(analysisWorkerCount: 8, stackWorkerCount: 16).analysisWorkerCount == 8)
+    #expect(AppSettings(analysisWorkerCount: 8, stackWorkerCount: 16).stackWorkerCount == 16)
 }
 
 @Test func projectRepositoryRoundTripsProjectJSON() async throws {
@@ -1860,4 +1906,14 @@ import Testing
     #expect(decoded.focalLengthMM == 20)
     #expect(decoded.iso == nil)
     #expect(decoded.orientation == nil)
+}
+
+@Test func deepSkyComputeBackendMigratesLegacyPreferencesAndRoundTripsMetal() throws {
+    for (json, expected) in [(#"{"gpuAccelerationEnabled":false}"#, DeepSkyComputeBackend.cpu),
+                             (#"{"gpuAccelerationEnabled":true}"#, .automatic), ("{}", .automatic)] {
+        let settings = try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8))
+        #expect(settings.computeBackend == expected)
+    }
+    let data = try JSONEncoder().encode(AppSettings(computeBackend: .metal))
+    #expect(try JSONDecoder().decode(AppSettings.self, from: data).computeBackend == .metal)
 }

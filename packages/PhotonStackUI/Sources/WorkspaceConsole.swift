@@ -33,6 +33,7 @@ struct StatusConsole: View {
                 }
 
                 if let errorMessage = model.errorMessage {
+                    let localizedError = model.localizedMessage(errorMessage)
                     Button {
                         withAnimation(.easeInOut(duration: 0.18)) {
                             isCollapsed = false
@@ -43,8 +44,8 @@ struct StatusConsole: View {
                     }
                     .buttonStyle(.borderless)
                     .frame(width: 28, height: 24)
-                    .help(errorMessage)
-                    .accessibilityLabel(Text(errorMessage))
+                    .help(localizedError)
+                    .accessibilityLabel(Text(localizedError))
                 }
 
                 Button {
@@ -130,7 +131,7 @@ struct StatusConsole: View {
                 }
 
                 if let errorMessage = model.errorMessage {
-                    Text(errorMessage)
+                    Text(model.localizedMessage(errorMessage))
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.red)
                         .textSelection(.enabled)
@@ -262,7 +263,7 @@ private struct ConsoleOutputView: View {
     var body: some View {
         if let errorMessage = model.errorMessage {
             ScrollView {
-                Text(errorMessage)
+                Text(model.localizedMessage(errorMessage))
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.red)
                     .textSelection(.enabled)

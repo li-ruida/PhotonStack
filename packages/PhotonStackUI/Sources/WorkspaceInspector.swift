@@ -51,32 +51,19 @@ struct InspectorPanel: View {
                     }
 
                     if page == .processing {
-                        if !isFinishing {
-                        InspectorToolGroupView(
-                            model: model,
-                            group: .workflow,
-                            summary: summary(for: .workflow),
-                            isExpanded: binding(for: .workflow)
-                        ) {
-                            DeepSkyWorkflowOverview(model: model)
-                        }
-                        } else {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(model.language == .simplifiedChinese ? "后期调整" : "Finish your image").font(.headline)
-                                Text(model.language == .simplifiedChinese ? "先调整明暗与色彩，再检查噪点和细节。高级工具按需使用。" : "Start with tone and color, then inspect noise and detail. Advanced tools are optional.")
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                        }
                         if isFinishing {
-                        InspectorToolGroupView(
-                            model: model,
-                            group: .adjustments,
-                            summary: summary(for: .adjustments),
-                            isExpanded: binding(for: .adjustments)
-                        ) {
+                            Text(model.language == .simplifiedChinese ? "后期调整" : "Finish your image")
+                                .font(.headline)
                             AdjustmentsInspectorSection(model: model, parameters: processingParametersBinding)
-                        }
                         } else {
+                            InspectorToolGroupView(
+                                model: model,
+                                group: .workflow,
+                                summary: summary(for: .workflow),
+                                isExpanded: binding(for: .workflow)
+                            ) {
+                                DeepSkyWorkflowOverview(model: model)
+                            }
                             Button(model.language == .simplifiedChinese ? "直接调整当前图像…" : "Edit current image…") {
                                 NotificationCenter.default.post(name: .photonStackOpenFinishing, object: nil)
                             }
@@ -187,8 +174,6 @@ struct InspectorPanel: View {
             return "\(model.project.layers.count) \(model.localized(.layersLabel)) · \(model.project.artifacts.count) \(model.localized(.artifactsLabel))"
         case .workflow:
             return "\(model.roleName(.light)) \(model.lightAssets.count) · \(model.roleName(.dark)) \(model.darkAssets.count) · \(model.roleName(.flat)) \(model.flatAssets.count)"
-        case .adjustments:
-            return "\(model.localized(.previewWidth)) \(model.parameters.previewWidth) px"
         case .batch:
             return "\(model.batchQueue.count) \(model.localized(.tasksSection))"
         case .history:
@@ -233,12 +218,11 @@ private enum InspectorToolGroup: String, CaseIterable, Hashable {
     case photoInfo
     case workspace
     case workflow
-    case adjustments
     case batch
     case history
 
     static var defaultExpanded: [InspectorToolGroup] {
-        [.asset, .workflow, .adjustments, .history]
+        [.asset, .workflow, .history]
     }
 
     var titleKey: LocalizedTextKey {
@@ -253,8 +237,6 @@ private enum InspectorToolGroup: String, CaseIterable, Hashable {
             return .inspectorWorkspaceGroup
         case .workflow:
             return .inspectorWorkflowGroup
-        case .adjustments:
-            return .inspectorAdjustmentsGroup
         case .batch:
             return .inspectorBatchGroup
         case .history:
@@ -274,8 +256,6 @@ private enum InspectorToolGroup: String, CaseIterable, Hashable {
             return "rectangle.3.group"
         case .workflow:
             return "point.3.connected.trianglepath.dotted"
-        case .adjustments:
-            return "slider.horizontal.3"
         case .batch:
             return "tray.full"
         case .history:
@@ -295,8 +275,6 @@ private enum InspectorToolGroup: String, CaseIterable, Hashable {
             return .inspectorWorkspaceGroupIntro
         case .workflow:
             return .inspectorWorkflowGroupIntro
-        case .adjustments:
-            return .inspectorAdjustmentsGroupIntro
         case .batch:
             return .inspectorBatchGroupIntro
         case .history:

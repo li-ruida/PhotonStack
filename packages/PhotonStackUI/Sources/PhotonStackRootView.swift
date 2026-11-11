@@ -29,6 +29,10 @@ public extension Notification.Name {
     static let photonStackRunBatchRegistration = Notification.Name("dev.photonstack.runBatchRegistration")
     static let photonStackExportProductManifest = Notification.Name("dev.photonstack.exportProductManifest")
     static let photonStackPreviewLayerStack = Notification.Name("dev.photonstack.previewLayerStack")
+    static let photonStackSetApplicationLanguage = Notification.Name("dev.photonstack.setApplicationLanguage")
+    static let photonStackSetAnalysisWorkerCount = Notification.Name("dev.photonstack.setAnalysisWorkerCount")
+    static let photonStackSetStackWorkerCount = Notification.Name("dev.photonstack.setStackWorkerCount")
+    static let photonStackSetGPUAccelerationEnabled = Notification.Name("dev.photonstack.setGPUAccelerationEnabled")
     static let photonStackRequestApplicationTermination = Notification.Name("dev.photonstack.requestApplicationTermination")
     static let photonStackCloseWindowWithoutPrompt = Notification.Name("dev.photonstack.closeWindowWithoutPrompt")
 }
@@ -312,6 +316,16 @@ public struct PhotonStackRootView: View {
                 commandState: applicationCommandState
             )
         )
+        .modifier(PerformanceSettingsNotificationModifier(model: model))
+        .onReceive(NotificationCenter.default.publisher(for: .photonStackSetApplicationLanguage)) { notification in
+            guard let language = notification.object as? AppLanguage,
+                  model.language != language
+            else {
+                return
+            }
+            model.language = language
+            model.persistUserSettings()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .photonStackImportAssetURLs)) { notification in
             guard let urls = notification.object as? [URL], urls.isEmpty == false else {
                 return
@@ -331,7 +345,9 @@ public struct PhotonStackRootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .photonStackOpenFinishing)) { _ in
             navigateJourney(.finish)
         }
+        .onChange(of: model.currentInputURL) { _, _ in model.resetPhotoDraft() }
         .onChange(of: model.project.id) { _, _ in
+            model.resetPhotoDraft()
             finishingRequested = false
             inspectorPage = .processing
             isDeepSkyPresented = false

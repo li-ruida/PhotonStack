@@ -29,9 +29,12 @@ struct DeepSkyWorkflowOptions {
     // -1 selects a reference by measured stellar width/shape and coverage.
     int referenceIndex = -1;
     bool analysisOnly = false;
-    // Execution limit for analysis-only frame reads. Zero selects a budget from
+    // Execution limit for frame measurement and alignment. Zero selects a budget from
     // hardware and FITS geometry; one forces serial scheduling. Not a recipe field.
     std::size_t analysisWorkers = 0;
+    // Legacy override for Apple Core Image RAW rendering.
+    bool gpuAcceleration = true;
+    ComputeBackend computeBackend = ComputeBackend::Automatic;
     // Estimate and subtract sensor-fixed high-frequency residuals before CFA
     // interpolation. Requires uncalibrated FITS and sufficient field movement.
     bool sensorPattern = false;

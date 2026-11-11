@@ -36,6 +36,8 @@ add_library(photonstack_engine STATIC
   src/Registration.cpp
   src/ReconstructionProtection.cpp
   src/ScientificDisplayBridge.cpp
+  src/StageProfile.cpp
+  src/WorkerPool.cpp
   src/Stacker.cpp
   src/StarDetector.cpp
   src/StarCentroid.cpp
@@ -57,7 +59,7 @@ add_library(photonstack_engine STATIC
 )
 
 if(APPLE)
-  target_sources(photonstack_engine PRIVATE src/AppleRawDecoder.mm)
+  target_sources(photonstack_engine PRIVATE src/AppleRawDecoder.mm src/MetalCompute.mm)
   target_compile_options(photonstack_engine PRIVATE "$<$<COMPILE_LANGUAGE:OBJCXX>:-fobjc-arc>")
 else()
   find_package(OpenSSL REQUIRED COMPONENTS Crypto)

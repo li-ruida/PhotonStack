@@ -1,3 +1,4 @@
+#include "photonstack/StageProfile.hpp"
 #include "photonstack/ImageCodec.hpp"
 
 #ifdef __APPLE__
@@ -901,6 +902,7 @@ ImageReadResult ImageCodec::read(const std::filesystem::path& path, const ImageR
     }
 
     const bool rawInput = isRawPath(path);
+    const detail::StageScope timer(rawInput ? detail::Stage::RawDecode : detail::currentStage.stage);
     const bool proxyDecode = options.maximumDecodePixelSize > 0;
     const auto sourceGeometry = imageSourceGeometry(source.get());
     std::string rawFallbackErrorCode;
@@ -917,6 +919,7 @@ ImageReadResult ImageCodec::read(const std::filesystem::path& path, const ImageR
             applyRawDecodeOptions(rawResult.image, postDecodeOptions);
             return rawResult;
         }
+        detail::recordBackend("imageio", "Core Image RAW failed; ImageIO fallback");
         rawFallbackErrorCode = std::move(rawResult.errorCode);
         rawFallbackMessage = std::move(rawResult.message);
     }

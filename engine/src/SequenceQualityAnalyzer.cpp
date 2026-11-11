@@ -1,3 +1,4 @@
+#include "photonstack/StageProfile.hpp"
 #include "photonstack/SequenceQualityAnalyzer.hpp"
 
 #include "photonstack/ImageResizer.hpp"
@@ -143,6 +144,7 @@ std::vector<SequenceTransientTrail> detectResidualLines(const std::vector<std::s
 SequenceFrameSample SequenceQualityAnalyzer::sample(const ImageBuffer& image,
                                                     const SequenceQualityOptions& o,
                                                     const RegisteredGridRenderer& renderer) const {
+    const detail::StageScope timer(detail::Stage::Quality);
     SequenceFrameSample result;
     if (!validOptions(o) || (renderer && o.measureStars)) {
         result.errorCode = "ArgumentInvalid";
@@ -281,6 +283,7 @@ SequenceFrameSample SequenceQualityAnalyzer::sample(const ImageBuffer& image,
 
 SequenceQualityResult SequenceQualityAnalyzer::assess(const std::vector<SequenceFrameSample>& frames,
                                                      const SequenceQualityOptions& o) const {
+    const detail::StageScope timer(detail::Stage::Quality);
     SequenceQualityResult result;
     if (!validOptions(o) || frames.empty() ||
         (!o.overrides.empty() && o.overrides.size() != frames.size())) {

@@ -235,9 +235,7 @@ struct WorkflowLibrarySheet: View {
     }
 
     private func localizedWorkflowMessage(_ message: String) -> String {
-        let variants = message.components(separatedBy: " / ")
-        guard variants.count == 2 else { return message }
-        return chinese ? variants[0] : variants[1]
+        model.language.localizedMessage(message)
     }
     private func perform(_ action: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }

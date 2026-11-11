@@ -99,6 +99,34 @@ import Testing
     #expect(commandState.snapshot.canPreviewLayerStack == false)
 }
 
+@Test @MainActor func applicationLanguageRequestUpdatesCommands() {
+    let commandState = PhotonStackApplicationCommandState(language: .english)
+
+    commandState.requestLanguage(.simplifiedChinese)
+    #expect(commandState.snapshot.language == .simplifiedChinese)
+    #expect(commandState.processMenuTitle == "处理")
+
+    commandState.requestLanguage(.english)
+    #expect(commandState.snapshot.language == .english)
+    #expect(commandState.processMenuTitle == "Process")
+}
+
+@Test @MainActor func applicationConcurrencyRequestsUpdateSettingsSnapshot() {
+    let commandState = PhotonStackApplicationCommandState(language: .simplifiedChinese)
+
+    commandState.requestAnalysisWorkerCount(3)
+    commandState.requestStackWorkerCount(6)
+    commandState.requestGPUAccelerationEnabled(false)
+    #expect(commandState.snapshot.analysisWorkerCount == 3)
+    #expect(commandState.snapshot.stackWorkerCount == 6)
+    #expect(commandState.snapshot.gpuAccelerationEnabled == false)
+
+    commandState.requestAnalysisWorkerCount(99)
+    commandState.requestStackWorkerCount(-1)
+    #expect(commandState.snapshot.analysisWorkerCount == 0)
+    #expect(commandState.snapshot.stackWorkerCount == 0)
+}
+
 @Test @MainActor func stackWorkflowSkipsCalibrationWhenNoCalibrationFrames() async {
     let service = RecordingProcessingService()
     let lightA = URL(fileURLWithPath: "/tmp/photonstack-light-a.nef")
@@ -6273,6 +6301,146 @@ import Testing
     #expect(model.histogram?.bins.first == 0.25)
 }
 
+@Test func photoLevelsReadLegacyRecipesAndRejectInvalidSamplesAndIntervals() throws {
+    var legacy = PhotoAdjustments().operationParameters
+    legacy.removeValue(forKey: "blackPoint")
+    legacy.removeValue(forKey: "whitePoint")
+    let neutral = try #require(PhotoAdjustments(operationParameters: legacy))
+    #expect(neutral.isNeutral && neutral[.blackPoint] == 0 && neutral[.whitePoint] == 255)
+    legacy["blackPoint"] = "55"
+    legacy["whitePoint"] = "55"
+    #expect(PhotoAdjustments(operationParameters: legacy) == nil)
+    legacy["whitePoint"] = "155"
+    legacy["sampleRed"] = "0.25"
+    #expect(PhotoAdjustments(operationParameters: legacy) == nil)
+    legacy["sampleGreen"] = "nan"
+    legacy["sampleBlue"] = "0.3"
+    #expect(PhotoAdjustments(operationParameters: legacy) == nil)
+}
+
+@Test func photoWhiteBalanceSamplesOrientedCropAndClippingOnlyMarksThePreview() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let input = directory.appendingPathComponent("bands.png")
+    let output = directory.appendingPathComponent("levels.tiff")
+    let bands: [[UInt8]] = [
+        [100, 155, 90, 255], [0, 0, 0, 255], [1, 1, 1, 255], [64, 64, 64, 255],
+        [128, 128, 128, 255], [192, 192, 192, 255], [255, 70, 20, 255], [49, 38, 20, 128]
+    ]
+    let row = bands.flatMap { band in Array(repeating: band, count: 10).flatMap { $0 } }
+    let image = CIImage(bitmapData: Data(Array(repeating: row, count: 20).flatMap { $0 }),
+                        bytesPerRow: row.count, size: CGSize(width: 80, height: 20),
+                        format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+    let context = CIContext()
+    let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+    try context.writePNGRepresentation(of: image, to: input, format: .RGBA8, colorSpace: space)
+    let renderer = PhotoAdjustmentRenderer()
+    var settings = PhotoAdjustments()
+    settings.rotate(clockwise: true)
+    settings.aspect = .square
+    settings.verticalPosition = 0
+    let point = CGPoint(x: 0.5, y: 0.25)
+    let sample = try #require(try await renderer.neutralSample(input: input, adjustments: settings, at: point))
+    #expect(sample.green > sample.red && sample.red > sample.blue)
+    #expect(try await renderer.neutralSample(input: input, adjustments: settings, at: CGPoint(x: 0.5, y: 0.8)) == nil)
+    settings.neutralSample = sample
+    try await renderer.writeTIFF(input: input, output: output, adjustments: settings)
+    let gray = try rgbaPixel(in: output, x: 10, y: 15)
+    #expect(abs(Int(gray.red) - Int(gray.green)) <= 1 && abs(Int(gray.green) - Int(gray.blue)) <= 1)
+    #expect(PhotoAdjustments(operationParameters: settings.operationParameters) == settings)
+
+    settings = PhotoAdjustments()
+    settings[.blackPoint] = 64
+    settings[.whitePoint] = 192
+    try await renderer.writeTIFF(input: input, output: output, adjustments: settings)
+    #expect(try rgbaPixel(in: output, x: 35, y: 10).red <= 1)
+    #expect(try abs(Int(rgbaPixel(in: output, x: 45, y: 10).red) - 128) <= 1)
+    #expect(try rgbaPixel(in: output, x: 55, y: 10).red >= 254)
+    let overlay = try await renderer.preview(input: input, adjustments: settings, warnings: [.shadows, .highlights])
+    func pixel(_ x: Int) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: 4)
+        context.render(CIImage(cgImage: overlay.image), toBitmap: &bytes, rowBytes: 4,
+                       bounds: CGRect(x: x, y: 10, width: 1, height: 1), format: .RGBA8, colorSpace: space)
+        return bytes
+    }
+    #expect(pixel(15) == [0, 0, 255, 255])
+    #expect(pixel(65) == [255, 0, 0, 255])
+    #expect(pixel(75)[3] == 128)
+    #expect(try rgbaPixel(in: output, x: 15, y: 10).blue == 0)
+}
+
+@Test func photoAdjustmentCropAndRotatePreserveFraming() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let input = directory.appendingPathComponent("input.png")
+    let output = directory.appendingPathComponent("output.tiff")
+    try writeSolidPNG(to: input, red: 0.2, green: 0.4, blue: 0.8, width: 1800, height: 1200)
+    var settings = PhotoAdjustments()
+    settings.rotate(clockwise: true)
+    settings.aspect = .classic
+    settings.cropScale = 2
+    settings.horizontalPosition = 1
+    settings.verticalPosition = 0
+    settings.mirror = true
+    #expect(PhotoAdjustments(operationParameters: settings.operationParameters)?.flipVertical == false)
+    settings.flipVertical = true
+    #expect(PhotoAdjustments(operationParameters: settings.operationParameters) == settings)
+    #expect(settings.cropRect(in: CGSize(width: 1200, height: 1800)) == CGRect(x: 600, y: 1350, width: 600, height: 450))
+    let renderer = PhotoAdjustmentRenderer()
+    let draft = try await renderer.preview(input: input, adjustments: settings)
+    #expect(draft.sourceSize == CGSize(width: 600, height: 450))
+    try await renderer.writeTIFF(input: input, output: output, adjustments: settings)
+    #expect(await PhotoAdjustmentRenderer.sourceSize(at: output) == draft.sourceSize)
+}
+
+@Test @MainActor func photoAdjustmentRendersFullSizeReplaysAndUndoes() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let input = directory.appendingPathComponent("original.png")
+    try writeSolidPNG(to: input, red: 0.24, green: 0.32, blue: 0.40, width: 1800, height: 40)
+    let original = try Data(contentsOf: input)
+    var project = PhotonStackProject(name: "Photo edit")
+    project.addAssets(from: [input])
+    let model = PhotonStackWorkspaceModel(project: project, autosaveEnabled: false,
+        processingService: RecordingProcessingService(),
+        settingsRepository: AppSettingsRepository(settingsURL: directory.appendingPathComponent("settings.json")),
+        previewDirectory: directory.appendingPathComponent("previews"))
+
+    var settings = PhotoAdjustments()
+    settings[.exposure] = 1
+    settings[.saturation] = -1
+    let thumbnail = try await PhotoAdjustmentRenderer().preview(input: input, adjustments: settings)
+    #expect(thumbnail.image.width == 1400 && thumbnail.sourceSize == CGSize(width: 1800, height: 40))
+    await model.applyPhotoAdjustment(settings, input: input)
+    let applied = try #require(model.previewURL)
+    let image = try #require(CGImageSourceCreateWithURL(applied as CFURL, nil)
+        .flatMap { CGImageSourceCreateImageAtIndex($0, 0, nil) })
+    #expect(image.width == 1800 && image.height == 40 && image.bitsPerComponent == 16)
+    let pixel = try rgbaPixel(in: applied, x: 3, y: 3)
+    let before = try rgbaPixel(in: input, x: 3, y: 3)
+    #expect(pixel.red > before.red)
+    #expect(abs(Int(pixel.red) - Int(pixel.green)) <= 1 && abs(Int(pixel.green) - Int(pixel.blue)) <= 1)
+    let operation = try #require(model.project.editGraph.operations.last)
+    #expect(operation.kind == .photoAdjust)
+    #expect(PhotoAdjustments(operationParameters: operation.parameters) == settings)
+    model.stepBackPreview()
+    #expect(model.currentInputURL == input && model.project.editGraph.operations.isEmpty)
+
+    await model.applyPhotoAdjustment(settings, input: input)
+    let saved = try #require(model.project.editGraph.operations.last)
+    #expect(model.updateEditOperationParameter(saved.id, key: "exposure", value: "-1"))
+    let previousJobs = model.jobs.count
+    model.startReplayEditGraph()
+    try await waitForStartedProcessingCompletion(in: model, minimumJobCount: previousJobs + 1)
+    #expect(model.latestJob?.status == .succeeded)
+    let replayed = try #require(model.previewURL)
+    #expect(try rgbaPixel(in: replayed, x: 3, y: 3).red < pixel.red)
+    #expect(try Data(contentsOf: input) == original)
+}
+
 @Test @MainActor func curveInteractivePreviewUsesCombinedCurvePreviewProcessing() async throws {
     let service = RecordingProcessingService()
     let directory = FileManager.default.temporaryDirectory
@@ -6333,13 +6501,17 @@ import Testing
     model.startCurvePreview()
     try await waitForCurvePreviewCompletion(in: model)
 
-    #expect(model.previewURL != input)
+    let scratchFrame = try #require(model.interactiveCurveURL)
+    #expect(FileManager.default.fileExists(atPath: scratchFrame.path))
+    #expect(model.currentInputURL == input)
     #expect(model.project.editGraph.operations.isEmpty)
     #expect(model.project.layers.isEmpty)
 
     model.resetCurveEditor()
 
-    #expect(model.previewURL == input)
+    #expect(!FileManager.default.fileExists(atPath: scratchFrame.path))
+    #expect(model.interactiveCurveURL == nil)
+    #expect(model.currentInputURL == input)
     #expect(model.project.editGraph.operations.isEmpty)
 }
 
@@ -6505,7 +6677,7 @@ import Testing
     try await waitForCurvePreviewCompletion(in: model)
 
     #expect(FileManager.default.fileExists(atPath: missingPreviewDirectory.path))
-    #expect(model.previewURL.map { FileManager.default.fileExists(atPath: $0.path) } == true)
+    #expect(model.interactiveCurveURL.map { FileManager.default.fileExists(atPath: $0.path) } == true)
     #expect(model.errorMessage == nil)
     #expect(model.project.editGraph.operations.isEmpty)
 }
@@ -7067,6 +7239,9 @@ import Testing
         autosaveEnabled: false,
         selectedTemplate: .mosaic,
         language: .simplifiedChinese,
+        analysisWorkerCount: 3,
+        stackWorkerCount: 6,
+        gpuAccelerationEnabled: false,
         customCurvePresets: [loadedPreset],
         exportOptions: ExportOptions(
             bitDepth: .sixteen,
@@ -7099,6 +7274,9 @@ import Testing
     #expect(model.language == .english)
     #expect(model.autosaveEnabled == false)
     #expect(model.selectedTemplate == .mosaic)
+    #expect(model.analysisWorkerCount == 3)
+    #expect(model.stackWorkerCount == 6)
+    #expect(model.gpuAccelerationEnabled == false)
     #expect(model.customCurvePresets == [loadedPreset])
     #expect(model.recentProjects.map(\.directory) == loadedSettings.recentProjects.map(\.directory))
     #expect(model.exportOptions.bitDepth == .sixteen)
@@ -7109,6 +7287,9 @@ import Testing
     #expect(persisted.language == .english)
     #expect(persisted.autosaveEnabled == false)
     #expect(persisted.selectedTemplate == .mosaic)
+    #expect(persisted.analysisWorkerCount == 3)
+    #expect(persisted.stackWorkerCount == 6)
+    #expect(persisted.gpuAccelerationEnabled == false)
     #expect(persisted.customCurvePresets == [loadedPreset])
     #expect(persisted.exportOptions == model.exportOptions)
 }
@@ -7135,6 +7316,27 @@ import Testing
     #expect(persisted.exportOptions.bitDepth == .sixteen)
     #expect(persisted.exportOptions.colorSpace == .linearSRGB)
     #expect(await settingsStore.saveCount() == 2)
+}
+
+@Test @MainActor func processingPerformanceSettingsPersistForFutureRuns() async {
+    let settingsStore = ControllableAppSettingsStore(settings: AppSettings())
+    let model = PhotonStackWorkspaceModel(
+        processingService: RecordingProcessingService(),
+        settingsRepository: settingsStore
+    )
+
+    model.setAnalysisWorkerCount(3)
+    model.setStackWorkerCount(6)
+    model.setGPUAccelerationEnabled(false)
+    await model.waitForPendingUserSettingsPersistence()
+
+    let persisted = await settingsStore.currentSettings()
+    #expect(persisted.analysisWorkerCount == 3)
+    #expect(persisted.stackWorkerCount == 6)
+    #expect(persisted.gpuAccelerationEnabled == false)
+    #expect(model.applicationCommandSnapshot.analysisWorkerCount == 3)
+    #expect(model.applicationCommandSnapshot.stackWorkerCount == 6)
+    #expect(model.applicationCommandSnapshot.gpuAccelerationEnabled == false)
 }
 
 @Test @MainActor func userSettingsPersistenceReportsLatestFailureAndClearsAfterRetry() async {
@@ -8657,7 +8859,8 @@ import Testing
         previewDirectory: directory.appendingPathComponent("previews"))
     model.scheduleCurvePreview(points: model.parameters.curveEditorPoints)
     try await waitForCurvePreviewCompletion(in: model)
-    #expect(model.previewURL != input)
+    #expect(model.interactiveCurveURL != nil)
+    #expect(model.currentInputURL == input)
     model.createProject(template: .singleFrame, name: "Blank")
     // Restoring the old editor base must be impossible after project replacement.
     #expect(model.cancelCurvePreview(restoreBasePreview: true) == false)

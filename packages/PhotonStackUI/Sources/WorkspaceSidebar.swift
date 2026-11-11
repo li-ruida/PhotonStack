@@ -15,7 +15,34 @@ struct AssetSidebar: View {
     @State private var hoveredAssetID: PhotonStackAsset.ID?
 
     var body: some View {
+        let showingResult = model.isShowingLatestDeepSkyResult
         VStack(spacing: 0) {
+            if model.latestDeepSkyResultURL != nil {
+                Button {
+                    model.showLatestDeepSkyResult()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "photo.stack")
+                        Text(model.language == .simplifiedChinese ? "堆栈成片" : "Stack result")
+                        Spacer()
+                        if showingResult {
+                            Image(systemName: "checkmark").accessibilityHidden(true)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(showingResult ? Color.accentColor.opacity(0.16) : .clear,
+                                in: RoundedRectangle(cornerRadius: 6))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!model.canModifyProcessingConfiguration)
+                .accessibilityAddTraits(showingResult ? .isSelected : [])
+                .accessibilityIdentifier("sidebar.stack-result")
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                Divider()
+            }
             if model.project.assets.isEmpty {
                 Spacer(minLength: 20)
 
@@ -51,15 +78,15 @@ struct AssetSidebar: View {
 
                 Spacer(minLength: 20)
             } else {
-                List(selection: assetSelection) {
+                List(selection: assetSelection(showingResult: showingResult)) {
                     ForEach(assetGroups) { group in
                         Section {
                             ForEach(group.assets) { asset in
                                 SidebarAssetRow(
                                     model: model,
                                     asset: asset,
-                                    isSelected: asset.id == model.selectedAsset?.id,
-                                    showsRemoveButton: hoveredAssetID == asset.id || asset.id == model.selectedAssetID
+                                    isSelected: !showingResult && asset.id == model.selectedAsset?.id,
+                                    showsRemoveButton: hoveredAssetID == asset.id || (!showingResult && asset.id == model.selectedAssetID)
                                 )
                                 .tag(asset.id)
                                 .contentShape(Rectangle())
@@ -102,7 +129,7 @@ struct AssetSidebar: View {
                 }
                 .listStyle(.sidebar)
                 .onDeleteCommand {
-                    if let asset = model.selectedAsset, model.isProcessing == false {
+                    if !showingResult, let asset = model.selectedAsset, model.isProcessing == false {
                         model.requestAssetRemoval(asset)
                     }
                 }
@@ -125,9 +152,9 @@ struct AssetSidebar: View {
         }
     }
 
-    private var assetSelection: Binding<PhotonStackAsset.ID?> {
+    private func assetSelection(showingResult: Bool) -> Binding<PhotonStackAsset.ID?> {
         Binding(
-            get: { model.selectedAssetID },
+            get: { showingResult ? nil : model.selectedAssetID },
             set: { assetID in
                 guard model.isProcessing == false,
                       let assetID,

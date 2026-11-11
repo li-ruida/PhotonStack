@@ -21,10 +21,22 @@ struct PhotonStackMacApp: App {
                 .onAppear {
                     NSApp.setActivationPolicy(.regular)
                     NSApp.activate(ignoringOtherApps: true)
+                    PhotonStackMenuBarCoordinator.schedule(language: commandState.snapshot.language)
+                }
+                .onChange(of: commandState.snapshot.language) { _, language in
+                    PhotonStackMenuBarCoordinator.schedule(language: language)
                 }
         }
         .commands {
+            PhotonStackApplicationCommands(state: commandState)
             PhotonStackProcessCommands(state: commandState)
+        }
+
+        Settings {
+            PhotonStackSettingsView(commandState: commandState)
+                .onAppear {
+                    PhotonStackMenuBarCoordinator.schedule(language: commandState.snapshot.language)
+                }
         }
     }
 }

@@ -79,6 +79,8 @@ struct RawDecodeOptions {
     float manualBlackLevel = 0.0F;
     RawDemosaicQuality demosaicQuality = RawDemosaicQuality::High;
     bool linearOutput = true;
+    // Apple Core Image RAW rendering only. Other decoders ignore this flag.
+    bool useGPU = true;
 };
 
 enum class FitsDemosaic { Bilinear, Malvar, Menon, Ratio, MalvarGuarded };
@@ -88,6 +90,7 @@ struct FitsDecodeOptions {
     bool maskNonFinitePixels = false;
     // Opt in after sensor calibration; untagged mono/RGB FITS are unchanged.
     bool debayer = false;
+    bool preferMetal = false;
     FitsDemosaic demosaic = FitsDemosaic::Bilinear;
     // Normalize channel responses for cross-channel interpolation, then undo
     // them in the result. Measured samples and output physical units are retained.

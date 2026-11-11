@@ -18,6 +18,7 @@ public enum DeepSkyResultReuse {
 
     struct Prepared: Sendable {
         let buildIdentity: String
+        var computeBackend: DeepSkyComputeBackend? = nil
         let engineSHA256: String
         let recipe: String
         let sources: [Source]
@@ -34,6 +35,7 @@ public enum DeepSkyResultReuse {
     }
 
     struct VerifiedSources: Sendable {
+        var computeBackend: DeepSkyComputeBackend? = nil
         let buildIdentity: String
         let engineSHA256: String
         let sources: [Source]
@@ -43,6 +45,7 @@ public enum DeepSkyResultReuse {
     private struct Receipt: Codable {
         var version = 2
         let buildIdentity: String
+        var computeBackend: DeepSkyComputeBackend? = nil
         let engineSHA256: String
         let recipe: String
         let sources: [Source]
@@ -70,18 +73,19 @@ public enum DeepSkyResultReuse {
             throw DeepSkyRecipeError.inputsChanged
         }
         let output = URL(fileURLWithPath: report.developed).standardizedFileURL
-        let receipt = Receipt(buildIdentity: prepared.buildIdentity, engineSHA256: prepared.engineSHA256, recipe: report.recipe,
+        let receipt = Receipt(buildIdentity: prepared.buildIdentity, computeBackend: prepared.computeBackend, engineSHA256: prepared.engineSHA256, recipe: report.recipe,
             sources: prepared.sources, reportSHA256: try digest(reportURL),
             outputPath: output.path, outputSHA256: try digest(output))
         try JSONEncoder().encode(receipt).write(to: reportURL.deletingLastPathComponent().appendingPathComponent(receiptFileName), options: .atomic)
     }
 
-    public static func validatedOutput(reportURL: URL, recipe: String, output: URL, buildIdentity: String, engine: URL) async throws -> URL? {
+    public static func validatedOutput(reportURL: URL, recipe: String, output: URL, buildIdentity: String, engine: URL, computeBackend: DeepSkyComputeBackend? = nil) async throws -> URL? {
         do {
             let receiptURL = reportURL.deletingLastPathComponent().appendingPathComponent(receiptFileName)
             let receiptData = try boundedReceipt(receiptURL)
             let receipt = try JSONDecoder().decode(Receipt.self, from: receiptData)
-            guard receipt.version == 2, receipt.buildIdentity == buildIdentity, receipt.recipe == recipe,
+            guard computeBackend == nil || computeBackend == (receipt.computeBackend ?? .automatic),
+                  receipt.version == 2, receipt.buildIdentity == buildIdentity, receipt.recipe == recipe,
                   try digest(engine.resolvingSymlinksInPath()) == receipt.engineSHA256,
                   receipt.outputPath == output.standardizedFileURL.path,
                   !receipt.sources.isEmpty, receipt.sources.count <= 8_000,
@@ -117,7 +121,7 @@ public enum DeepSkyResultReuse {
               try JSONDecoder().decode(DeepSkyReport.self, from: boundedReceipt(reportURL, limit: 32 * 1_024 * 1_024)) == report else {
             throw DeepSkyRecipeError.invalidReport
         }
-        let verified = VerifiedSources(buildIdentity: receipt.buildIdentity, engineSHA256: receipt.engineSHA256,
+        let verified = VerifiedSources(computeBackend: receipt.computeBackend, buildIdentity: receipt.buildIdentity, engineSHA256: receipt.engineSHA256,
             sources: receipt.sources, reportSHA256: receipt.reportSHA256)
         try await revalidateSourcesForRefinish(verified, reportURL: reportURL)
         return verified

@@ -220,7 +220,7 @@ void printUsage() {
               << "  photonstack develop --help\n"
               << "  photonstack review-preview --input <image> --output <new.tiff> [--fits-debayer on|off] [--fits-demosaic malvar|bilinear|menon|ratio|malvar-guarded] [--fits-cfa-gains r,g,b] [RAW decode options as for convert]\n"
               << "  photonstack deep-sky schema\n"
-              << "  photonstack deep-sky --recipe <recipe.txt> --output-dir <new-directory> [--analyze-only]\n"
+              << "  photonstack deep-sky --recipe <recipe.txt> --output-dir <new-directory> [--analyze-only] [--analysis-workers 0..8] [--stack-workers 0..16] [--compute-backend auto|cpu|metal] [--gpu-acceleration on|off]\n"
               << "  photonstack deep-sky --write-default-recipe <new-recipe.txt> [--input <directory>]\n"
               << "  photonstack deep-sky --inspect-recipe <recipe.txt>\n"
               << "  photonstack deep-sky --recipe <recipe.txt> --from-master <linear RGB FITS> --output-dir <new-directory>\n"

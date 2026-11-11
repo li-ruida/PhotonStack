@@ -13,7 +13,7 @@ struct WorkspacePreviewSourceControl: View {
                     get: { model.isShowingLatestDeepSkyResult },
                     set: { if $0 { model.showLatestDeepSkyResult() } }
                 )) {
-                    Label(chinese ? "堆栈结果" : "Stack result", systemImage: "photo.stack")
+                    Text(chinese ? "堆栈成片" : "Stack result")
                 }
                 .help(chinese ? "返回最近完成的堆栈成片" : "Return to the latest completed stack")
                 .accessibilityIdentifier("workspace.preview-source.stack")
@@ -22,7 +22,7 @@ struct WorkspacePreviewSourceControl: View {
                     get: { model.isShowingSelectedOriginal },
                     set: { if $0 { model.showSelectedOriginal() } }
                 )) {
-                    Label(chinese ? "单张原片" : "Single frame", systemImage: "photo")
+                    Text(chinese ? "单张原片" : "Single frame")
                 }
                 .disabled(!model.canResetPreviewToOriginal)
                 .help(model.selectedAsset?.displayName ?? (chinese ? "先选择一张素材" : "Select a frame first"))

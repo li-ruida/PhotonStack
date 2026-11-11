@@ -1,13 +1,20 @@
 #include "DeepSkyCommand.hpp"
+#include "photonstack/StageProfile.hpp"
 #include "DeepSkyPreflight.hpp"
 #include "photonstack/DeepSkyRecipe.hpp"
 
 #include <algorithm>
 #include <cctype>
+#include <ctime>
+#include <thread>
 #include <filesystem>
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/resource.h>
+#endif
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -33,12 +40,28 @@ std::string json(const std::string& text) {
     out << '"'; return out.str();
 }
 const char* boolean(bool value) { return value ? "true" : "false"; }
+std::size_t workerCount(const std::string& value, std::size_t maximum, const std::string& option) {
+    std::size_t consumed = 0;
+    unsigned long long parsed = 0;
+    try { parsed = std::stoull(value, &consumed); }
+    catch (...) { throw std::invalid_argument(option + " expects an integer from 0 to " + std::to_string(maximum)); }
+    if (consumed != value.size() || parsed > maximum)
+        throw std::invalid_argument(option + " expects an integer from 0 to " + std::to_string(maximum));
+    return std::size_t(parsed);
+}
+bool onOff(const std::string& value, const std::string& option) {
+    if (value == "on") return true;
+    if (value == "off") return false;
+    throw std::invalid_argument(option + " expects on or off");
+}
 void help() {
     std::cout << R"(PhotonStack deep-sky: analyze, select, stack and finish light frames.
 
 Usage:
   photonstack deep-sky --input <light-directory> --output-dir <new-directory> [--analyze-only]
   photonstack deep-sky --recipe <recipe.txt> --output-dir <new-directory> [--analyze-only]
+                       [--analysis-workers 0..8] [--stack-workers 0..16]
+                       [--gpu-acceleration on|off]
   photonstack deep-sky --recipe <recipe.txt> --output-dir <work-directory> --preflight
   photonstack deep-sky --recipe <recipe.txt> --from-master <linear-RGB.fits> --output-dir <new-directory>
   photonstack deep-sky --write-default-recipe <new-recipe.txt> [--input <light-directory>]
@@ -50,6 +73,10 @@ Options:
   --recipe                Load processing settings and optional input paths.
   --output-dir            Write results to a new or empty directory.
   --analyze-only          Measure and select frames without stacking or finishing.
+  --analysis-workers      Concurrent frame analysis; 0 is memory-aware automatic (default).
+  --stack-workers         Robust stack-combine workers; 0 is automatic (default).
+  --gpu-acceleration      Allow Metal-backed Apple RAW rendering (legacy RAW override).
+  --compute-backend       auto, cpu, or metal (CFA interpolation, similarity warp and Winsor centers).
   --preflight             Inspect headers and estimate resources; writes no outputs.
   --from-master           Refinish an existing linear RGB FITS using a recipe;
                           cannot be combined with --input or --analyze-only.
@@ -155,6 +182,50 @@ std::string report(const DeepSkyWorkflowResult& r, const DeepSkyRecipe& recipe, 
     }
     out << "]}\n"; return out.str();
 }
+std::uint64_t peakResidentBytes() {
+#if defined(__unix__) || defined(__APPLE__)
+    rusage usage{};
+    if (getrusage(RUSAGE_SELF, &usage) == 0) {
+#ifdef __APPLE__
+        return usage.ru_maxrss;
+#else
+        return std::uint64_t(usage.ru_maxrss) * 1024;
+#endif
+    }
+#endif
+    return 0;
+}
+std::string performanceReport(const detail::StageProfile& profile, const DeepSkyRecipe& recipe,
+                              const DeepSkyWorkflowResult& result, double elapsed, double processCPU) {
+    std::ostringstream out;
+    out << std::setprecision(10) << R"({"version":1,"success":)" << boolean(result.ok)
+        << R"(,"wallSeconds":)" << elapsed << R"(,"cpuSeconds":)" << processCPU
+        << R"(,"peakResidentBytes":)" << peakResidentBytes()
+        << R"(,"cpuPercent":)" << (elapsed > 0 ? 100 * processCPU / elapsed : 0)
+        << R"(,"requestedBackend":)" << json(recipe.options.computeBackend == ComputeBackend::Metal ? "metal" :
+            recipe.options.computeBackend == ComputeBackend::CPU ? "cpu" : "auto")
+        << R"(,"inputCount":)" << recipe.inputs.size() << R"(,"selectedCount":)" << result.selectedCount
+        << R"(,"requestedAnalysisWorkers":)" << recipe.options.analysisWorkers
+        << R"(,"requestedStackWorkers":)" << recipe.options.stack.combineWorkers
+        << R"(,"peakAnalysisFrames":)" << profile.analysisPeak
+        << R"(,"admissionReason":)" << json(profile.admissionReason)
+        << R"(,"stages":[)";
+    for (unsigned i = 0; i < profile.stages.size(); ++i) {
+        const auto& stage = profile.stages[i];
+        if (i) out << ',';
+        out << R"({"name":)" << json(detail::stageNames[i]) << R"(,"executed":)" << boolean(stage.visits > 0)
+            << R"(,"visits":)" << stage.visits << R"(,"wallSeconds":)" << stage.wall << R"(,"threadCPUSeconds":)" << stage.cpu
+            << R"(,"peakWorkers":)" << stage.peakWorkers << R"(,"peakResidentBytesSampled":)" << stage.peakResidentBytes
+            << R"(,"backend":)" << json(stage.visits ? stage.backend : "none")
+            << R"(,"fallback":)" << json(stage.fallback) << R"(,"gpuSeconds":)";
+        if (i == unsigned(detail::Stage::RawDecode) && stage.backendReported && std::string_view(stage.backend) != "cpu")
+            out << "null"; // Core Image does not expose its command-buffer timestamps.
+        else out << stage.gpu;
+        out << '}';
+    }
+    out << "]}\n";
+    return out.str();
+}
 void saveNew(const fs::path& path, const std::string& text) {
     if (fs::exists(path)) throw std::invalid_argument("Refusing to replace existing file: " + path.string());
     std::ofstream file(path, std::ios::binary);
@@ -205,6 +276,9 @@ int runDeepSkyCommand(const std::vector<std::string>& args) {
         }
         fs::path recipePath, output, inputDirectory, defaultPath, fromMaster;
         bool analysisOnly = false, preflight = false;
+        std::optional<std::size_t> analysisWorkers, stackWorkers;
+        std::optional<bool> gpuAcceleration;
+        std::optional<ComputeBackend> computeBackend;
         std::set<std::string> seen;
         for (std::size_t i = 0; i < args.size(); ++i) {
             const auto key = args[i];
@@ -218,6 +292,15 @@ int runDeepSkyCommand(const std::vector<std::string>& args) {
             else if (key == "--output-dir") output = value;
             else if (key == "--input") inputDirectory = value;
             else if (key == "--write-default-recipe") defaultPath = value;
+            else if (key == "--analysis-workers") analysisWorkers = workerCount(value, 8, key);
+            else if (key == "--stack-workers") stackWorkers = workerCount(value, 16, key);
+            else if (key == "--compute-backend") {
+                if (value == "auto") computeBackend = ComputeBackend::Automatic;
+                else if (value == "cpu") computeBackend = ComputeBackend::CPU;
+                else if (value == "metal") computeBackend = ComputeBackend::Metal;
+                else throw std::invalid_argument("--compute-backend expects auto, cpu or metal");
+            }
+            else if (key == "--gpu-acceleration") gpuAcceleration = onOff(value, key);
             else throw std::invalid_argument("Unknown deep-sky argument: " + key);
         }
         DeepSkyRecipe recipe;
@@ -232,7 +315,9 @@ int runDeepSkyCommand(const std::vector<std::string>& args) {
             recipe.inputs = directoryInputs(inputDirectory);
         }
         if (!defaultPath.empty()) {
-            if (!recipePath.empty() || !output.empty() || analysisOnly || preflight || !fromMaster.empty()) throw std::invalid_argument("Default recipe writing cannot be combined with a run");
+            if (!recipePath.empty() || !output.empty() || analysisOnly || preflight || !fromMaster.empty() ||
+                analysisWorkers.has_value() || stackWorkers.has_value() || (gpuAcceleration.has_value() || computeBackend.has_value()))
+                throw std::invalid_argument("Default recipe writing cannot be combined with a run");
             saveNew(defaultPath, recipe.serialize());
             std::cout << "{\"type\":\"complete\",\"command\":\"deep-sky recipe\",\"output\":" << json(fs::absolute(defaultPath).string()) << "}\n";
             return 0;
@@ -243,22 +328,43 @@ int runDeepSkyCommand(const std::vector<std::string>& args) {
         recipe = DeepSkyRecipe::parse(recipe.serialize(), fs::current_path());
         output = fs::absolute(output).lexically_normal();
         if (preflight) {
-            if (analysisOnly || !fromMaster.empty()) throw std::invalid_argument("--preflight estimates the full light workflow and cannot be combined with --analyze-only or --from-master");
+            if (analysisOnly || !fromMaster.empty() || analysisWorkers.has_value() || stackWorkers.has_value() ||
+                (gpuAcceleration.has_value() || computeBackend.has_value()))
+                throw std::invalid_argument("--preflight estimates the full light workflow and cannot be combined with run worker overrides");
             std::cout << inspectDeepSkyPlan(recipe, output).json();
             return 0;
         }
         if (fs::exists(output) && (!fs::is_directory(output) || !fs::is_empty(output))) throw std::invalid_argument("Output directory must be new or empty");
         recipe.options.analysisOnly = analysisOnly;
+        recipe.options.analysisWorkers = analysisWorkers.value_or(0);
+        recipe.options.stack.combineWorkers = stackWorkers.value_or(0);
+        recipe.options.computeBackend = computeBackend.value_or(ComputeBackend::Automatic);
+        recipe.options.gpuAcceleration = recipe.options.computeBackend != ComputeBackend::CPU && gpuAcceleration.value_or(true);
         if (!fromMaster.empty() && (analysisOnly || !inputDirectory.empty() || recipePath.empty()))
             throw std::invalid_argument("--from-master requires a recipe and cannot analyze or import lights");
         const auto progress = [](const std::string& stage, double fraction, std::size_t frame, std::size_t total) {
                 std::cout << "{\"type\":\"progress\",\"task\":\"deep-sky\",\"command\":\"deep-sky\",\"stage\":" << json(stage)
                     << ",\"progress\":" << fraction << ",\"step\":" << frame << ",\"total\":" << total << "}\n" << std::flush;
             };
-        const auto result = !fromMaster.empty() ? DeepSkyWorkflow().finishMaster(fromMaster, output, recipe.options, progress) :
-            DeepSkyWorkflow().run(recipe.inputs, output, recipe.options, progress);
+        detail::StageProfile profile;
+        const auto started = std::chrono::steady_clock::now();
+        const auto cpuStarted = std::clock();
+        const auto result = [&] {
+            std::jthread sampler([&](std::stop_token stop) {
+                while (!stop.stop_requested()) {
+                    profile.sampleResidentMemory();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                }
+            });
+            const detail::StageScope scope({&profile, detail::Stage::Other});
+            return !fromMaster.empty() ? DeepSkyWorkflow().finishMaster(fromMaster, output, recipe.options, progress) :
+                DeepSkyWorkflow().run(recipe.inputs, output, recipe.options, progress);
+        }();
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        const double cpu = double(std::clock() - cpuStarted) / CLOCKS_PER_SEC;
         const auto text = report(result, recipe, analysisOnly);
         if (fs::is_directory(output)) {
+            saveNew(output / "performance.json", performanceReport(profile, recipe, result, elapsed, cpu));
             saveNew(output / "recipe.txt", recipe.serialize());
             saveNew(output / "report.json", text);
         }

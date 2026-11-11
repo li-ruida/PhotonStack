@@ -1,3 +1,8 @@
+#ifdef __APPLE__
+#include "MetalCompute.hpp"
+#endif
+#include <bit>
+#include "photonstack/StageProfile.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include "DemosaicMenon.hpp"
 #include "DemosaicRatio.hpp"
@@ -378,17 +383,6 @@ void appendCard(std::vector<unsigned char>& header, const std::string& card) {
     header.insert(header.end(), card.begin(), card.end());
 }
 
-void appendFloat32BigEndian(std::vector<unsigned char>& data, float value) {
-    std::uint32_t bits = 0;
-    static_assert(sizeof(bits) == sizeof(value));
-    std::copy(reinterpret_cast<const unsigned char*>(&value), reinterpret_cast<const unsigned char*>(&value) + 4,
-              reinterpret_cast<unsigned char*>(&bits));
-    data.push_back(static_cast<unsigned char>((bits >> 24U) & 0xFFU));
-    data.push_back(static_cast<unsigned char>((bits >> 16U) & 0xFFU));
-    data.push_back(static_cast<unsigned char>((bits >> 8U) & 0xFFU));
-    data.push_back(static_cast<unsigned char>(bits & 0xFFU));
-}
-
 float srgbToLinear(float value) {
     const float clamped = std::clamp(value, 0.0F, 1.0F);
     if (clamped <= 0.04045F) {
@@ -540,6 +534,7 @@ ImageReadResult FitsCodec::read(const std::filesystem::path& path, const FitsDec
 static ImageReadResult readFits(const std::filesystem::path& path, const FitsDecodeOptions& options,
                                 const CalibrationOptions* calibration, const ImageBuffer* sensorPattern,
                                 detail::GuardReplay* replay) {
+    const detail::StageScope timer(detail::Stage::FitsDecode);
     if (sensorPattern && (options.mode != FitsDecodeMode::Scientific ||
         (calibration && (calibration->bias || calibration->dark || calibration->flat))))
         return readError("SensorPatternConflict", "Sensor pattern requires scientific decoding without other calibration masters");
@@ -711,6 +706,7 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
     }
 
     if (options.debayer && description->channels == 1 && header.values.contains("BAYERPAT")) {
+        const detail::StageScope demosaicTimer(detail::Stage::Demosaic);
         for (float gain : options.cfaInterpolationGains)
             if (!std::isfinite(gain) || gain <= 0 || gain > 20)
                 return readError("ArgumentInvalid", "CFA interpolation gains must be finite, positive and at most 20");
@@ -753,6 +749,24 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
         const auto colorAt = [&](unsigned x, unsigned y) {
             return colors[2 * (y & 1U) + (x & 1U)];
         };
+        bool reconstructedOnGPU = false;
+        if (options.preferMetal) {
+#ifdef __APPLE__
+            // With 16-bit integer samples and unity gains the Malvar stencil
+            // sums (including half coefficients) are exactly representable in
+            // float. Other scientific units or masks use the CPU double kernel.
+            if (!calibration && !sensorPattern && options.mode == FitsDecodeMode::Scientific &&
+                description->bitpix == 16 && *bscale == 1 && (*bzero == 0 || *bzero == 32768) &&
+                options.cfaInterpolationGains == std::array<float,3>{1,1,1} &&
+                (options.demosaic == FitsDemosaic::Malvar || options.demosaic == FitsDemosaic::MalvarGuarded) &&
+                result.image.width >= 4 && result.image.height >= 4 && pixelCount >= 65536 && pixelCount <= UINT32_MAX)
+                reconstructedOnGPU = detail::metalDemosaic(mosaic, colors, result.image, options.demosaic == FitsDemosaic::MalvarGuarded);
+            else detail::recordBackend("cpu", "requires native 16-bit Malvar CFA, unit gains and a full-size image");
+#else
+            detail::recordBackend("cpu", "Metal unavailable on this platform");
+#endif
+        }
+        if (!reconstructedOnGPU)
         detail::parallelRanges(result.image.height, std::max<std::size_t>(1, 262144 / result.image.width),
             [&](std::size_t firstRow, std::size_t lastRow) noexcept {
                 for (int y = static_cast<int>(firstRow); y < static_cast<int>(lastRow); ++y) {
@@ -928,37 +942,25 @@ ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesyste
         return writeError("ImageEncodeFailed", "Failed while writing FITS file");
     }
 
-    std::vector<unsigned char> payloadChunk;
+    std::vector<std::uint32_t> chunk;
     try {
-        payloadChunk.reserve(kFitsStreamChunkBytes);
+        chunk.resize(kFitsStreamChunkBytes / sizeof(float));
     } catch (const std::bad_alloc&) {
         return writeError("ImageAllocationFailed", "Could not allocate the FITS encode buffer");
-    } catch (const std::length_error&) {
-        return writeError("ImageAllocationFailed", "Could not allocate the FITS encode buffer");
     }
-    const auto flushPayload = [&]() {
-        if (payloadChunk.empty()) {
-            return true;
-        }
-        file.write(reinterpret_cast<const char*>(payloadChunk.data()),
-                   static_cast<std::streamsize>(payloadChunk.size()));
-        payloadChunk.clear();
-        return static_cast<bool>(file);
-    };
-
+    const auto pixels = image.pixelCount();
     for (std::uint16_t channel = 0; channel < image.channels; ++channel) {
-        for (std::uint32_t y = 0; y < image.height; ++y) {
-            for (std::uint32_t x = 0; x < image.width; ++x) {
-                if (payloadChunk.size() + sizeof(float) > kFitsStreamChunkBytes && !flushPayload()) {
-                    return writeError("ImageEncodeFailed", "Failed while writing FITS file");
-                }
-                const auto offset = (static_cast<std::size_t>(y) * image.width + x) * image.channels + channel;
-                appendFloat32BigEndian(payloadChunk, sampleForFits(image, channel, offset));
+        for (std::size_t start = 0; start < pixels; start += chunk.size()) {
+            const auto count = std::min(chunk.size(), pixels - start);
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto value = sampleForFits(image, channel, (start + i) * image.channels + channel);
+                const auto bits = std::bit_cast<std::uint32_t>(value);
+                if constexpr (std::endian::native == std::endian::big) chunk[i] = bits;
+                else chunk[i] = (bits >> 24) | ((bits >> 8) & 0xff00u) | ((bits << 8) & 0xff0000u) | (bits << 24);
             }
+            file.write(reinterpret_cast<const char*>(chunk.data()), static_cast<std::streamsize>(count * sizeof(float)));
+            if (!file) return writeError("ImageEncodeFailed", "Failed while writing FITS file");
         }
-    }
-    if (!flushPayload()) {
-        return writeError("ImageEncodeFailed", "Failed while writing FITS file");
     }
 
     std::size_t payloadBytes = 0;

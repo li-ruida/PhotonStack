@@ -223,6 +223,7 @@ public enum ProcessingServiceError: Error, LocalizedError, Equatable {
     case outputMissing(path: String)
     case outputInvalid(path: String)
     case outputCommitFailed(path: String, reason: String)
+    case invalidArguments(String)
     case invalidReport(command: String)
     case invalidSelection(command: String)
     case inputColorEncodingMismatch(command: String, inputs: [String])
@@ -242,6 +243,8 @@ public enum ProcessingServiceError: Error, LocalizedError, Equatable {
             return "PhotonStack command created an unreadable image output: \(path)"
         case let .outputCommitFailed(path, reason):
             return "PhotonStack could not atomically replace its output at \(path): \(reason)"
+        case let .invalidArguments(message):
+            return message
         case let .invalidReport(command):
             return "PhotonStack command returned an invalid or incomplete report: \(command)"
         case let .invalidSelection(command):

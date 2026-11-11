@@ -76,7 +76,7 @@ struct EditGraphSection: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(operation.parameters["mode"] == "display-grid-v1"
                                     ? (model.language == .simplifiedChinese ? "细纹抑制" : "Grid reduction")
-                                    : operation.kind.rawValue)
+                                    : model.language.processingOperationName(operation.kind))
                                     .lineLimit(1)
                                 if let output = operation.parameters["output"] {
                                     Text(URL(fileURLWithPath: output).lastPathComponent)
@@ -284,10 +284,11 @@ private struct CurveNodePreviewView: View {
 
     private func curvePath(in size: CGSize) -> Path {
         Path { path in
+            let curve = WorkspaceSampledCurve(points: points)
             let samples = 48
             for sample in 0...samples {
                 let input = Double(sample) / Double(samples)
-                let output = curveOutput(for: input)
+                let output = curve.value(at: input)
                 let point = CGPoint(x: CGFloat(input) * size.width, y: (1.0 - CGFloat(output)) * size.height)
                 if sample == 0 {
                     path.move(to: point)
@@ -296,10 +297,6 @@ private struct CurveNodePreviewView: View {
                 }
             }
         }
-    }
-
-    private func curveOutput(for input: Double) -> Double {
-        sampleCurve(input, points: points)
     }
 
     private func position(for point: CurveEditorPoint, in size: CGSize) -> CGPoint {

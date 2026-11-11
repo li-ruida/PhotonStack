@@ -26,7 +26,8 @@ public extension ProcessingService {
         let sourcesVerified = try await DeepSkyResultReuse.validateSourcesForRefinish(report: previous, reportURL: previousReportURL)
         var reuse: DeepSkyResultReuse.Prepared?
         if let buildIdentity, let sourcesVerified {
-            let candidate = try await prepareDeepSkyReuse(recipe: recipe, buildIdentity: buildIdentity)
+            var candidate = try await prepareDeepSkyReuse(recipe: recipe, buildIdentity: buildIdentity)
+            candidate?.computeBackend = sourcesVerified.computeBackend
             // A master made by engine/build A and finished by B is valid, but
             // cannot claim to be the result of running the full recipe with B.
             if candidate?.buildIdentity == sourcesVerified.buildIdentity,
@@ -112,20 +113,43 @@ public extension ProcessingService {
         return report
     }
 
-    func deepSky(recipe: URL, outputDirectory: URL, analyzeOnly: Bool, buildIdentity: String? = nil) async throws -> DeepSkyReport {
+    func deepSky(
+        recipe: URL,
+        outputDirectory: URL,
+        analyzeOnly: Bool,
+        analysisWorkers: Int = 0,
+        stackWorkers: Int = 0,
+        gpuAcceleration: Bool = true,
+        computeBackend: DeepSkyComputeBackend? = nil,
+        buildIdentity: String? = nil
+    ) async throws -> DeepSkyReport {
         guard !FileManager.default.fileExists(atPath: outputDirectory.path) else {
             throw ProcessingServiceError.outputCommitFailed(path: outputDirectory.path, reason: "Deep-sky runs require a new output directory.")
+        }
+        guard (0...8).contains(analysisWorkers), (0...16).contains(stackWorkers) else {
+            throw ProcessingServiceError.invalidArguments(
+                "Deep-sky workers require analysis in 0...8 and stack combine in 0...16; zero selects automatic scheduling."
+            )
         }
         defer {
             // SIGTERM does not unwind C++ destructors. Only remove this run's
             // explicitly owned intermediates; retain reports and final masters.
             try? FileManager.default.removeItem(at: outputDirectory.appendingPathComponent(".aligned-work"))
         }
-        let reuse = try await prepareDeepSkyReuse(recipe: recipe, buildIdentity: analyzeOnly ? nil : buildIdentity)
+        var reuse = try await prepareDeepSkyReuse(recipe: recipe, buildIdentity: analyzeOnly ? nil : buildIdentity)
         var args = ["deep-sky", "--recipe", recipe.path, "--output-dir", outputDirectory.path]
         if analyzeOnly { args.append("--analyze-only") }
+        if analysisWorkers > 0 { args += ["--analysis-workers", String(analysisWorkers)] }
+        if stackWorkers > 0 { args += ["--stack-workers", String(stackWorkers)] }
+        let backend = computeBackend ?? (gpuAcceleration ? .automatic : .cpu)
+        reuse?.computeBackend = backend
+        args += ["--gpu-acceleration", backend == .cpu ? "off" : "on"]
+        if let computeBackend { args += ["--compute-backend", computeBackend.rawValue] }
         var report: DeepSkyReport = try decodeDeepSkyOutput(await runCLI(arguments: args))
         try report.validate()
+        if let data = try? Data(contentsOf: outputDirectory.appendingPathComponent("performance.json")) {
+            report.performance = try? JSONDecoder().decode(DeepSkyRunPerformance.self, from: data)
+        }
         guard report.success, report.analysisOnly == analyzeOnly else { throw DeepSkyRecipeError.invalidReport }
         if !analyzeOnly {
             try validateNoiseReferencePaths(report)
@@ -148,11 +172,11 @@ public extension ProcessingService {
         #endif
     }
 
-    func reusableDeepSkyResult(reportURL: URL, recipe: String, output: URL, buildIdentity: String) async throws -> URL? {
+    func reusableDeepSkyResult(reportURL: URL, recipe: String, output: URL, buildIdentity: String, computeBackend: DeepSkyComputeBackend? = nil) async throws -> URL? {
         #if os(macOS)
         guard let cli = self as? CLIProcessingService else { return nil }
         return try await DeepSkyResultReuse.validatedOutput(reportURL: reportURL, recipe: recipe,
-            output: output, buildIdentity: buildIdentity, engine: cli.executableURL)
+            output: output, buildIdentity: buildIdentity, engine: cli.executableURL, computeBackend: computeBackend)
         #else
         return nil
         #endif

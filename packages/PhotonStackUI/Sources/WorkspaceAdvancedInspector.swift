@@ -8,66 +8,102 @@ import os
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum AdvancedTool: String, CaseIterable {
+    case finishing, background, clouds, normalize, color, trails, stars, deconvolve, drizzle
+
+    func title(chinese: Bool) -> String {
+        switch self {
+        case .finishing: chinese ? "色彩与显示修整" : "Display finishing"
+        case .background: chinese ? "背景校正" : "Background"
+        case .clouds: chinese ? "云雾" : "Clouds"
+        case .normalize: chinese ? "信号归一化" : "Normalize"
+        case .color: chinese ? "色彩校正" : "Color correction"
+        case .trails: chinese ? "航迹与流星" : "Trails & meteors"
+        case .stars: chinese ? "星点蒙版" : "Star masks"
+        case .deconvolve: chinese ? "反卷积" : "Deconvolution"
+        case .drizzle: chinese ? "Drizzle 堆栈" : "Drizzle stack"
+        }
+    }
+}
+
+@MainActor
+final class AdvancedToolSettings: ObservableObject {
+    @Published var tool: AdvancedTool = .finishing
+    @Published var backgroundModel = "grid"
+    @Published var backgroundMode = "subtract"
+    @Published var backgroundStrength = 0.35
+    @Published var preserveBackgroundBrightness = true
+    @Published var protectBrightBackgroundTargets = true
+    @Published var selectedCloudIndices: Set<Int> = []
+    @Published var targetBackground = 0.25
+    @Published var targetScale = 1.0
+    @Published var neutralizeStrength = 1.0
+    @Published var saturationAmount = 0.2
+    @Published var starDetectionThreshold = 3.0
+    @Published var starMinimumPeak = 0.05
+    @Published var starMaskRadius = 2
+    @Published var largeStarMaskRadius = 6
+    @Published var layeredStarMask = true
+    @Published var deconvolutionIterations = 8
+    @Published var deconvolutionRadius = 2
+    @Published var deconvolutionSigma = 1.2
+    @Published var drizzleScale = 2
+    @Published var drizzlePixfrac = 1.0
+    @Published var drizzleAlignment: AlignmentMethod = .distortion
+    @Published var selectedArtifactIndices: Set<Int> = []
+    @Published var removeSelectedMeteors = false
+}
+
 struct AdvancedProcessingSection: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     @Binding var parameters: ProcessingParameters
-    @State private var backgroundModel = "grid"
-    @State private var backgroundMode = "subtract"
-    @State private var backgroundStrength = 0.35
-    @State private var preserveBackgroundBrightness = true
-    @State private var protectBrightBackgroundTargets = true
-    @State private var selectedCloudIndices: Set<Int> = []
-    @State private var targetBackground = 0.25
-    @State private var targetScale = 1.0
-    @State private var neutralizeStrength = 1.0
-    @State private var saturationAmount = 0.2
-    @State private var starDetectionThreshold = 3.0
-    @State private var starMinimumPeak = 0.05
-    @State private var starMaskRadius = 2
-    @State private var largeStarMaskRadius = 6
-    @State private var layeredStarMask = true
-    @State private var deconvolutionIterations = 8
-    @State private var deconvolutionRadius = 2
-    @State private var deconvolutionSigma = 1.2
-    @State private var drizzleScale = 2
-    @State private var drizzlePixfrac = 1.0
-    @State private var drizzleAlignment: AlignmentMethod = .distortion
-    @State private var selectedArtifactIndices: Set<Int> = []
-    @State private var removeSelectedMeteors = false
+    @ObservedObject var settings: AdvancedToolSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(model.localized(.advancedProcessingSection))
-                .font(.headline)
+            Picker(model.language == .simplifiedChinese ? "工具" : "Tool", selection: $settings.tool) {
+                ForEach(AdvancedTool.allCases, id: \.self) { tool in
+                    Text(tool.title(chinese: model.language == .simplifiedChinese)).tag(tool)
+                }
+            }
+            switch settings.tool {
+            case .finishing:
+                VStack(alignment: .leading, spacing: 10) {
+                    AstroDevelopControl(model: model)
+                    GreenCastControl(model: model)
+                    ContinuumToneControl(model: model)
+                    DisplayGridControl(model: model)
+                }
+                .buttonStyle(.bordered)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Picker(model.localized(.backgroundModel), selection: $backgroundModel) {
+            case .background:
+                Picker(model.localized(.backgroundModel), selection: $settings.backgroundModel) {
                     Text(model.localized(.globalModel)).tag("global")
                     Text(model.localized(.gridModel)).tag("grid")
                 }
                 .pickerStyle(.segmented)
 
-                Picker(model.localized(.backgroundMode), selection: $backgroundMode) {
+                Picker(model.localized(.backgroundMode), selection: $settings.backgroundMode) {
                     Text(model.localized(.subtractMode)).tag("subtract")
                     Text(model.localized(.divideMode)).tag("divide")
                 }
                 .pickerStyle(.segmented)
 
-                ParameterSlider(title: model.localized(.backgroundStrength), value: $backgroundStrength, range: 0.0...1.0)
+                ParameterSlider(title: model.localized(.backgroundStrength), value: $settings.backgroundStrength, range: 0.0...1.0)
 
-                if backgroundMode == "divide" {
+                if settings.backgroundMode == "divide" {
                     Toggle(
                         model.localized(.preserveBackgroundBrightness),
-                        isOn: $preserveBackgroundBrightness
+                        isOn: $settings.preserveBackgroundBrightness
                     )
                     .toggleStyle(.checkbox)
                     .help(model.localized(.preserveBackgroundBrightnessHelp))
                 }
 
-                if backgroundModel == "grid" {
+                if settings.backgroundModel == "grid" {
                     Toggle(
                         model.localized(.protectBrightBackgroundTargets),
-                        isOn: $protectBrightBackgroundTargets
+                        isOn: $settings.protectBrightBackgroundTargets
                     )
                     .toggleStyle(.checkbox)
                     .help(model.localized(.protectBrightBackgroundTargetsHelp))
@@ -75,11 +111,11 @@ struct AdvancedProcessingSection: View {
 
                 Button {
                     model.startBackgroundPreview(
-                        model: backgroundModel,
-                        mode: backgroundMode,
-                        strength: backgroundStrength,
-                        preserveBrightness: preserveBackgroundBrightness,
-                        protectBrightTargets: protectBrightBackgroundTargets
+                        model: settings.backgroundModel,
+                        mode: settings.backgroundMode,
+                        strength: settings.backgroundStrength,
+                        preserveBrightness: settings.preserveBackgroundBrightness,
+                        protectBrightTargets: settings.protectBrightBackgroundTargets
                     )
                 } label: {
                     Label(model.localized(.applyBackground), systemImage: "circle.lefthalf.filled")
@@ -88,9 +124,8 @@ struct AdvancedProcessingSection: View {
                 .buttonStyle(.bordered)
                 .disabled(model.canProcessCurrentInput == false || model.isProcessing)
 
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
+            case .clouds:
+                let hasReferences = model.temporalCloudReferenceCount >= 2
                 Text(model.localized(.cloudsSection))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -113,9 +148,9 @@ struct AdvancedProcessingSection: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.temporalCloudReferenceCount < 2 || model.canProcessCurrentInput == false || model.isProcessing)
+                .disabled(!hasReferences || model.canProcessCurrentInput == false || model.isProcessing)
 
-                if model.temporalCloudReferenceCount < 2 {
+                if !hasReferences {
                     Text("至少载入 3 张同尺寸的光照/参考帧后可启用弱云辅助识别。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -165,7 +200,7 @@ struct AdvancedProcessingSection: View {
                                         Image(systemName: "cloud")
                                             .foregroundStyle(.cyan)
                                         VStack(alignment: .leading, spacing: 2) {
-                                            Text(item.displayLabel)
+                            Text(item.displayLabel)
                                                 .font(.caption)
                                             Text(item.temporalSupport > 0
                                                 ? "A \(item.coverage * 100, format: .number.precision(.fractionLength(1)))%  C \(item.confidence, format: .number.precision(.fractionLength(2)))  T \(item.temporalSupport)"
@@ -189,7 +224,7 @@ struct AdvancedProcessingSection: View {
 
                     Button {
                         model.startRemoveClouds(
-                            selectedIndices: Array(selectedCloudIndices).sorted(),
+                            selectedIndices: Array(settings.selectedCloudIndices).sorted(),
                             strength: model.parameters.cloudRemovalStrength
                         )
                     } label: {
@@ -197,47 +232,43 @@ struct AdvancedProcessingSection: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(selectedCloudIndices.isEmpty || model.canProcessCurrentInput == false || model.isProcessing)
+                    .disabled(settings.selectedCloudIndices.isEmpty || model.canProcessCurrentInput == false || model.isProcessing)
                     if report.temporalFramesUsed > 0 {
                         Text("去除会复用这次多帧确认的掩膜；需要至少保留 3 张同组帧。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
                 }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                ParameterSlider(title: model.localized(.targetBackground), value: $targetBackground, range: 0.02...0.6)
-                ParameterSlider(title: model.localized(.targetScale), value: $targetScale, range: 0.5...2.0)
+            case .normalize:
+                ParameterSlider(title: model.localized(.targetBackground), value: $settings.targetBackground, range: 0.02...0.6)
+                ParameterSlider(title: model.localized(.targetScale), value: $settings.targetScale, range: 0.5...2.0)
 
                 Button {
-                    model.startNormalizePreview(targetBackground: targetBackground, targetScale: targetScale)
+                    model.startNormalizePreview(targetBackground: settings.targetBackground, targetScale: settings.targetScale)
                 } label: {
                     Label(model.localized(.normalizeAction), systemImage: "equal.circle")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .disabled(model.canProcessCurrentInput == false || model.isProcessing)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
+            case .color:
                 Text(model.localized(.colorSection))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                ParameterSlider(title: model.localized(.neutralizeStrength), value: $neutralizeStrength, range: 0.0...1.0)
-                ParameterSlider(title: model.localized(.saturationAmount), value: $saturationAmount, range: -0.5...1.5)
+                ParameterSlider(title: model.localized(.neutralizeStrength), value: $settings.neutralizeStrength, range: 0.0...1.0)
+                ParameterSlider(title: model.localized(.saturationAmount), value: $settings.saturationAmount, range: -0.5...1.5)
 
                 HStack {
                     Button {
-                        model.startColorNeutralizePreview(strength: neutralizeStrength)
+                        model.startColorNeutralizePreview(strength: settings.neutralizeStrength)
                     } label: {
                         Label(model.localized(.neutralizeAction), systemImage: "eyedropper.halffull")
                             .frame(maxWidth: .infinity)
                     }
 
                     Button {
-                        model.startColorSaturatePreview(amount: saturationAmount)
+                        model.startColorSaturatePreview(amount: settings.saturationAmount)
                     } label: {
                         Label(model.localized(.saturationAction), systemImage: "paintpalette")
                             .frame(maxWidth: .infinity)
@@ -245,9 +276,7 @@ struct AdvancedProcessingSection: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(model.canProcessCurrentInput == false || model.isProcessing)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
+            case .trails:
                 Text(model.localized(.artifactTrailsSection))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
@@ -343,7 +372,7 @@ struct AdvancedProcessingSection: View {
                                                 .foregroundStyle(.secondary)
                                         }
                                         Spacer()
-                                        Text(item.displayLabel)
+                        Text(item.displayLabel)
                                             .font(.caption2.monospaced())
                                             .foregroundStyle(.secondary)
                                     }
@@ -359,55 +388,53 @@ struct AdvancedProcessingSection: View {
                         }
                     }
 
-                    Toggle(model.localized(.allowMeteorRemoval), isOn: $removeSelectedMeteors)
+                    Toggle(model.localized(.allowMeteorRemoval), isOn: $settings.removeSelectedMeteors)
                         .toggleStyle(.checkbox)
 
                     Button {
                         model.startRemoveArtifactTrails(
-                            selectedIndices: Array(selectedArtifactIndices).sorted(),
-                            removeMeteors: removeSelectedMeteors
+                            selectedIndices: Array(settings.selectedArtifactIndices).sorted(),
+                            removeMeteors: settings.removeSelectedMeteors
                         )
                     } label: {
                         Label(model.localized(.removeSelectedTrails), systemImage: "checklist.checked")
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(selectedArtifactIndices.isEmpty || model.canProcessCurrentInput == false || model.isProcessing)
+                    .disabled(settings.selectedArtifactIndices.isEmpty || model.canProcessCurrentInput == false || model.isProcessing)
                 }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
+            case .stars:
                 Text(model.localized(.starToolsSection))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
                 ParameterSlider(
                     title: model.localized(.starDetectionThreshold),
-                    value: $starDetectionThreshold,
+                    value: $settings.starDetectionThreshold,
                     range: 1.0...8.0
                 )
                 ParameterSlider(
                     title: model.localized(.starMinimumPeak),
-                    value: $starMinimumPeak,
+                    value: $settings.starMinimumPeak,
                     range: 0.0...0.5
                 )
                 Stepper(
-                    "\(model.localized(.starMaskRadius)) \(starMaskRadius)",
-                    value: $starMaskRadius,
+                    "\(model.localized(.starMaskRadius)) \(settings.starMaskRadius)",
+                    value: $settings.starMaskRadius,
                     in: 1...16
                 )
                 Stepper(
-                    "\(model.localized(.largeStarMaskRadius)) \(largeStarMaskRadius)",
-                    value: $largeStarMaskRadius,
-                    in: max(starMaskRadius, 2)...32
+                    "\(model.localized(.largeStarMaskRadius)) \(settings.largeStarMaskRadius)",
+                    value: $settings.largeStarMaskRadius,
+                    in: max(settings.starMaskRadius, 2)...32
                 )
-                Toggle(model.localized(.layeredStarMask), isOn: $layeredStarMask)
+                Toggle(model.localized(.layeredStarMask), isOn: $settings.layeredStarMask)
 
                 HStack {
                     Button {
                         model.startDetectStars(
-                            sigmaThreshold: starDetectionThreshold,
-                            minPeak: starMinimumPeak
+                            sigmaThreshold: settings.starDetectionThreshold,
+                            minPeak: settings.starMinimumPeak
                         )
                     } label: {
                         Label(model.localized(.detectStarsAction), systemImage: "sparkle.magnifyingglass")
@@ -416,11 +443,11 @@ struct AdvancedProcessingSection: View {
 
                     Button {
                         model.startCreateStarMask(
-                            radius: starMaskRadius,
-                            largeRadius: largeStarMaskRadius,
-                            layered: layeredStarMask,
-                            sigmaThreshold: starDetectionThreshold,
-                            minPeak: starMinimumPeak
+                            radius: settings.starMaskRadius,
+                            largeRadius: settings.largeStarMaskRadius,
+                            layered: settings.layeredStarMask,
+                            sigmaThreshold: settings.starDetectionThreshold,
+                            minPeak: settings.starMinimumPeak
                         )
                     } label: {
                         Label(model.localized(.createStarMaskAction), systemImage: "circle.grid.cross")
@@ -435,30 +462,28 @@ struct AdvancedProcessingSection: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
+            case .deconvolve:
                 Text(model.localized(.deconvolutionSection))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
                 Stepper(
-                    "\(model.localized(.deconvolutionIterations)) \(deconvolutionIterations)",
-                    value: $deconvolutionIterations,
+                    "\(model.localized(.deconvolutionIterations)) \(settings.deconvolutionIterations)",
+                    value: $settings.deconvolutionIterations,
                     in: 1...32
                 )
                 Stepper(
-                    "\(model.localized(.deconvolutionRadius)) \(deconvolutionRadius)",
-                    value: $deconvolutionRadius,
+                    "\(model.localized(.deconvolutionRadius)) \(settings.deconvolutionRadius)",
+                    value: $settings.deconvolutionRadius,
                     in: 1...8
                 )
-                ParameterSlider(title: model.localized(.deconvolutionSigma), value: $deconvolutionSigma, range: 0.5...3.5)
+                ParameterSlider(title: model.localized(.deconvolutionSigma), value: $settings.deconvolutionSigma, range: 0.5...3.5)
 
                 Button {
                     model.startDeconvolvePreview(
-                        iterations: deconvolutionIterations,
-                        radius: deconvolutionRadius,
-                        sigma: deconvolutionSigma
+                        iterations: settings.deconvolutionIterations,
+                        radius: settings.deconvolutionRadius,
+                        sigma: settings.deconvolutionSigma
                     )
                 } label: {
                     Label(model.localized(.deconvolveAction), systemImage: "scope")
@@ -466,20 +491,18 @@ struct AdvancedProcessingSection: View {
                 }
                 .buttonStyle(.bordered)
                 .disabled(model.canProcessCurrentInput == false || model.isProcessing)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
+            case .drizzle:
                 Text(model.localized(.drizzleSection))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                Stepper("\(model.localized(.drizzleScale)) \(drizzleScale)x", value: $drizzleScale, in: 1...4)
+                Stepper("\(model.localized(.drizzleScale)) \(settings.drizzleScale)x", value: $settings.drizzleScale, in: 1...4)
                 ParameterSlider(
                     title: model.localized(.drizzlePixfrac),
-                    value: $drizzlePixfrac,
+                    value: $settings.drizzlePixfrac,
                     range: 0.1...1.0
                 )
-                Picker(model.localized(.drizzleAlign), selection: $drizzleAlignment) {
+                Picker(model.localized(.drizzleAlign), selection: $settings.drizzleAlignment) {
                     ForEach(AlignmentMethod.allCases, id: \.self) { method in
                         Text(model.alignmentMethodName(method)).tag(method)
                     }
@@ -488,9 +511,9 @@ struct AdvancedProcessingSection: View {
 
                 Button {
                     model.startRunDrizzle(
-                        scale: drizzleScale,
-                        pixfrac: drizzlePixfrac,
-                        alignment: drizzleAlignment
+                        scale: settings.drizzleScale,
+                        pixfrac: settings.drizzlePixfrac,
+                        alignment: settings.drizzleAlignment
                     )
                 } label: {
                     Label(model.localized(.drizzleAction), systemImage: "rectangle.grid.2x2")
@@ -501,72 +524,72 @@ struct AdvancedProcessingSection: View {
             }
         }
         .onChange(of: model.artifactTrailReport) { _, report in
-            selectedArtifactIndices = Set(
+            settings.selectedArtifactIndices = Set(
                 report?.topItems
                     .filter { $0.kind != "meteor" }
                     .prefix(8)
                     .map(\.index) ?? []
             )
-            removeSelectedMeteors = false
-            model.refreshArtifactMarkedPreview(selectedIndices: selectedArtifactIndices)
+            settings.removeSelectedMeteors = false
+            model.refreshArtifactMarkedPreview(selectedIndices: settings.selectedArtifactIndices)
         }
         .onChange(of: model.cloudRegionReport) { _, report in
-            selectedCloudIndices.removeAll()
-            model.refreshCloudMarkedPreview(selectedIndices: selectedCloudIndices)
+            settings.selectedCloudIndices.removeAll()
+            model.refreshCloudMarkedPreview(selectedIndices: settings.selectedCloudIndices)
         }
-        .onChange(of: starMaskRadius) { _, radius in
-            largeStarMaskRadius = max(largeStarMaskRadius, radius)
+        .onChange(of: settings.starMaskRadius) { _, radius in
+            settings.largeStarMaskRadius = max(settings.largeStarMaskRadius, radius)
         }
     }
 
     private func cloudSelectionBinding(for index: Int) -> Binding<Bool> {
         Binding {
-            selectedCloudIndices.contains(index)
+            settings.selectedCloudIndices.contains(index)
         } set: { isSelected in
             if isSelected {
-                selectedCloudIndices.insert(index)
+                settings.selectedCloudIndices.insert(index)
             } else {
-                selectedCloudIndices.remove(index)
+                settings.selectedCloudIndices.remove(index)
             }
-            model.refreshCloudMarkedPreview(selectedIndices: selectedCloudIndices)
+            model.refreshCloudMarkedPreview(selectedIndices: settings.selectedCloudIndices)
         }
     }
 
     private func selectVisibleClouds(_ report: CloudRegionReport) {
-        selectedCloudIndices = Set(report.topItems.map(\.index))
-        model.refreshCloudMarkedPreview(selectedIndices: selectedCloudIndices)
+        settings.selectedCloudIndices = Set(report.topItems.map(\.index))
+        model.refreshCloudMarkedPreview(selectedIndices: settings.selectedCloudIndices)
     }
 
     private func clearCloudSelection() {
-        selectedCloudIndices.removeAll()
-        model.refreshCloudMarkedPreview(selectedIndices: selectedCloudIndices)
+        settings.selectedCloudIndices.removeAll()
+        model.refreshCloudMarkedPreview(selectedIndices: settings.selectedCloudIndices)
     }
 
     private func artifactSelectionBinding(for index: Int) -> Binding<Bool> {
         Binding {
-            selectedArtifactIndices.contains(index)
+            settings.selectedArtifactIndices.contains(index)
         } set: { isSelected in
             if isSelected {
-                selectedArtifactIndices.insert(index)
+                settings.selectedArtifactIndices.insert(index)
             } else {
-                selectedArtifactIndices.remove(index)
+                settings.selectedArtifactIndices.remove(index)
             }
-            model.refreshArtifactMarkedPreview(selectedIndices: selectedArtifactIndices)
+            model.refreshArtifactMarkedPreview(selectedIndices: settings.selectedArtifactIndices)
         }
     }
 
     private func selectVisibleArtificialArtifacts(_ report: ArtifactTrailReport) {
-        selectedArtifactIndices = Set(
+        settings.selectedArtifactIndices = Set(
             report.topItems
                 .filter { $0.kind != "meteor" }
                 .map(\.index)
         )
-        model.refreshArtifactMarkedPreview(selectedIndices: selectedArtifactIndices)
+        model.refreshArtifactMarkedPreview(selectedIndices: settings.selectedArtifactIndices)
     }
 
     private func clearArtifactSelection() {
-        selectedArtifactIndices.removeAll()
-        model.refreshArtifactMarkedPreview(selectedIndices: selectedArtifactIndices)
+        settings.selectedArtifactIndices.removeAll()
+        model.refreshArtifactMarkedPreview(selectedIndices: settings.selectedArtifactIndices)
     }
 
     private func artifactKindName(_ kind: String) -> String {

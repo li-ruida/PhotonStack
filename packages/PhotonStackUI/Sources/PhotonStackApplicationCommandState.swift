@@ -3,25 +3,49 @@ import SwiftUI
 
 public struct PhotonStackApplicationCommandSnapshot: Equatable, Sendable {
     public var language: AppLanguage
+    public var analysisWorkerCount: Int
+    public var stackWorkerCount: Int
+    public var computeBackend: DeepSkyComputeBackend
+    public var performance: DeepSkyRunPerformance?
+    public var gpuAccelerationEnabled: Bool { computeBackend != .cpu }
     public var isWorkspaceActive: Bool
     public var canRunBatchRegistration: Bool
     public var canPreviewLayerStack: Bool
 
     public init(
         language: AppLanguage,
+        analysisWorkerCount: Int = 0,
+        stackWorkerCount: Int = 0,
+        gpuAccelerationEnabled: Bool = true,
+        computeBackend: DeepSkyComputeBackend? = nil,
+        performance: DeepSkyRunPerformance? = nil,
         isWorkspaceActive: Bool,
         canRunBatchRegistration: Bool,
         canPreviewLayerStack: Bool
     ) {
         self.language = language
+        self.analysisWorkerCount = AppSettings.normalizedAnalysisWorkerCount(analysisWorkerCount)
+        self.stackWorkerCount = AppSettings.normalizedStackWorkerCount(stackWorkerCount)
+        self.computeBackend = computeBackend ?? (gpuAccelerationEnabled ? .automatic : .cpu)
+        self.performance = performance
         self.isWorkspaceActive = isWorkspaceActive
         self.canRunBatchRegistration = canRunBatchRegistration
         self.canPreviewLayerStack = canPreviewLayerStack
     }
 
-    public static func inactive(language: AppLanguage) -> Self {
+    public static func inactive(
+        language: AppLanguage,
+        analysisWorkerCount: Int = 0,
+        stackWorkerCount: Int = 0,
+        gpuAccelerationEnabled: Bool = true,
+        computeBackend: DeepSkyComputeBackend? = nil
+    ) -> Self {
         Self(
             language: language,
+            analysisWorkerCount: analysisWorkerCount,
+            stackWorkerCount: stackWorkerCount,
+            gpuAccelerationEnabled: gpuAccelerationEnabled,
+            computeBackend: computeBackend,
             isWorkspaceActive: false,
             canRunBatchRegistration: false,
             canPreviewLayerStack: false
@@ -58,6 +82,41 @@ public final class PhotonStackApplicationCommandState: ObservableObject {
             return
         }
         self.snapshot = snapshot
+    }
+
+    public func requestLanguage(_ language: AppLanguage) {
+        guard snapshot.language != language else {
+            return
+        }
+        snapshot.language = language
+        NotificationCenter.default.post(
+            name: .photonStackSetApplicationLanguage,
+            object: language
+        )
+    }
+
+    public func requestAnalysisWorkerCount(_ count: Int) {
+        let count = AppSettings.normalizedAnalysisWorkerCount(count)
+        guard snapshot.analysisWorkerCount != count else { return }
+        snapshot.analysisWorkerCount = count
+        NotificationCenter.default.post(name: .photonStackSetAnalysisWorkerCount, object: count)
+    }
+
+    public func requestStackWorkerCount(_ count: Int) {
+        let count = AppSettings.normalizedStackWorkerCount(count)
+        guard snapshot.stackWorkerCount != count else { return }
+        snapshot.stackWorkerCount = count
+        NotificationCenter.default.post(name: .photonStackSetStackWorkerCount, object: count)
+    }
+
+    public func requestGPUAccelerationEnabled(_ isEnabled: Bool) {
+        requestComputeBackend(isEnabled ? .automatic : .cpu)
+    }
+
+    public func requestComputeBackend(_ backend: DeepSkyComputeBackend) {
+        guard snapshot.computeBackend != backend else { return }
+        snapshot.computeBackend = backend
+        NotificationCenter.default.post(name: .photonStackSetGPUAccelerationEnabled, object: backend)
     }
 }
 

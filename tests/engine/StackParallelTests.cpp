@@ -82,6 +82,27 @@ int main(int argc, char**) {
         }
         return 0;
     }
+    // Exercise fractional coverage, wholly masked pixels and both tails on
+    // Metal-capable machines. The same caller must work on CPU-only hosts.
+    {
+        auto compute = options;
+        compute.method = StackMethod::WinsorizedSigmaClip;
+        compute.frameWeights.clear();
+        compute.collectRejectionMaps = true;
+        const auto cpu = Stacker().stack(paths, compute);
+        compute.preferMetalCombine = true;
+        const auto gpu = Stacker().stack(paths, compute);
+        require(cpu.ok && gpu.ok && cpu.comparedSamples == gpu.comparedSamples);
+        require(cpu.rejectedLowSamples == gpu.rejectedLowSamples && cpu.rejectedHighSamples == gpu.rejectedHighSamples);
+        equal(cpu.rejectionLow, gpu.rejectionLow);
+        equal(cpu.rejectionHigh, gpu.rejectionHigh);
+        for (std::size_t i = 0; i < cpu.image.pixels.size(); ++i)
+            require(std::abs(cpu.image.pixels[i] - gpu.image.pixels[i]) <= (i % 4 == 3 ? 0.F : .0002F));
+        compute.frameWeights = options.frameWeights;
+        const auto weighted = Stacker().stack(paths, compute);
+        compute.preferMetalCombine = false;
+        equal(weighted, Stacker().stack(paths, compute));
+    }
     for (const auto method : {StackMethod::Median, StackMethod::SigmaClip, StackMethod::WinsorizedSigmaClip, StackMethod::PercentileClip}) {
         options.method = method;
         for (unsigned mode = 0; mode < (method == StackMethod::SigmaClip ? 4U : 2U); ++mode) {

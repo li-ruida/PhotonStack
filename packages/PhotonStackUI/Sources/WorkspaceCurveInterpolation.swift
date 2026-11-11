@@ -8,27 +8,35 @@ import os
 import SwiftUI
 import UniformTypeIdentifiers
 
-func sampleCurve(_ input: Double, points: [CurveEditorPoint]) -> Double {
-    let sorted = points.sorted { $0.input < $1.input }
-    guard sorted.count >= 2 else {
-        return min(max(input, 0.0), 1.0)
-    }
-    let x = min(max(input, 0.0), 1.0)
-    if x <= sorted[0].input {
-        return min(max(sorted[0].output, 0.0), 1.0)
+struct WorkspaceSampledCurve {
+    private let sorted: [CurveEditorPoint]
+    private let tangents: [Double]
+
+    init(points: [CurveEditorPoint]) {
+        sorted = points.sorted { $0.input < $1.input }
+        tangents = curveTangents(for: sorted)
     }
 
-    let tangents = curveTangents(for: sorted)
-    for index in sorted.indices.dropFirst() where x <= sorted[index].input {
-        return min(max(hermiteInterpolate(
-            x,
-            from: sorted[index - 1],
-            to: sorted[index],
-            startTangent: tangents[index - 1],
-            endTangent: tangents[index]
-        ), 0.0), 1.0)
+    func value(at input: Double) -> Double {
+        guard sorted.count >= 2 else {
+            return min(max(input, 0.0), 1.0)
+        }
+        let x = min(max(input, 0.0), 1.0)
+        if x <= sorted[0].input {
+            return min(max(sorted[0].output, 0.0), 1.0)
+        }
+
+        for index in sorted.indices.dropFirst() where x <= sorted[index].input {
+            return min(max(hermiteInterpolate(
+                x,
+                from: sorted[index - 1],
+                to: sorted[index],
+                startTangent: tangents[index - 1],
+                endTangent: tangents[index]
+            ), 0.0), 1.0)
+        }
+        return min(max(sorted[sorted.count - 1].output, 0.0), 1.0)
     }
-    return min(max(sorted[sorted.count - 1].output, 0.0), 1.0)
 }
 
 private func curveTangents(for points: [CurveEditorPoint]) -> [Double] {

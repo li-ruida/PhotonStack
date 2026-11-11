@@ -1,3 +1,4 @@
+#include "photonstack/StageProfile.hpp"
 #include "AppleRawDecoder.hpp"
 
 #import <CoreImage/CoreImage.h>
@@ -33,6 +34,7 @@ std::string exceptionMessage(NSException* exception) {
 } // namespace
 
 ImageReadResult decodeAppleRawFloat(const std::filesystem::path& path, const RawDecodeOptions& options) {
+    const detail::StageScope timer(detail::Stage::RawDecode);
     @autoreleasepool {
         @try {
             const auto pathString = path.string();
@@ -111,10 +113,22 @@ ImageReadResult decodeAppleRawFloat(const std::filesystem::path& path, const Raw
                 kCIContextCacheIntermediates : @NO,
                 kCIContextOutputPremultiplied : @NO,
             };
-            id<MTLDevice> metalDevice = MTLCreateSystemDefaultDevice();
-            CIContext* context = metalDevice == nil
-                                     ? [CIContext contextWithOptions:contextOptions]
-                                     : [CIContext contextWithMTLDevice:metalDevice options:contextOptions];
+            id<MTLDevice> metalDevice = options.useGPU ? MTLCreateSystemDefaultDevice() : nil;
+            CIContext* context = nil;
+            bool explicitMetal = metalDevice != nil;
+            if (!options.useGPU) {
+                NSDictionary<CIContextOption, id>* softwareOptions = @{
+                    kCIContextWorkingFormat : @(kCIFormatRGBAf),
+                    kCIContextCacheIntermediates : @NO,
+                    kCIContextOutputPremultiplied : @NO,
+                    kCIContextUseSoftwareRenderer : @YES,
+                };
+                context = [CIContext contextWithOptions:softwareOptions];
+            } else {
+                context = metalDevice == nil
+                    ? [CIContext contextWithOptions:contextOptions]
+                    : [CIContext contextWithMTLDevice:metalDevice options:contextOptions];
+            }
             if (context == nil && metalDevice != nil) {
                 NSDictionary<CIContextOption, id>* compatibleMetalOptions = @{
                     kCIContextCacheIntermediates : @NO,
@@ -122,11 +136,12 @@ ImageReadResult decodeAppleRawFloat(const std::filesystem::path& path, const Raw
                 };
                 context = [CIContext contextWithMTLDevice:metalDevice options:compatibleMetalOptions];
             }
-            if (context == nil) {
+            if (context == nil && options.useGPU) {
                 NSDictionary<CIContextOption, id>* compatibleCPUOptions = @{
                     kCIContextCacheIntermediates : @NO,
                     kCIContextOutputPremultiplied : @NO,
                 };
+                explicitMetal = false;
                 context = [CIContext contextWithOptions:compatibleCPUOptions];
             }
             if (context == nil) {
@@ -134,6 +149,8 @@ ImageReadResult decodeAppleRawFloat(const std::filesystem::path& path, const Raw
                 return rawDecodeError("RawDecodeFailed", "Could not create the Core Image RAW rendering context");
             }
 
+            detail::recordBackend(explicitMetal ? "metal" : options.useGPU ? "core-image-auto" : "cpu",
+                                  options.useGPU && !explicitMetal ? "explicit Metal context unavailable" : "");
             @try {
                 const auto rowBytes = static_cast<ptrdiff_t>(width) * 4 * static_cast<ptrdiff_t>(sizeof(float));
                 constexpr std::uint32_t renderRows = 512;

@@ -101,7 +101,9 @@ struct DeepSkyRecipeSheet: View {
             if !model.isProcessing && !model.lightAssets.isEmpty {
                 DeepSkyPreflightView(model: model)
             }
-            if let error = model.errorMessage { Text(error).font(.caption).foregroundStyle(.red).lineLimit(3) }
+            if let error = model.errorMessage {
+                Text(model.localizedMessage(error)).font(.caption).foregroundStyle(.red).lineLimit(3)
+            }
             ViewThatFits(in: .horizontal) {
                 HStack {
                     recipeControls(plannedCount: plannedCount, minimumKept: minimumKept)

@@ -338,3 +338,18 @@ Inspect native-scale diffuse structure as well as point sources. Repeated
 fine-scale texture can contain residual fixed-pattern noise; a lower prediction
 error can also result from excessive smoothing. Neither is sufficient evidence
 of recovered detail or improved finished-image quality.
+
+### Deep-sky execution settings
+
+The macOS Performance settings and the CLI accept an analysis frame limit (0–8), a robust combine worker limit (0–16), and a compute backend. Zero requests automatic scheduling. Frame jobs, row ranges and stack tiles share a bounded process-wide CPU pool. Geometry, available memory and the processing mode can reduce concurrent frames. The CFA guard replay and prepared reference catalogue live only for the current run, with fixed decoder settings and engine code. The workflow checks each supplied light's resolved path, byte size and modification time across passes. Independent-noise and sensor-pattern runs also verify content hashes.
+
+`--compute-backend cpu` requests the CPU science path and software Apple RAW rendering. `metal` prefers eligible Metal kernels. Automatic mode considers Metal for complete, uncalibrated 64–240-frame FITS batches using guarded Malvar, bicubic similarity registration and unweighted Winsorized stacking. Smaller batches and sparse analysis use CPU science kernels in automatic mode. The legacy `--gpu-acceleration` argument controls Apple RAW rendering. These settings are outside the scientific recipe.
+
+* CFA interpolation supports native 16-bit integer mosaics with unit gains, unit scale and zero or unsigned-16 offset. Star guarding runs on CPU.
+* Full-frame similarity warp supports finite RGBA inputs with at least 65,536 pixels. The CPU handles sparse quality grids and other transform models.
+* Winsorized stacking can estimate centers and MADs on Metal for 8–240 unweighted RGBA frames. CPU workers traverse original frame order for winsorization, reduction, rejection maps and per-input counts. Ambiguous weighted ties or unsupported weights use the CPU estimator for that channel. Independent-noise diagnostics and grouped reductions use CPU.
+* Unavailable pipelines, unsupported dimensions, memory pressure and failed commands use the CPU implementation. The GPU writes private intermediate results before the workflow consumes a completed command.
+
+Each Deep Sky CLI run writes `performance.json` alongside `report.json`. It records process wall and CPU seconds, kernel-reported process peak RSS in bytes, run-wide input and selected counts, requested limits, observed frame concurrency and stage results. Stage wall time is the union of intervals for participating threads. Different stages can overlap. Stage CPU seconds sum participating thread CPU time. Per-stage process RSS is sampled at transitions and every 20 ms. GPU seconds come from completed Metal command buffers. Core Image does not expose comparable RAW GPU timings. The macOS Settings window shows the last run's requested and observed parallelism, execution backends and reported fallback reasons.
+
+For consistent CPU comparisons, use the same source files, recipe and CPU backend, then compare frame reports and image hashes. Metal's single-precision registration can change the last bits of scientific RGB samples and a small number of rejection decisions. The M31 acceptance check compares selection, reference, crop and coverage exactly. Its linear-master bounds per channel are RMS at most 0.05 input units, PSNR at least 100 dB, and peak error at most the larger of 1 unit and 0.01% of the measured range. It also checks rejection map differences, stellar shape, sky/noise and the developed TIFF.

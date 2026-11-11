@@ -25,6 +25,7 @@ int main() {
         const auto megapixel = 1024ULL * 1024;
         const auto gib = 1024ULL * megapixel;
         require(detail::analysisFrameCapacity(8 * megapixel, 8 * megapixel, 711, 192, 3 * gib, 12) == 4);
+        require(detail::analysisFrameCapacity(2 * megapixel, 2 * megapixel, 200, 128, 3 * gib, 12) == 8);
         require(detail::analysisFrameCapacity(32 * megapixel, 0, 711, 192, 3 * gib, 12) == 1);
         require(detail::analysisFrameCapacity(8 * megapixel, 8 * megapixel, 711, 192, gib, 12) == 1);
         require(detail::analysisFrameCapacity(0, 0, 20, 192, 3 * gib, 12) == 1);
@@ -353,6 +354,18 @@ int main() {
             });
         require(!changed.ok && changed.errorCode == "InputChanged");
         require(!fs::exists(root / "changed-after-measure/.aligned-work"));
+#ifndef _WIN32
+        partial.back() = root / "linked.fits";
+        fs::create_symlink(inputs.back(), partial.back());
+        const auto retargeted = DeepSkyWorkflow().run(partial, root / "retargeted", options,
+            [&](const std::string& stage, double, std::size_t step, std::size_t) {
+                if (stage == "align" && step == 1) {
+                    fs::remove(partial.back());
+                    fs::create_symlink(inputs.front(), partial.back());
+                }
+            });
+        require(!retargeted.ok && retargeted.errorCode == "InputChanged");
+#endif
     }
     options.quality.overrides.assign(inputs.size(), FrameSelectionOverride::Reject);
     auto rejected = DeepSkyWorkflow().run(inputs, root / "rejected", options);

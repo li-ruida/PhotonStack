@@ -136,8 +136,10 @@ struct StackOptions {
     // Grouping does not alter the joint master or its rejection decisions.
     std::vector<std::uint8_t> acceptedGroups;
     // Robust combine only: 0 selects bounded automatic parallelism, 1 is serial.
-    // Values above 8 are capped. Changes scheduling, never sample/reduction order.
+    // Automatic scheduling is capped at 8; manual values above 16 are capped.
+    // Changes scheduling, never sample/reduction order.
     std::size_t combineWorkers = 0;
+    bool preferMetalCombine = false;
     // Robust combine only: hard budget for the shared all-frame pixel tile.
     // Excludes outputs, worker scratch and the separately bounded read buffers.
     // Rows split when needed. A budget below one all-frame pixel is rejected.

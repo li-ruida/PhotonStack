@@ -1,3 +1,4 @@
+#include "photonstack/StageProfile.hpp"
 #include "photonstack/StarDetector.hpp"
 
 #include <algorithm>
@@ -286,6 +287,7 @@ StarDetectionResult detectLuminanceBuffer(
 } // namespace
 
 StarDetectionResult StarDetector::detect(const ImageBuffer& image, const StarDetectionOptions& options) const {
+    const detail::StageScope timer(detail::Stage::Stars);
     if (image.empty() || image.channels == 0 || image.pixels.size() != image.sampleCount()) {
         return detectionError("ImageBufferInvalid", "Input image must be a non-empty float buffer");
     }
@@ -350,6 +352,7 @@ StarDetectionResult StarDetector::detectLuminanceWithCoverage(std::uint32_t widt
                                                               std::span<const float> luminance,
                                                               std::span<const float> coverage,
                                                               const StarDetectionOptions& options) const {
+    const detail::StageScope timer(detail::Stage::Stars);
     return detectLuminanceBuffer(width, height, luminance, options, coverage);
 }
 

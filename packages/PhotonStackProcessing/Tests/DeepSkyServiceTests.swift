@@ -36,6 +36,50 @@ private func writeDeepSkyProductStub(_ root: URL, output: URL, master: URL? = ni
     return CLIProcessingService(executableURL: executable)
 }
 
+@Test func deepSkyWorkerOverridesReachTheEngineCommand() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackDeepSkyWorkers-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let recipe = root.appendingPathComponent("recipe.txt")
+    try "PHOTONSTACK_DEEP_SKY_RECIPE 1\n".write(to: recipe, atomically: true, encoding: .utf8)
+    let reply = #"{"version":1,"success":true,"analysisOnly":true,"inputCount":0,"selectedCount":0,"referenceIndex":0,"recipe":"PHOTONSTACK_DEEP_SKY_RECIPE 1\n","errorCode":"","message":"","master":"","backgroundMaster":"","developed":"","rejectionLow":"","rejectionHigh":"","frames":[]}"#
+    try reply.write(to: root.appendingPathComponent("reply.json"), atomically: true, encoding: .utf8)
+    let executable = root.appendingPathComponent("fake-engine")
+    let script = """
+    #!/bin/sh
+    printf '%s\\n' "$@" > "$PWD/arguments.txt"
+    while [ "$#" -gt 0 ]; do
+      if [ "$1" = "--output-dir" ]; then output="$2"; shift; fi
+      shift
+    done
+    mkdir -p "$output"
+    cat "$PWD/reply.json"
+    """
+    try script.write(to: executable, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+    let service = CLIProcessingService(executableURL: executable)
+
+    _ = try await service.deepSky(
+        recipe: recipe,
+        outputDirectory: root.appendingPathComponent("analysis"),
+        analyzeOnly: true,
+        analysisWorkers: 3,
+        stackWorkers: 6,
+        gpuAcceleration: false,
+        computeBackend: .cpu
+    )
+    let arguments = try String(contentsOf: root.appendingPathComponent("arguments.txt"), encoding: .utf8)
+        .split(separator: "\n").map(String.init)
+    #expect(arguments.contains("--analysis-workers"))
+    #expect(arguments.contains("3"))
+    #expect(arguments.contains("--stack-workers"))
+    #expect(arguments.contains("6"))
+    #expect(arguments.contains("--compute-backend"))
+    #expect(arguments.contains("cpu"))
+    #expect(arguments.contains("--gpu-acceleration"))
+    #expect(arguments.contains("off"))
+}
+
 @Test(arguments: [false, true])
 func deepSkyProductsAcceptBothDirectoryURLRepresentations(directoryHint: Bool) async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStackDeepSkyPaths-\(UUID().uuidString)")

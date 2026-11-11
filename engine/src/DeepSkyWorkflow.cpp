@@ -1,3 +1,4 @@
+#include "photonstack/StageProfile.hpp"
 #include "photonstack/DeepSkyWorkflow.hpp"
 #include "photonstack/BackgroundDenoiser.hpp"
 #include "photonstack/FitsCodec.hpp"
@@ -71,6 +72,7 @@ void checkIdentity(const DeepSkyFrameReport& frame) {
         "InputChanged", "Source changed during processing: " + frame.input.string());
 }
 void write(const ImageBuffer& image, const fs::path& output) {
+    const detail::StageScope timer(detail::Stage::Write);
     ImageWriteOptions options;
     options.bitDepth = ImageWriteBitDepth::Sixteen;
     const auto r = ImageCodec().write(image, output, options);
@@ -157,6 +159,7 @@ ImageBuffer denoiseMap(const ImageBuffer& image, double noise, double amount) {
 void finishImage(ImageBuffer stacked, const fs::path& directory, const DeepSkyWorkflowOptions& o,
                  DeepSkyWorkflowResult& result, const std::function<void(const std::string&, double)>& emit,
                  ImageBuffer noise = {}) {
+        const detail::StageScope timer(detail::Stage::Develop);
         const bool independent = o.noiseModel==DeepSkyNoiseModel::IndependentLuminance;
         ensure(o.noiseModel==DeepSkyNoiseModel::Scene || independent, "ArgumentInvalid", "Invalid luminance noise model");
         ensure(!independent || (o.denoiseH==0 && !noise.empty() && noise.width==stacked.width && noise.height==stacked.height),
@@ -179,6 +182,7 @@ void finishImage(ImageBuffer stacked, const fs::path& directory, const DeepSkyWo
         if(independent) noise=crop(noise,rectangle);
         stacked = {};
         if (o.alignChannels) {
+            const detail::StageScope channelTimer(detail::Stage::Channels);
             emit("align-color-channels", .87);
             result.channelAlignment = ChannelAlignment().apply(image);
             ensure(result.channelAlignment.ok, result.channelAlignment.errorCode, result.channelAlignment.message);
@@ -191,12 +195,14 @@ void finishImage(ImageBuffer stacked, const fs::path& directory, const DeepSkyWo
         }
         emit("background", .88);
         if (o.background == DeepSkyBackground::Polynomial || o.background == DeepSkyBackground::PolynomialAndGrid) {
+            const detail::StageScope backgroundTimer(detail::Stage::Background);
             auto options = o.polynomial;
             for (auto& e : options.exclusions) { e.x -= rectangle.x; e.y -= rectangle.y; }
             auto background = BackgroundExtractor().extractPolynomial(image, options);
             ensure(background.ok, background.errorCode, background.message); image = std::move(background.image);
         }
         if (o.background == DeepSkyBackground::Grid || o.background == DeepSkyBackground::PolynomialAndGrid) {
+            const detail::StageScope backgroundTimer(detail::Stage::Background);
             auto options = o.grid;
             options.exclusions = o.polynomial.exclusions;
             for (auto& e : options.exclusions) { e.x -= rectangle.x; e.y -= rectangle.y; }
@@ -333,11 +339,30 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         std::set<std::string> sourceDigests;
         FitsSensorIdentity sensorIdentity;
         result.frames.resize(inputs.size());
+        const auto checkLight = [&](std::size_t i) {
+            const auto& frame = result.frames[i];
+            std::error_code error;
+            ensure(fs::canonical(inputs[i], error) == frame.input && !error, "InputChanged",
+                   "Light path changed during processing: " + inputs[i].string());
+            checkIdentity(frame);
+        };
+        // Promote only the real-data validated family. Sparse grid analysis,
+        // small batches and unrelated algorithms retain their CPU path.
+        const bool automaticMetal = o.computeBackend == ComputeBackend::Automatic &&
+            !o.analysisOnly && !o.sensorPattern && inputs.size() >= 64 && inputs.size() <= 240 &&
+            o.darks.empty() && o.biases.empty() && o.flats.empty() &&
+            o.stack.alignSimilarity && o.stack.interpolation == RegistrationInterpolation::Bicubic &&
+            o.stack.fitsDemosaic == FitsDemosaic::MalvarGuarded && o.stack.debayerFits &&
+            o.stack.method == StackMethod::WinsorizedSigmaClip && o.stack.frameWeights.empty() &&
+            std::all_of(inputs.begin(), inputs.end(), [](const auto& path) { return isFitsPath(path); });
+        const auto backend = automaticMetal ? ComputeBackend::Metal : o.computeBackend;
         ImageReadOptions readOptions;
         readOptions.raw = o.stack.raw; readOptions.raw.linearOutput = true;
+        readOptions.raw.useGPU = o.gpuAcceleration && backend != ComputeBackend::CPU;
         readOptions.fits.mode = FitsDecodeMode::Scientific;
         readOptions.fits.maskNonFinitePixels = true;
         readOptions.fits.debayer = o.stack.debayerFits;
+        readOptions.fits.preferMetal = backend == ComputeBackend::Metal;
         readOptions.fits.demosaic = o.stack.fitsDemosaic;
         readOptions.fits.cfaInterpolationGains = o.stack.cfaInterpolationGains;
         const ImageCodec codec;
@@ -378,7 +403,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                                  o.stack.alignAffine || o.stack.alignDistortion;
         std::vector<detail::GuardReplay> guardReplay;
         constexpr std::size_t replayBudget = 64 * 1024 * 1024;
-        if (o.analysisOnly && alignFrames && !calibrated && readOptions.fits.debayer &&
+        if (alignFrames && !o.sensorPattern && !calibrated && readOptions.fits.debayer &&
             readOptions.fits.demosaic == FitsDemosaic::MalvarGuarded) {
             const auto perFrame = std::min<std::size_t>(5000,
                 replayBudget / inputs.size() / std::max<std::size_t>(80, sizeof(detail::GuardAperture)));
@@ -407,7 +432,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         std::vector<SequenceFrameSample> samples(inputs.size());
         std::size_t reference = 0;
         double best = -1;
-        const bool eligible = o.analysisOnly && !calibrated && !o.sensorPattern && !o.stack.alignDistortion &&
+        const bool eligible = !calibrated && !o.sensorPattern && !o.stack.alignDistortion &&
             o.stack.registration.starDetection.maxStars <= 1000 && o.stack.fitsDemosaic != FitsDemosaic::Menon &&
             o.stack.fitsDemosaic != FitsDemosaic::Ratio;
         const auto cpuLimit = std::min<std::size_t>(std::thread::hardware_concurrency(),
@@ -417,21 +442,27 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         const auto memoryBudget = available > reserved ? available - reserved : 0;
         const auto frameCapacity = [&](std::size_t i, std::uint64_t referencePixels) -> std::size_t {
             const auto& f = result.frames[i];
-            if (!memoryBudget || !isFitsPath(f.input)) return 1;
+            const auto admitted = [&](std::size_t n, const char* reason) {
+                if (detail::currentStage.profile && n < (o.analysisWorkers ? o.analysisWorkers : 4))
+                    detail::currentStage.profile->admissionReason = reason;
+                return n;
+            };
+            if (!eligible || !isFitsPath(f.input)) return admitted(1, "serial decoder or analysis mode");
+            if (!memoryBudget) return admitted(1, cpuLimit <= 1 ? "CPU limit" : "memory budget unavailable");
             auto width = f.native.width, height = f.native.height;
             if (!width || !height) {
                 // Admission uses the header, not compressed/file byte size.
                 // Unsupported geometry retains the normal serial decode/error path.
                 const auto header = FitsCodec().inspect(f.input);
-                if (!header.ok) return 1;
+                if (!header.ok) return admitted(1, "unknown FITS dimensions");
                 width = header.metadata.width;
                 height = header.metadata.height;
             }
             // Extremely narrow images can be enlarged by the detector's
             // minimum proxy width. Their scratch use is outside this estimate.
-            if (width < 16 || height < 16) return 1;
-            return detail::analysisFrameCapacity(std::uint64_t(width) * height, referencePixels, inputs.size(), o.quality.sampleSide,
-                                                  memoryBudget, cpuLimit);
+            if (width < 16 || height < 16) return admitted(1, "small or narrow frame");
+            return admitted(detail::analysisFrameCapacity(std::uint64_t(width) * height, referencePixels, inputs.size(), o.quality.sampleSide,
+                                                  memoryBudget, cpuLimit), "frame size, CPU and memory admission");
         };
         const auto prepareMeasurement = [&](std::size_t i) {
             auto& f = result.frames[i];
@@ -448,7 +479,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             if(o.sensorPattern || independentNoise) {
                 f.sha256=fileSHA256(f.input);
                 ensure(sourceDigests.insert(f.sha256).second,"DuplicateInput","Identical source bytes cannot be independent samples");
-                checkIdentity(f);
+                checkLight(i);
             }
             emit("measure", measureEnd * i / inputs.size(), i + 1);
             return true;
@@ -458,13 +489,14 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             std::string readError, readMessage;
         };
         const auto measure = [&](std::size_t i) -> Measurement {
+            const detail::FrameActivity activity;
             const auto decoded = readLight(i);
             if (!decoded.ok) return {{}, decoded.errorCode, decoded.message};
             return {analyzer.sample(decoded.image, o.quality), {}, {}};
         };
         const auto recordMeasurement = [&](std::size_t i, Measurement measured) {
             auto& f = result.frames[i];
-            checkIdentity(f);
+            checkLight(i);
             if (!measured.readError.empty()) { f.errorCode = measured.readError; f.message = measured.readMessage; return; }
             f.native = std::move(measured.native);
             // Reports retain scalar evidence only. With alignment disabled,
@@ -480,6 +512,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             if (!f.native.ok) { f.errorCode = f.native.errorCode; f.message = f.native.message; return; }
             // Missing shape measurements must not win by looking like a zero-
             // width star. Keep a coverage-only fallback when all are unknown.
+            const detail::StageScope referenceTimer(detail::Stage::Reference);
             const double score = f.native.medianFwhm > 0
                 ? 1 + f.native.validFraction * std::sqrt(double(f.native.starCount) + 1) *
                     (1 - .5 * f.native.medianEccentricity) / std::max(1.0, f.native.medianFwhm * f.native.medianFwhm)
@@ -497,10 +530,10 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             ref = readLight(reference);
             ensure(ref.ok, ref.errorCode, ref.message);
         }
-        checkIdentity(result.frames[reference]);
-        const Registration registration(o.stack.interpolation);
+        checkLight(reference);
+        const Registration registration(o.stack.interpolation, backend);
         std::optional<PreparedRegistrationReference> prepared;
-        if (o.analysisOnly && alignFrames && std::any_of(result.frames.begin(), result.frames.end(),
+        if (alignFrames && std::any_of(result.frames.begin(), result.frames.end(),
                 [&](const auto& f) { return f.native.ok && !f.reference; }))
             prepared.emplace(registration.prepareReference(std::move(ref.image), o.stack.registration, o.stack.alignDistortion));
         const auto& referenceImage = prepared ? prepared->image() : ref.image;
@@ -511,7 +544,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             auto& f = result.frames[i];
             if (!f.native.ok) { samples[i].errorCode = f.errorCode; return false; }
             emit("align", measureEnd + (alignEnd - measureEnd) * i / inputs.size(), i + 1);
-            checkIdentity(f);
+            checkLight(i);
             if (assessNativeGrid) {
                 f.registration.ok = true;
                 f.alignedCoverage = samples[i].validFraction;
@@ -526,6 +559,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             ImageBuffer pixelsToWrite;
         };
         const auto align = [&](std::size_t i) {
+            const detail::FrameActivity activity;
             AlignedMeasurement measured;
             ImageReadResult decoded;
             if (i != reference) {
@@ -586,7 +620,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                 return;
             }
             samples[i] = std::move(measured.sample);
-            checkIdentity(f);
+            checkLight(i);
             if(independentNoise) registeredVariances[i]=samples[i].noise*samples[i].noise;
             f.alignedCoverage = samples[i].validFraction;
             // Native PSF/noise metrics remain comparable before interpolation.
@@ -618,7 +652,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         std::vector<SequenceFrameSample>().swap(samples);
         ensure(assessment.ok, assessment.errorCode, assessment.message);
         if (o.analysisOnly) {
-            for (const auto& frame : result.frames) checkIdentity(frame);
+            for (std::size_t i = 0; i < inputs.size(); ++i) checkLight(i);
             result.ok = true; emit("complete", 1); return result;
         }
         if (o.sensorPattern) {
@@ -657,7 +691,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                 patternOptions.sensorPositions.push_back({(d*x-b*y)/determinant, (a*y-c*x)/determinant});
             }
             for (const auto i : trainingIndices) {
-                checkIdentity(result.frames[i]);
+                checkLight(i);
                 ensure(fileSHA256(result.frames[i].input)==result.frames[i].sha256, "InputChanged", "Sensor training source bytes changed");
             }
             auto patterns = SensorPatternBuilder().build(training, patternOptions);
@@ -689,7 +723,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             result.sensorPatternReport = reportPath;
             for (std::size_t slot=0; slot<usable.size(); ++slot) {
                 const auto i=usable[slot]; auto& f=result.frames[i];
-                checkIdentity(f);
+                checkLight(i);
                 ensure(fileSHA256(f.input)==f.sha256, "InputChanged", "Source bytes changed before sensor correction");
                 if (f.sensorPatternModel < 0) f.sensorPatternModel = int(slot%3);
                 const auto& model=patterns.models[std::size_t(f.sensorPatternModel)].correction;
@@ -702,7 +736,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                 else if (o.stack.alignSimilarity) image=registration.applySimilarity(decoded.image, f.registration.transform);
                 else if (o.stack.alignTranslation) image=registration.applyTranslation(decoded.image, f.registration.translation);
                 else image=std::move(decoded.image);
-                checkIdentity(f);
+                checkLight(i);
                 if(independentNoise) {
                     auto q=o.quality;q.measureStars=false;q.measureTrails=false;
                     const auto measured=analyzer.sample(image,q);
@@ -716,6 +750,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         std::vector<fs::path> selected;
         std::vector<std::size_t> selectedIndices;
         auto stackOptions = o.stack;
+        stackOptions.preferMetalCombine = backend == ComputeBackend::Metal;
         stackOptions.temporaryDirectory = work.path;
         stackOptions.alignTranslation = stackOptions.alignSimilarity = stackOptions.alignAffine = stackOptions.alignDistortion = false;
         stackOptions.registration.refineSimilarityCentroids = false;
@@ -793,7 +828,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         auto masterImage = std::move(stacked.image); stacked = {};
         finishImage(std::move(masterImage), directory, o, result,
             [&](const std::string& stage, double fraction) { emit(stage, fraction); },std::move(noise));
-        for (const auto& frame : result.frames) checkIdentity(frame);
+        for (std::size_t i = 0; i < inputs.size(); ++i) checkLight(i);
         if (o.sensorPattern || independentNoise) for (const auto& f : result.frames)
             ensure(fileSHA256(f.input)==f.sha256, "InputChanged", "Source bytes changed during independent-noise or sensor-corrected processing");
         if(independentNoise) for(const auto& f:calibrationIdentities)

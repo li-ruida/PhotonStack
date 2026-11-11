@@ -38,13 +38,14 @@ struct PhotonStackPreview: View {
                             magnification: $magnification, fitToWindow: $fitToWindow)
                             .padding(16)
                     } else {
-                        PlatformImageView(url: url, magnification: $magnification, fitToWindow: $fitToWindow)
+                        PlatformImageView(url: url, preview: model.photoPreview, edits: model.photoDraft, input: model.currentInputURL, allowsDraft: !showArtifactMarkedPreview && model.interactiveCurveURL == nil, magnification: $magnification, fitToWindow: $fitToWindow)
                             .padding(16)
                     }
                 } else {
                     ContentUnavailableView(model.localized(.noImage), systemImage: "photo")
                 }
             }
+            .onReceive(model.photoDraft.$picking) { if $0 { showArtifactMarkedPreview = false } }
             .onChange(of: model.selectedAssetID) { _, _ in
                 magnification = 1.0
                 fitToWindow = true
@@ -67,7 +68,7 @@ struct PhotonStackPreview: View {
         if showArtifactMarkedPreview, let markedPreview = model.artifactMarkedPreviewURL {
             return markedPreview
         }
-        return model.previewURL ?? model.selectedAsset?.originalURL
+        return model.interactiveCurveURL ?? model.previewURL ?? model.selectedAsset?.originalURL
     }
 }
 
@@ -174,14 +175,38 @@ private struct PreviewZoomBar: View {
 
 private struct PlatformImageView: View {
     let url: URL
+    @ObservedObject var preview: PhotoAdjustmentPreview
+    @ObservedObject var edits: PhotoAdjustmentDraft
+    let input: URL?
+    let allowsDraft: Bool
+    private var draft: PhotoAdjustmentPreview.Frame? {
+        guard allowsDraft, let frame = preview.frame, frame.input == input else { return nil }
+        return frame
+    }
     @Binding var magnification: Double
     @Binding var fitToWindow: Bool
 
+    private var samplePoint: ((CGPoint) -> Void)? {
+        guard edits.picking, let draft, draft.settings == edits.settings else { return nil }
+        return { point in edits.sample(input: draft.input, point: point, displayed: draft.settings) }
+    }
+
     var body: some View {
         #if os(macOS)
-        NativeImagePreview(url: url, magnification: $magnification, fitToWindow: $fitToWindow)
+        NativeImagePreview(url: url, magnification: $magnification, fitToWindow: $fitToWindow, decodedImage: draft?.image, decodedSize: draft?.sourceSize, samplePoint: samplePoint)
         #else
-        if let data = try? Data(contentsOf: url), let image = UIImage(data: data) {
+        if let draft {
+            Image(decorative: draft.image, scale: 1).resizable().scaledToFit()
+                .overlay {
+                    if let samplePoint {
+                        GeometryReader { geometry in
+                            Color.clear.contentShape(Rectangle()).onTapGesture { point in
+                                samplePoint(CGPoint(x: point.x / geometry.size.width, y: point.y / geometry.size.height))
+                            }
+                        }
+                    }
+                }
+        } else if let data = try? Data(contentsOf: url), let image = UIImage(data: data) {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFit()

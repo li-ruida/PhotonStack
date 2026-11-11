@@ -137,7 +137,7 @@ struct WorkspaceJourneyBar: View {
                 }
             }
             if let error = model.errorMessage, !error.isEmpty {
-                Label(error, systemImage: "exclamationmark.triangle")
+                Label(model.localizedMessage(error), systemImage: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.red).lineLimit(3)
                     .textSelection(.enabled)
                     .accessibilityIdentifier("journey.error")

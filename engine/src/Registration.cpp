@@ -1,3 +1,8 @@
+#include "photonstack/StageProfile.hpp"
+#include "photonstack/ParallelRanges.hpp"
+#ifdef __APPLE__
+#include "MetalCompute.hpp"
+#endif
 #include "photonstack/Registration.hpp"
 
 #include <algorithm>
@@ -1094,6 +1099,7 @@ struct RegistrationCatalogs {
 RegistrationResult detectMatchedPairs(const RegistrationCatalogs& catalogs,
                                       const RegistrationOptions& options, Translation prealign,
                                       std::vector<MatchedStarPair>& pairs) {
+    const detail::StageScope timer(detail::Stage::Matching);
     const auto& referenceStars = catalogs.referenceStars;
     const auto& movingStars = catalogs.movingStars;
     if (referenceStars.empty() || movingStars.empty()) {
@@ -1219,6 +1225,7 @@ float descriptorScore(const StarDescriptor& left, const StarDescriptor& right) {
 
 RegistrationResult detectDescriptorMatchedPairs(const RegistrationCatalogs& catalogs,
                                                std::vector<MatchedStarPair>& pairs) {
+    const detail::StageScope timer(detail::Stage::Matching);
     const auto& referenceStars = catalogs.referenceStars;
     const auto& movingStars = catalogs.movingStars;
     if (referenceStars.size() < 6 || movingStars.size() < 6) {
@@ -1287,6 +1294,7 @@ RegistrationResult detectDescriptorMatchedPairs(const RegistrationCatalogs& cata
 RegistrationResult detectSimilarityProjectedPairs(const RegistrationCatalogs& catalogs,
                                                   const RegistrationOptions& options, SimilarityTransform transform,
                                                   std::vector<MatchedStarPair>& pairs) {
+    const detail::StageScope timer(detail::Stage::Matching);
     const auto& referenceStars = catalogs.referenceStars;
     const auto& movingStars = catalogs.movingStars;
     if (referenceStars.empty() || movingStars.empty()) {
@@ -1552,6 +1560,7 @@ void selectCentroidAffine(const ImageBuffer& reference, const ImageBuffer& movin
 RegistrationResult detectProjectiveProjectedPairs(const RegistrationCatalogs& catalogs,
                                                   const RegistrationOptions& options, ProjectiveTransform transform,
                                                   std::vector<MatchedStarPair>& pairs) {
+    const detail::StageScope timer(detail::Stage::Matching);
     const auto& referenceStars = catalogs.referenceStars;
     const auto& movingStars = catalogs.movingStars;
     if (referenceStars.empty() || movingStars.empty()) {
@@ -1789,6 +1798,7 @@ std::vector<Translation> peakTranslationOffsets(const RegistrationCatalogs& cata
 }
 
 RegistrationResult matchTranslation(const RegistrationCatalogs& catalogs, const RegistrationOptions& options) {
+    const detail::StageScope timer(detail::Stage::Solve);
     const auto& referenceStars = catalogs.referenceStars;
     const auto& movingStars = catalogs.movingStars;
     if (referenceStars.empty() || movingStars.empty()) {
@@ -1914,6 +1924,7 @@ SimilarityFit similarityConsensus(const std::vector<MatchedStarPair>& pairs,
     return fit;
 }
 RegistrationResult matchSimilarity(const RegistrationCatalogs& catalogs, const RegistrationOptions& options) {
+    const detail::StageScope timer(detail::Stage::Solve);
     const auto translationResult = matchTranslation(catalogs, options);
     const Translation prealign = translationResult.ok ? translationResult.translation : Translation{};
     // Preserve the explicitly labelled legacy fallback for genuinely sparse
@@ -2051,6 +2062,7 @@ RegistrationResult matchSimilarity(const RegistrationCatalogs& catalogs, const R
 }
 
 RegistrationResult matchAffine(const RegistrationCatalogs& catalogs, const RegistrationOptions& options) {
+    const detail::StageScope timer(detail::Stage::Solve);
     const auto& reference = catalogs.reference;
     const auto& moving = catalogs.moving;
     if (options.refineSimilarityCentroids) {
@@ -2176,6 +2188,7 @@ constexpr std::size_t distortionStarLimit = 6000;
 RegistrationResult matchDistortion(const ImageBuffer& reference, const ImageBuffer& moving,
                                    DistortionTransform& transform, const RegistrationOptions& options,
                                    const StarDetectionResult* prepared = nullptr, std::size_t preparedLimit = 0) {
+    const detail::StageScope timer(detail::Stage::Solve);
     if (!validRegistrationOptions(options)) {
         return registrationError("ArgumentInvalid", "Registration options are outside valid ranges");
     }
@@ -2414,16 +2427,28 @@ bool renderMappedRows(const ImageBuffer& image, const RegistrationRowConsumer& c
                       const RegistrationPixelGrid* grid, Mapper mapper, Sampler sampler) {
     if (!consumer || !validImageBuffer(image)) return false;
     const auto render = [&](std::uint32_t width, std::uint32_t height, auto targetX, auto targetY) {
-        std::vector<float> row(static_cast<std::size_t>(width) * image.channels);
-        for (std::uint32_t y = 0; y < height; ++y) {
-            const auto sy = targetY(y);
-            for (std::uint32_t x = 0; x < width; ++x) {
-                const auto source = mapper(targetX(x), sy);
-                const auto offset = static_cast<std::size_t>(x) * image.channels;
-                for (std::uint16_t c = 0; c < image.channels; ++c)
-                    row[offset + c] = sampler(source.first, source.second, c);
-            }
-            if (!consumer(y, row.data(), row.size())) return false;
+        const auto rowSamples = static_cast<std::size_t>(width) * image.channels;
+        // A bounded strip lets independent rows share the pool and still calls
+        // streaming consumers in order on their original thread.
+        const std::size_t rows = std::min<std::size_t>(height, std::max<std::size_t>(1,
+            std::min<std::size_t>(64, 1024 * 1024 / (sizeof(float) * rowSamples))));
+        std::vector<float> strip(rows * rowSamples);
+        for (std::size_t first = 0; first < height; first += rows) {
+            const auto count = std::min<std::size_t>(rows, height - first);
+            detail::parallelRanges(count, std::max<std::size_t>(1, 8192 / width),
+                [&](std::size_t begin, std::size_t end) noexcept {
+                    for (auto row = begin; row < end; ++row) {
+                        const auto sy = targetY(static_cast<std::uint32_t>(first + row));
+                        float* out = strip.data() + row * rowSamples;
+                        for (std::uint32_t x = 0; x < width; ++x) {
+                            const auto source = mapper(targetX(x), sy);
+                            for (std::uint16_t c = 0; c < image.channels; ++c)
+                                *out++ = sampler(source.first, source.second, c);
+                        }
+                    }
+                });
+            for (std::size_t row = 0; row < count; ++row)
+                if (!consumer(static_cast<std::uint32_t>(first + row), strip.data() + row * rowSamples, rowSamples)) return false;
         }
         return true;
     };
@@ -2442,6 +2467,7 @@ bool renderMappedRows(const ImageBuffer& image, const RegistrationRowConsumer& c
 
 template <typename Render>
 ImageBuffer collectRegisteredRows(const ImageBuffer& image, const RegistrationPixelGrid* grid, Render render) {
+    const detail::StageScope timer(detail::Stage::Warp);
     ImageBuffer output;
     output.width = grid ? static_cast<std::uint32_t>(grid->columns.size()) : image.width;
     output.height = grid ? static_cast<std::uint32_t>(grid->rows.size()) : image.height;
@@ -2924,6 +2950,10 @@ bool Registration::renderDistortionForwardRows(const ImageBuffer& image, const D
 
 ImageBuffer Registration::applyTranslation(const ImageBuffer& image, Translation translation,
                                           const RegistrationPixelGrid* grid) const {
+    if (interpolation_ != RegistrationInterpolation::Bilinear)
+        return applySimilarity(image, {1, 0, translation.dx, translation.dy}, grid);
+    const detail::StageScope scope(detail::Stage::Warp);
+    if (backend_ == ComputeBackend::Metal) detail::recordBackend("cpu", "integer translation sampler");
     return collectRegisteredRows(image, grid, [&](const auto& consume) {
         return renderTranslationRows(image, translation, consume, grid);
     });
@@ -2931,6 +2961,20 @@ ImageBuffer Registration::applyTranslation(const ImageBuffer& image, Translation
 
 ImageBuffer Registration::applySimilarity(const ImageBuffer& image, SimilarityTransform transform,
                                           const RegistrationPixelGrid* grid) const {
+    const detail::StageScope scope(detail::Stage::Warp);
+    if (backend_ == ComputeBackend::Metal) {
+#ifdef __APPLE__
+        if (!grid && image.channels == 4 && image.pixelCount() >= 65536 &&
+            image.pixelCount() <= UINT32_MAX && finiteSimilarityTransform(transform) && validImageBuffer(image)) {
+            ImageBuffer output;
+            if (detail::metalWarp(image, transform, interpolation_, output)) return output;
+        } else detail::recordBackend("cpu", "requires a full-size finite RGBA warp of at least 65536 pixels");
+#else
+        detail::recordBackend("cpu", "Metal unavailable on this platform");
+#endif
+    } else if (backend_ == ComputeBackend::Automatic) {
+        detail::recordBackend("cpu", "automatic uses validated CPU registration");
+    }
     return collectRegisteredRows(image, grid, [&](const auto& consume) {
         return renderSimilarityRows(image, transform, consume, grid);
     });
@@ -2938,6 +2982,8 @@ ImageBuffer Registration::applySimilarity(const ImageBuffer& image, SimilarityTr
 
 ImageBuffer Registration::applyAffine(const ImageBuffer& image, AffineTransform transform,
                                           const RegistrationPixelGrid* grid) const {
+    const detail::StageScope scope(detail::Stage::Warp);
+    if (backend_ == ComputeBackend::Metal) detail::recordBackend("cpu", "transform model requires CPU");
     return collectRegisteredRows(image, grid, [&](const auto& consume) {
         return renderAffineRows(image, transform, consume, grid);
     });
@@ -2945,6 +2991,8 @@ ImageBuffer Registration::applyAffine(const ImageBuffer& image, AffineTransform 
 
 ImageBuffer Registration::applyDistortion(const ImageBuffer& image, const DistortionTransform& transform,
                                           const RegistrationPixelGrid* grid) const {
+    const detail::StageScope scope(detail::Stage::Warp);
+    if (backend_ == ComputeBackend::Metal) detail::recordBackend("cpu", "transform model requires CPU");
     return collectRegisteredRows(image, grid, [&](const auto& consume) {
         return renderDistortionRows(image, transform, consume, grid);
     });

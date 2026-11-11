@@ -1,3 +1,8 @@
+#ifdef __APPLE__
+#include "MetalCompute.hpp"
+#endif
+#include "photonstack/WorkerPool.hpp"
+#include "photonstack/StageProfile.hpp"
 #include "photonstack/Stacker.hpp"
 
 #include <algorithm>
@@ -79,6 +84,7 @@ float pixelCoverage(const ImageBuffer& image, std::size_t pixel) {
 }
 
 std::array<float, 3> sampledBackground(const ImageBuffer& image) {
+    const detail::StageScope timer(detail::Stage::Normalize);
     std::array<std::vector<float>, 3> values;
     const auto stride = std::max<std::uint32_t>(
         1, static_cast<std::uint32_t>(std::sqrt(static_cast<double>(image.pixelCount()) / 65536.0)));
@@ -105,6 +111,7 @@ std::array<float, 3> sampledBackground(const ImageBuffer& image) {
 }
 
 void matchBackground(ImageBuffer& image, const std::array<float, 3>& reference) {
+    const detail::StageScope timer(detail::Stage::Normalize);
     const auto background = sampledBackground(image);
     const auto channels = std::min<std::uint16_t>(3, image.channels);
     for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
@@ -628,6 +635,7 @@ StackResult validateTemporaryStorage(const std::filesystem::path& directory, std
 StackResult writeCachedFrame(const std::filesystem::path& path, const ImageBuffer& frame,
                              StackProgressReporter* progress = nullptr, std::size_t frameNumber = 0,
                              double start = 0.0, double end = 0.0) {
+    const detail::StageScope timer(detail::Stage::Write);
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     if (!output) {
         return stackError("TemporaryStorageWriteFailed", "Unable to open stack cache file: " + path.string());
@@ -822,6 +830,20 @@ float weightedQuantile(std::vector<WeightedValue>& values, float quantile) {
     return values.back().value;
 }
 
+// Equal unit weights are common in fully covered scientific frames. Only the
+// two central order statistics are needed. Match the weighted interpolator's
+// arithmetic exactly, including its float subtraction before promotion.
+float unitMedian(std::vector<float>& samples) {
+    auto upper = samples.begin() + samples.size() / 2;
+    std::nth_element(samples.begin(), upper, samples.end());
+    if (samples.size() == 1) return *upper;
+    const float lower = *std::max_element(samples.begin(), upper);
+    const double n = double(samples.size());
+    const double before = (double(samples.size() / 2) - .5) / n;
+    const double after = (double(samples.size() / 2) + .5) / n;
+    return float(double(lower) + double(*upper - lower) * ((.5 - before) / (after - before)));
+}
+
 struct PixelRejections {
     std::size_t low = 0, high = 0;
     double lowerBound = -std::numeric_limits<double>::infinity();
@@ -844,7 +866,7 @@ struct PixelRejections {
 };
 
 float robustStackValue(std::vector<WeightedValue>& values, std::vector<WeightedValue>& scratch,
-                       std::vector<WeightedValue>& retained, const StackOptions& options, PixelRejections& rejections) {
+                       std::vector<WeightedValue>& retained, std::vector<float>& unitSamples, const StackOptions& options, PixelRejections& rejections, const float* centers = nullptr) {
     switch (options.method) {
     case StackMethod::Median:
         rejections.count(values, -std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity());
@@ -908,13 +930,24 @@ float robustStackValue(std::vector<WeightedValue>& values, std::vector<WeightedV
         return acceptedWeight <= 0.0 ? mean : static_cast<float>(sum / acceptedWeight);
     }
     case StackMethod::WinsorizedSigmaClip: {
-        scratch.assign(values.begin(), values.end());
-        const float median = weightedQuantile(scratch, 0.5F);
-        scratch.assign(values.begin(), values.end());
-        for (auto& value : scratch) {
-            value.value = std::fabs(value.value - median);
+        float median, mad;
+        if (centers && std::isfinite(centers[0]) && std::isfinite(centers[1])) {
+            median = centers[0];
+            mad = centers[1];
+        } else if (std::all_of(values.begin(), values.end(), [](const auto& v) { return v.weight == 1; })) {
+            unitSamples.resize(values.size());
+            std::transform(values.begin(), values.end(), unitSamples.begin(), [](const auto& v) { return v.value; });
+            median = unitMedian(unitSamples);
+            for (auto& v : unitSamples) v = std::fabs(v - median);
+            mad = unitMedian(unitSamples);
+        } else {
+            scratch = values;
+            median = weightedQuantile(scratch, .5F);
+            scratch = values;
+            for (auto& v : scratch) v.value = std::fabs(v.value - median);
+            mad = weightedQuantile(scratch, .5F);
         }
-        const float sigma = std::max(1.0e-6F, weightedQuantile(scratch, 0.5F) * 1.4826F);
+        const float sigma = std::max(1.0e-6F, mad * 1.4826F);
         const float low = median - options.winsorizedSigma.sigmaLow * sigma;
         const float high = median + options.winsorizedSigma.sigmaHigh * sigma;
         rejections.count(values, low, high);
@@ -1000,7 +1033,7 @@ void processRobustRange(const std::vector<float>& tileData, std::size_t frameCou
                        std::uint16_t channels, std::size_t outputPixelOffset, const StackOptions& options,
                        const std::vector<std::size_t>& inputOrder, ImageBuffer& output,
                        StackResult* report, StackResult* counters, ImageBuffer* noise, StackResult* groups,
-                       std::size_t begin, std::size_t end) {
+                       std::size_t begin, std::size_t end, const float* centers) {
     const auto tileSamples = tilePixels * channels;
     std::vector<WeightedValue> values;
     std::vector<WeightedValue> scratch;
@@ -1008,6 +1041,7 @@ void processRobustRange(const std::vector<float>& tileData, std::size_t frameCou
     std::vector<WeightedValue> halves[2];
     if (noise) for (auto& half : halves) half.reserve((frameCount + 1) / 2);
     std::vector<float> coverages(frameCount, 0.0F);
+    std::vector<float> unitSamples;
     values.reserve(frameCount);
     scratch.reserve(frameCount);
     if (options.method == StackMethod::SigmaClip && options.sigma.medianMad) retained.reserve(frameCount);
@@ -1043,7 +1077,8 @@ void processRobustRange(const std::vector<float>& tileData, std::size_t frameCou
             if (!values.empty()) {
                 PixelRejections rejected;
                 rejected.report = counters;
-                output.pixels[outputOffset + channel] = robustStackValue(values, scratch, retained, options, rejected);
+                output.pixels[outputOffset + channel] = robustStackValue(values, scratch, retained, unitSamples, options, rejected,
+                    centers ? centers + 2 * (pixel * 3 + channel) : nullptr);
                 if (groups) recordAcceptedGroups(values, rejected, options, inputOrder, *groups, noiseOffset + channel);
                 if (noise) {
                     halves[0].clear(); halves[1].clear();
@@ -1053,7 +1088,7 @@ void processRobustRange(const std::vector<float>& tileData, std::size_t frameCou
                     for (unsigned h = 0; h < 2; ++h) {
                         if (halves[h].empty()) continue;
                         PixelRejections halfBounds;
-                        means[h] = robustStackValue(halves[h], scratch, retained, options, halfBounds);
+                        means[h] = robustStackValue(halves[h], scratch, retained, unitSamples, options, halfBounds);
                         halfVariance[h] = acceptedVariance(halves[h], halfBounds, options.frameNoiseVariances);
                     }
                     const double fullVariance = acceptedVariance(values, rejected, options.frameNoiseVariances).variance();
@@ -1095,11 +1130,29 @@ void processRobustTile(const std::vector<float>& tileData, std::size_t frameCoun
                        std::uint16_t channels, std::size_t outputPixelOffset, const StackOptions& options,
                        const std::vector<std::size_t>& inputOrder, ImageBuffer& output,
                        StackResult* report, ImageBuffer* noise, StackResult* groups) {
-    const auto requested = options.combineWorkers == 0 ? std::thread::hardware_concurrency() : options.combineWorkers;
-    const auto workers = std::max<std::size_t>(1, std::min<std::size_t>({8, requested, tilePixels / 256}));
+    constexpr std::size_t automaticWorkerLimit = 8;
+    constexpr std::size_t manualWorkerLimit = 16;
+    const auto hardware = std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    const auto requested = options.combineWorkers == 0
+        ? std::min(hardware, automaticWorkerLimit)
+        : options.combineWorkers;
+    const auto workers = std::max<std::size_t>(1, std::min<std::size_t>({manualWorkerLimit, requested, hardware,
+                                                                         tilePixels / 256}));
+    std::vector<float> centers;
+    if (options.preferMetalCombine) {
+#ifdef __APPLE__
+        if (options.method == StackMethod::WinsorizedSigmaClip && channels == 4 && frameCount >= 8 &&
+            frameCount <= 240 && tilePixels >= 256 && options.frameWeights.empty() && !noise && !groups)
+            detail::metalWinsorCenters(tileData, tilePixels, frameCount, centers);
+        else detail::recordBackend("cpu", "Metal centers require an unweighted RGBA Winsor tile with 8–240 frames");
+#else
+        detail::recordBackend("cpu", "Metal unavailable on this platform");
+#endif
+    }
+    const float* bounds = centers.empty() ? nullptr : centers.data();
     if (workers == 1) {
         processRobustRange(tileData, frameCount, tilePixels, channels, outputPixelOffset, options,
-                           inputOrder, output, report, report, noise, groups, 0, tilePixels);
+                           inputOrder, output, report, report, noise, groups, 0, tilePixels, bounds);
         return;
     }
     // Pixel ranges are disjoint; frame traversal and floating-point reduction
@@ -1112,23 +1165,17 @@ void processRobustTile(const std::vector<float>& tileData, std::size_t frameCoun
         counter.rejectedLowSamples.assign(frameCount, 0);
         counter.rejectedHighSamples.assign(frameCount, 0);
     }
-    const auto run = [&](std::size_t worker) noexcept {
+    const auto run = [&, ctx = detail::currentStage](std::size_t worker) noexcept {
+        const detail::StageScope scope(ctx);
         try {
             processRobustRange(tileData, frameCount, tilePixels, channels, outputPixelOffset, options,
                                inputOrder, output, report, report ? &counters[worker] : nullptr, noise, groups,
-                               tilePixels * worker / workers, tilePixels * (worker + 1) / workers);
+                               tilePixels * worker / workers, tilePixels * (worker + 1) / workers, bounds);
         } catch (...) {
             failures[worker] = std::current_exception();
         }
     };
-    {
-        // Unlike parallelRanges, robust estimators allocate temporary vectors.
-        // Catch in each worker and rethrow on the caller after ALL workers join.
-        std::vector<std::jthread> threads;
-        threads.reserve(workers - 1);
-        for (std::size_t worker = 1; worker < workers; ++worker) threads.emplace_back(run, worker);
-        run(0);
-    }
+    detail::runWorkers(workers, run);
     for (const auto& failure : failures) if (failure) std::rethrow_exception(failure);
     if (report) for (const auto& counter : counters) for (std::size_t frame = 0; frame < frameCount; ++frame) {
         report->comparedSamples[frame] += counter.comparedSamples[frame];
@@ -1152,6 +1199,7 @@ StackResult stackCachedRobustFrames(const TemporaryFrameCache& cache, std::size_
                                     const StackOptions& options, const std::vector<std::size_t>& inputOrder,
                                     ImageBuffer output, StackResult metrics,
                                     StackProgressReporter& progress, double start, double end) {
+    const detail::StageScope timer(detail::Stage::Combine);
     const auto tilePixels = robustTilePixelCount(output, frameCount, options.combineTileBytes);
     if (tilePixels == 0)
         return stackError("StackTileBudgetInsufficient", "Robust tile budget must hold at least one pixel from every frame");

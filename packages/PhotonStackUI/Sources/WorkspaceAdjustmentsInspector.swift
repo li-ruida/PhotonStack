@@ -11,101 +11,119 @@ import UniformTypeIdentifiers
 struct AdjustmentsInspectorSection: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     @Binding var parameters: ProcessingParameters
-    @State private var selectedTab: AdjustmentInspectorTab = .curves
+    @State private var selectedTab: AdjustmentInspectorTab = .basic
+    private var photoDraft: PhotoAdjustmentDraft { model.photoDraft }
+    @State private var detailTool: DetailTool = .denoise
+    @StateObject private var advanced = AdvancedToolSettings()
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 6),
-        GridItem(.flexible(), spacing: 6)
-    ]
+    private var chinese: Bool { model.language == .simplifiedChinese }
+    private let columns = [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            DisclosureGroup(model.language == .simplifiedChinese ? "色彩与显示修整" : "Color and display finishing") {
-                VStack(alignment: .leading, spacing: 8) {
-                    GreenCastControl(model: model)
-                    ContinuumToneControl(model: model)
-                    DisplayGridControl(model: model)
-                }
-                .labelStyle(.titleAndIcon)
-                .disabled(!model.canProcessCurrentInput || model.isProcessing || model.editGraphNeedsReplay)
-                .padding(.vertical, 6)
-            }
-
             LazyVGrid(columns: columns, spacing: 6) {
-                ForEach(AdjustmentInspectorTab.allCases) { tab in
+                ForEach(AdjustmentInspectorTab.allCases, id: \.self) { tab in
                     Button {
                         selectedTab = tab
                     } label: {
-                        Label(model.localized(tab.titleKey), systemImage: tab.iconName)
+                        Label(tab.title(chinese: chinese), systemImage: tab.icon)
                             .font(.caption)
                             .lineLimit(1)
-                            .frame(maxWidth: .infinity, minHeight: 28)
+                            .frame(maxWidth: .infinity, minHeight: 26)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(selectedTab == tab ? Color.accentColor : Color.primary)
-                    .background(selectedTab == tab ? Color.accentColor.opacity(0.14) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+                    .background(selectedTab == tab ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.10),
+                                in: RoundedRectangle(cornerRadius: 6))
                     .overlay {
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(selectedTab == tab ? Color.accentColor.opacity(0.28) : Color.secondary.opacity(0.16), lineWidth: 1)
+                            .strokeBorder(selectedTab == tab ? Color.accentColor : .clear)
+                            .allowsHitTesting(false)
                     }
+                    .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
+                    .accessibilityIdentifier("finish.tab." + tab.rawValue)
                 }
             }
 
             Divider()
-
+            if !model.canModifyProcessingConfiguration {
+                Text(chinese ? "任务进行中，可浏览其他工具。" : "Processing. You can browse other tools.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if model.editGraphNeedsReplay {
+                Button(model.localized(.replayEditGraph)) { model.startReplayEditGraph() }
+                    .disabled(!model.canReplayEditGraph)
+            } else if !model.canProcessCurrentInput {
+                Text(chinese ? "请选择可读取的图像或图像图层。" : "Select an available image or image layer.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if selectedTab != .basic && selectedTab != .composition {
+                PhotoDraftNotice(draft: photoDraft, chinese: chinese) { selectedTab = .basic }
+            }
             selectedContent
+                .disabled(!model.canModifyProcessingConfiguration ||
+                          (selectedTab != .export && (!model.canProcessCurrentInput || model.editGraphNeedsReplay)))
         }
-        .disabled(model.canModifyProcessingConfiguration == false)
+
     }
 
     @ViewBuilder
     private var selectedContent: some View {
         switch selectedTab {
+        case .basic, .composition:
+            if let input = model.currentInputURL {
+                PhotoAdjustmentEditor(model: model, input: input, draft: photoDraft, composition: selectedTab == .composition)
+                    .id(input)
+            }
         case .curves:
             HistogramCurvesSection(model: model, parameters: $parameters)
-        case .parameters:
-            ParametersSection(parameters: $parameters, model: model)
+        case .detail:
+            ParametersSection(parameters: $parameters, model: model, tool: $detailTool)
         case .export:
             ExportSettingsSection(model: model)
         case .advanced:
-            AdvancedProcessingSection(model: model, parameters: $parameters)
+            AdvancedProcessingSection(model: model, parameters: $parameters, settings: advanced)
         }
     }
 }
 
-private enum AdjustmentInspectorTab: String, CaseIterable, Identifiable {
-    case curves
-    case parameters
-    case export
-    case advanced
+private enum AdjustmentInspectorTab: String, CaseIterable {
+    case basic, curves, detail, composition, advanced, export
 
-    var id: String {
-        rawValue
-    }
-
-    var titleKey: LocalizedTextKey {
+    func title(chinese: Bool) -> String {
         switch self {
-        case .curves:
-            return .histogramCurvesSection
-        case .parameters:
-            return .parametersSection
-        case .export:
-            return .exportSettingsSection
-        case .advanced:
-            return .advancedProcessingSection
+        case .basic: chinese ? "明暗与色彩" : "Light & color"
+        case .curves: chinese ? "直方图 / 曲线" : "Histogram / curves"
+        case .detail: chinese ? "细节与星点" : "Detail & stars"
+        case .composition: chinese ? "裁切与旋转" : "Crop & rotate"
+        case .advanced: chinese ? "高级处理" : "Advanced"
+        case .export: chinese ? "导出设置" : "Export settings"
         }
     }
 
-    var iconName: String {
+    var icon: String {
         switch self {
-        case .curves:
-            return "point.topleft.down.curvedto.point.bottomright.up"
-        case .parameters:
-            return "slider.horizontal.3"
-        case .export:
-            return "square.and.arrow.up"
-        case .advanced:
-            return "wand.and.stars"
+        case .basic: "circle.lefthalf.filled"
+        case .curves: "point.topleft.down.curvedto.point.bottomright.up"
+        case .detail: "slider.horizontal.3"
+        case .export: "square.and.arrow.up"
+        case .composition: "crop.rotate"
+        case .advanced: "wand.and.stars"
+        }
+    }
+}
+
+private enum DetailTool: String, CaseIterable {
+    case denoise, sharpen, contrast, stretch, stars, coma
+
+    var name: LocalizedTextKey {
+        switch self {
+        case .denoise: .denoiseAction
+        case .sharpen: .sharpenAction
+        case .contrast: .contrastAction
+        case .stretch: .autoStretchAction
+        case .stars: .starsAction
+        case .coma: .comaAction
         }
     }
 }
@@ -113,75 +131,51 @@ private enum AdjustmentInspectorTab: String, CaseIterable, Identifiable {
 private struct ParametersSection: View {
     @Binding var parameters: ProcessingParameters
     @ObservedObject var model: PhotonStackWorkspaceModel
+    @Binding var tool: DetailTool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(model.localized(.parametersSection))
-                .font(.headline)
-
-            Stepper("\(model.localized(.previewWidth)) \(parameters.previewWidth) px", value: $parameters.previewWidth, in: 512...4096, step: 256)
-
-            ParameterSlider(
-                title: model.language == .simplifiedChinese ? "自动拉伸 · 目标背景" : "Auto Stretch · Target background",
-                value: $parameters.stretchTargetBackground,
-                range: 0.05...0.65
-            ).accessibilityIdentifier("parameters.stretch-target")
-
-            ParameterSlider(
-                title: model.localized(.starReduction),
-                value: $parameters.starReductionAmount,
-                range: 0.05...0.9
-            )
-
-            Toggle(model.localized(.profileAwareStars), isOn: $parameters.profileAwareStarReduction)
-
-            Toggle(model.localized(.edgeAwareStars), isOn: $parameters.edgeAwareStarReduction)
-
-            ParameterSlider(
-                title: model.localized(.comaReduction),
-                value: $parameters.comaReductionAmount,
-                range: 0.0...1.0
-            )
-
-            Stepper("\(model.localized(.comaRadius)) \(parameters.comaReductionRadius)", value: $parameters.comaReductionRadius, in: 2...16)
-
-            ParameterSlider(
-                title: model.localized(.comaEccentricity),
-                value: $parameters.comaReductionEccentricity,
-                range: 0.1...0.9
-            )
-
-            Toggle(model.localized(.edgeAwareComa), isOn: $parameters.edgeAwareComaReduction)
-
-            ParameterSlider(
-                title: model.localized(.localContrast),
-                value: $parameters.localContrastAmount,
-                range: 0.0...1.0
-            )
-
-            Stepper("\(model.localized(.contrastRadius)) \(parameters.localContrastRadius)", value: $parameters.localContrastRadius, in: 1...64)
-
-            ParameterSlider(
-                title: model.localized(.denoiseParameter),
-                value: $parameters.denoiseAmount,
-                range: 0.0...1.0
-            )
-
-            ParameterSlider(
-                title: model.localized(.chromaDenoiseParameter),
-                value: $parameters.denoiseChromaAmount,
-                range: 0.0...1.0
-            )
-
-            Stepper("\(model.localized(.denoiseRadius)) \(parameters.denoiseRadius)", value: $parameters.denoiseRadius, in: 1...8)
-
-            ParameterSlider(
-                title: model.localized(.sharpenParameter),
-                value: $parameters.sharpenAmount,
-                range: 0.0...1.0
-            )
-
-            Stepper("\(model.localized(.sharpenRadius)) \(parameters.sharpenRadius)", value: $parameters.sharpenRadius, in: 1...8)
+        VStack(alignment: .leading, spacing: 12) {
+            Picker(model.language == .simplifiedChinese ? "工具" : "Tool", selection: $tool) {
+                ForEach(DetailTool.allCases, id: \.self) { Text(model.localized($0.name)).tag($0) }
+            }
+            switch tool {
+            case .stretch:
+                ParameterSlider(title: model.localized(.targetBackground), value: $parameters.stretchTargetBackground, range: 0.05...0.65)
+                    .accessibilityIdentifier("parameters.stretch-target")
+            case .denoise:
+                ParameterSlider(title: model.localized(.denoiseParameter), value: $parameters.denoiseAmount, range: 0...1)
+                ParameterSlider(title: model.localized(.chromaDenoiseParameter), value: $parameters.denoiseChromaAmount, range: 0...1)
+                Stepper("\(model.localized(.denoiseRadius))  \(parameters.denoiseRadius)", value: $parameters.denoiseRadius, in: 1...8)
+            case .sharpen:
+                ParameterSlider(title: model.localized(.sharpenParameter), value: $parameters.sharpenAmount, range: 0...1)
+                Stepper("\(model.localized(.sharpenRadius))  \(parameters.sharpenRadius)", value: $parameters.sharpenRadius, in: 1...8)
+            case .contrast:
+                ParameterSlider(title: model.localized(.localContrast), value: $parameters.localContrastAmount, range: 0...1)
+                Stepper("\(model.localized(.contrastRadius))  \(parameters.localContrastRadius)", value: $parameters.localContrastRadius, in: 1...64)
+            case .stars:
+                ParameterSlider(title: model.localized(.starReduction), value: $parameters.starReductionAmount, range: 0...1)
+                Toggle(model.localized(.profileAwareStars), isOn: $parameters.profileAwareStarReduction)
+                Toggle(model.localized(.edgeAwareStars), isOn: $parameters.edgeAwareStarReduction)
+            case .coma:
+                ParameterSlider(title: model.localized(.comaReduction), value: $parameters.comaReductionAmount, range: 0...1)
+                Stepper("\(model.localized(.comaRadius))  \(parameters.comaReductionRadius)", value: $parameters.comaReductionRadius, in: 2...16)
+                ParameterSlider(title: model.localized(.comaEccentricity), value: $parameters.comaReductionEccentricity, range: 0.1...0.9)
+                Toggle(model.localized(.edgeAwareComa), isOn: $parameters.edgeAwareComaReduction)
+            }
+            Button(model.language == .simplifiedChinese ? "应用" + model.localized(tool.name) : "Apply " + model.localized(tool.name)) {
+                switch tool {
+                case .stretch: model.startAutoStretchPreview()
+                case .denoise: model.startDenoisePreview()
+                case .sharpen: model.startSharpenPreview()
+                case .contrast: model.startLocalContrastPreview()
+                case .stars: model.startReduceStarsPreview()
+                case .coma: model.startReduceComaPreview()
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("finish.apply-detail")
+            Divider()
+            Stepper("\(model.localized(.previewWidth))  \(parameters.previewWidth) px", value: $parameters.previewWidth, in: 320...4096, step: 256)
         }
     }
 }
@@ -230,6 +224,22 @@ private struct ExportSettingsSection: View {
                 ),
                 range: 0.1...1.0
             )
+
+            Picker(model.language == .simplifiedChinese ? "FITS 数值" : "FITS values", selection: Binding(
+                get: { model.exportOptions.fitsValueMode }, set: { model.setFITSValueMode($0) }
+            )) {
+                Text(model.language == .simplifiedChinese ? "显示范围" : "Display range").tag(FITSValueMode.display)
+                Text(model.language == .simplifiedChinese ? "科学数值" : "Scientific values").tag(FITSValueMode.scientific)
+            }
+            #if os(macOS)
+            Button(model.localized(.exportAction)) {
+                if let output = NativeFilePanels.exportImageURL(message: model.localized(.exportImageMessage)) {
+                    model.startExportCurrentImage(to: output)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!model.canExportCurrentImage)
+            #endif
         }
     }
 }
@@ -470,56 +480,60 @@ private struct CurveEditorView: View {
                             }
                     )
 
-                gridPath(in: size)
-                    .stroke(.secondary.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
+                Group {
+                    gridPath(in: size)
+                        .stroke(.secondary.opacity(0.22), style: StrokeStyle(lineWidth: 1, dash: [3, 4]))
 
-                if let snapshot, snapshot.bins.isEmpty == false {
-                    let maximum = max(snapshot.bins.max() ?? 1, 1)
-                    Path { path in
-                        let width = size.width
-                        let height = size.height
-                        let step = width / CGFloat(max(snapshot.bins.count - 1, 1))
+                    if let snapshot, snapshot.bins.isEmpty == false {
+                        let maximum = max(snapshot.bins.max() ?? 1, 1)
+                        Path { path in
+                            let width = size.width
+                            let height = size.height
+                            let step = width / CGFloat(max(snapshot.bins.count - 1, 1))
 
-                        path.move(to: CGPoint(x: 0, y: height))
-                        for index in snapshot.bins.indices {
-                            let normalized = CGFloat(snapshot.bins[index]) / CGFloat(maximum)
-                            let x = CGFloat(index) * step
-                            let y = height - normalized * height
-                            path.addLine(to: CGPoint(x: x, y: y))
-                        }
-                        path.addLine(to: CGPoint(x: width, y: height))
-                        path.closeSubpath()
-                    }
-                    .fill(Color.accentColor.opacity(0.45))
-
-                    Path { path in
-                        let width = size.width
-                        let height = size.height
-                        let step = width / CGFloat(max(snapshot.bins.count - 1, 1))
-
-                        for index in snapshot.bins.indices {
-                            let normalized = CGFloat(snapshot.bins[index]) / CGFloat(maximum)
-                            let x = CGFloat(index) * step
-                            let y = height - normalized * height
-                            if index == snapshot.bins.startIndex {
-                                path.move(to: CGPoint(x: x, y: y))
-                            } else {
+                            path.move(to: CGPoint(x: 0, y: height))
+                            for index in snapshot.bins.indices {
+                                let normalized = CGFloat(snapshot.bins[index]) / CGFloat(maximum)
+                                let x = CGFloat(index) * step
+                                let y = height - normalized * height
                                 path.addLine(to: CGPoint(x: x, y: y))
                             }
+                            path.addLine(to: CGPoint(x: width, y: height))
+                            path.closeSubpath()
                         }
+                        .fill(Color.accentColor.opacity(0.45))
+
+                        Path { path in
+                            let width = size.width
+                            let height = size.height
+                            let step = width / CGFloat(max(snapshot.bins.count - 1, 1))
+
+                            for index in snapshot.bins.indices {
+                                let normalized = CGFloat(snapshot.bins[index]) / CGFloat(maximum)
+                                let x = CGFloat(index) * step
+                                let y = height - normalized * height
+                                if index == snapshot.bins.startIndex {
+                                    path.move(to: CGPoint(x: x, y: y))
+                                } else {
+                                    path.addLine(to: CGPoint(x: x, y: y))
+                                }
+                            }
+                        }
+                        .stroke(Color.accentColor, lineWidth: 1.5)
+                    } else {
+                        Text(model.language == .simplifiedChinese ? "直方图" : "Histogram")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    .stroke(Color.accentColor, lineWidth: 1.5)
-                } else {
-                    Text(model.language == .simplifiedChinese ? "直方图" : "Histogram")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+
+                    referencePath(in: size)
+                        .stroke(.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+
+                    curvePath(points: points, in: size)
+                        .stroke(channelColor.opacity(0.95), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+
                 }
-
-                referencePath(in: size)
-                    .stroke(.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-
-                curvePath(points: points, in: size)
-                    .stroke(channelColor.opacity(0.95), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                .allowsHitTesting(false)
 
                 ForEach(points) { point in
                     let selected = point.id == selectedPointID
@@ -531,9 +545,10 @@ private struct CurveEditorView: View {
                                 .stroke(Color.primary.opacity(selected ? 0.32 : 0.18), lineWidth: 2)
                         }
                         .shadow(radius: 2, y: 1)
-                        .position(position(for: point, in: size))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                         .gesture(
-                            DragGesture(minimumDistance: 0)
+                            DragGesture(minimumDistance: 0, coordinateSpace: .named("curve-editor"))
                                 .onChanged { value in
                                     isDraggingPoint = true
                                     selectedPointID = point.id
@@ -547,8 +562,10 @@ private struct CurveEditorView: View {
                                     isDraggingPoint = false
                                 }
                         )
+                        .position(position(for: point, in: size))
                 }
             }
+            .coordinateSpace(name: "curve-editor")
         }
         .onAppear {
             syncDraftPoints()
@@ -616,10 +633,11 @@ private struct CurveEditorView: View {
 
     private func curvePath(points: [CurveEditorPoint], in size: CGSize) -> Path {
         Path { path in
+            let curve = WorkspaceSampledCurve(points: points)
             let samples = 96
             for sample in 0...samples {
                 let input = Double(sample) / Double(samples)
-                let output = curveOutput(for: input, points: points)
+                let output = curve.value(at: input)
                 let point = CGPoint(
                     x: CGFloat(input) * size.width,
                     y: (1.0 - CGFloat(output)) * size.height
@@ -631,10 +649,6 @@ private struct CurveEditorView: View {
                 }
             }
         }
-    }
-
-    private func curveOutput(for input: Double, points: [CurveEditorPoint]) -> Double {
-        sampleCurve(input, points: points)
     }
 
     private func position(for point: CurveEditorPoint, in size: CGSize) -> CGPoint {
@@ -659,9 +673,6 @@ private struct CurveEditorView: View {
 
     private func scheduleInteractivePreviewIfNeeded() {
         let normalized = normalizedDraftPoints(draftPoints)
-        guard normalized != parameters.curveEditorPoints else {
-            return
-        }
         model.scheduleCurvePreview(points: normalized)
     }
 
@@ -669,6 +680,7 @@ private struct CurveEditorView: View {
         let normalized = normalizedDraftPoints(draftPoints)
         guard normalized != parameters.curveEditorPoints else {
             draftPoints = parameters.curveEditorPoints
+            model.scheduleCurvePreview(points: normalized)
             return
         }
         parameters.replaceCurvePoints(normalized)
@@ -685,6 +697,7 @@ private struct CurveEditorView: View {
         let output = min(max(1.0 - Double(location.y / height), 0.0), 1.0)
         parameters.addCurvePoint(input: input, output: output)
         draftPoints = parameters.curveEditorPoints
+        model.startCurvePreview()
         selectedPointID = parameters.curveEditorPoints.min { left, right in
             squaredDistance(left, input: input, output: output) < squaredDistance(right, input: input, output: output)
         }?.id
@@ -727,15 +740,49 @@ struct ParameterSlider: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
 
+    var continuous = false
+    var resetValue: Double? = nil
+    var resetLabel = "Reset"
+    @State private var dragValue: Double?
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text(title)
                 Spacer()
-                Text(value, format: .number.precision(.fractionLength(2)))
-                    .foregroundStyle(.secondary)
+                if let resetValue {
+                    Button { value = resetValue } label: { Image(systemName: "arrow.counterclockwise") }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel("\(resetLabel) \(title)")
+                        .help("\(resetLabel) \(title)")
+                        .disabled(value == resetValue)
+                }
+                TextField(title, value: Binding(
+                    get: { dragValue ?? value },
+                    set: { if $0.isFinite { value = min(max($0, range.lowerBound), range.upperBound) } }
+                ), format: .number.precision(.fractionLength(2)))
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .monospacedDigit()
+                    .frame(width: 62)
+                    .accessibilityLabel(title)
             }
-            Slider(value: $value, in: range)
+            Slider(value: Binding(
+                get: { dragValue ?? value },
+                set: { next in
+                    if continuous || dragValue == nil { value = next }
+                    if dragValue != nil { dragValue = next }
+                }
+            ), in: range.lowerBound == range.upperBound ? range.lowerBound...(range.lowerBound + 1) : range) { editing in
+                if editing {
+                    dragValue = value
+                } else if let final = dragValue {
+                    if final != value { value = final }
+                    dragValue = nil
+                }
+            }
+            .accessibilityLabel(title)
+            .disabled(range.lowerBound == range.upperBound)
         }
     }
 }

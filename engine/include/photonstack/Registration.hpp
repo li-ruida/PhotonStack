@@ -131,10 +131,13 @@ using RegistrationRowConsumer = std::function<bool(std::uint32_t row, const floa
 using RegistrationCoordinateConsumer =
     std::function<bool(std::uint32_t row, const float* coordinates, std::size_t coordinateCount)>;
 
+enum class ComputeBackend { Automatic, CPU, Metal };
+
 class Registration {
   public:
-    explicit Registration(RegistrationInterpolation interpolation = RegistrationInterpolation::Bilinear)
-        : interpolation_(interpolation) {}
+    explicit Registration(RegistrationInterpolation interpolation = RegistrationInterpolation::Bilinear,
+                          ComputeBackend backend = ComputeBackend::CPU)
+        : interpolation_(interpolation), backend_(backend) {}
     // forDistortion also prepares the denser local star list. Preparation
     // errors are reported on matching, like the single-image-pair overloads.
     PreparedRegistrationReference prepareReference(ImageBuffer&& reference, const RegistrationOptions& options,
@@ -174,6 +177,7 @@ class Registration {
 
   private:
     RegistrationInterpolation interpolation_;
+    ComputeBackend backend_;
 };
 
 } // namespace photonstack

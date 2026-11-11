@@ -43,6 +43,9 @@ def main():
     parser.add_argument('--cli', type=Path, required=True)
     parser.add_argument('--recipe', type=Path, required=True)
     parser.add_argument('--output-dir', type=Path, required=True)
+    parser.add_argument('--analysis-workers', type=int, choices=range(9))
+    parser.add_argument('--stack-workers', type=int, choices=range(17))
+    parser.add_argument('--compute-backend', choices=('auto', 'cpu', 'metal'))
     args = parser.parse_args()
     cli, recipe, output = (p.resolve() for p in (args.cli, args.recipe, args.output_dir))
     if output.exists():
@@ -51,6 +54,10 @@ def main():
     result = output / 'result'
     command = ['/usr/bin/time', '-l', '-o', str(output / 'resources.txt'), str(cli),
                'deep-sky', '--recipe', str(recipe), '--output-dir', str(result)]
+    for name in ('analysis_workers', 'stack_workers', 'compute_backend'):
+        value = getattr(args, name)
+        if value is not None:
+            command += ['--' + name.replace('_', '-'), str(value)]
     stop = threading.Event()
     observations = {'peak_work_bytes_sampled': 0, 'peak_output_bytes_sampled': 0,
                     'disk_sample_interval_seconds': .02, 'disk_samples': 0}
@@ -107,6 +114,9 @@ def main():
                'recipe_sha256': sha256(recipe),
                'resources': resource_values, 'disk': observations, 'stages': stages,
                'outputs': outputs, 'temporary_work_cleaned': not (result / '.aligned-work').exists()}
+    performance = result / 'performance.json'
+    if performance.is_file():
+        summary['performance'] = json.loads(performance.read_text())
     (output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
     print(json.dumps(summary, indent=2))
     raise SystemExit(code)

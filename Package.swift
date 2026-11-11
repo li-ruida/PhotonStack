@@ -67,6 +67,8 @@ let package = Package(
                 "src/RawCodec.cpp",
                 "src/Registration.cpp",
                 "src/ScientificDisplayBridge.cpp",
+                "src/StageProfile.cpp",
+                "src/WorkerPool.cpp",
                 "src/Stacker.cpp",
                 "src/StarDetector.cpp",
                 "src/StarCentroid.cpp",
@@ -86,6 +88,7 @@ let package = Package(
                 "src/PsfHomogenizer.cpp",
                 "src/TileProcessor.cpp",
                 "src/AppleRawDecoder.mm",
+                "src/MetalCompute.mm",
             ],
             publicHeadersPath: "bridge/include",
             cSettings: [

@@ -2529,6 +2529,7 @@ public enum ProcessingOperationKind: String, Codable, CaseIterable, Equatable, S
     case histogram
     case stretch
     case curves
+    case photoAdjust
     case localContrast
     case denoise
     case sharpen
@@ -2576,13 +2577,29 @@ public struct RecentProject: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+public enum DeepSkyComputeBackend: String, Codable, CaseIterable, Sendable {
+    case automatic = "auto", metal, cpu
+}
+
 public struct AppSettings: Codable, Equatable, Sendable {
     private static let defaultRecentProjectLimit = 8
+    public static let maximumAnalysisWorkerCount = 8
+    public static let maximumStackWorkerCount = 16
 
     public var recentProjects: [RecentProject]
     public var autosaveEnabled: Bool
     public var selectedTemplate: ProjectTemplate
     public var language: AppLanguage?
+    /// Zero selects bounded, memory-aware automatic scheduling.
+    public var analysisWorkerCount: Int
+    /// Zero selects bounded automatic parallelism for robust stack combine.
+    public var stackWorkerCount: Int
+    public var computeBackend: DeepSkyComputeBackend
+    public var gpuAccelerationEnabled: Bool {
+        get { computeBackend != .cpu }
+        set { computeBackend = newValue ? .automatic : .cpu }
+    }
+    private enum LegacyKeys: String, CodingKey { case gpuAccelerationEnabled }
     public var customCurvePresets: [CustomCurvePreset]
     public var exportOptions: ExportOptions
 
@@ -2591,6 +2608,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case autosaveEnabled
         case selectedTemplate
         case language
+        case analysisWorkerCount
+        case stackWorkerCount
+        case computeBackend
         case customCurvePresets
         case exportOptions
     }
@@ -2600,6 +2620,10 @@ public struct AppSettings: Codable, Equatable, Sendable {
         autosaveEnabled: Bool = true,
         selectedTemplate: ProjectTemplate = .deepSky,
         language: AppLanguage? = nil,
+        analysisWorkerCount: Int = 0,
+        stackWorkerCount: Int = 0,
+        gpuAccelerationEnabled: Bool = true,
+        computeBackend: DeepSkyComputeBackend? = nil,
         customCurvePresets: [CustomCurvePreset] = [],
         exportOptions: ExportOptions = ExportOptions()
     ) {
@@ -2607,6 +2631,15 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.autosaveEnabled = autosaveEnabled
         self.selectedTemplate = selectedTemplate
         self.language = language
+        self.analysisWorkerCount = Self.normalizedWorkerCount(
+            analysisWorkerCount,
+            maximum: Self.maximumAnalysisWorkerCount
+        )
+        self.stackWorkerCount = Self.normalizedWorkerCount(
+            stackWorkerCount,
+            maximum: Self.maximumStackWorkerCount
+        )
+        self.computeBackend = computeBackend ?? (gpuAccelerationEnabled ? .automatic : .cpu)
         self.customCurvePresets = Self.presetsWithUniqueIdentifiers(customCurvePresets)
         self.exportOptions = exportOptions
     }
@@ -2617,7 +2650,24 @@ public struct AppSettings: Codable, Equatable, Sendable {
         recentProjects = Self.deduplicatedRecentProjects(decodedRecentProjects, limit: Self.defaultRecentProjectLimit)
         autosaveEnabled = try container.decodeIfPresent(Bool.self, forKey: .autosaveEnabled) ?? true
         selectedTemplate = try container.decodeIfPresent(ProjectTemplate.self, forKey: .selectedTemplate) ?? .deepSky
-        language = try container.decodeIfPresent(AppLanguage.self, forKey: .language)
+        if container.contains(.language) {
+            let identifier = (try? container.decode(String.self, forKey: .language)) ?? ""
+            language = AppLanguage.settingValue(from: identifier) ?? .simplifiedChinese
+        } else {
+            language = nil
+        }
+        analysisWorkerCount = Self.normalizedWorkerCount(
+            (try? container.decode(Int.self, forKey: .analysisWorkerCount)) ?? 0,
+            maximum: Self.maximumAnalysisWorkerCount
+        )
+        stackWorkerCount = Self.normalizedWorkerCount(
+            (try? container.decode(Int.self, forKey: .stackWorkerCount)) ?? 0,
+            maximum: Self.maximumStackWorkerCount
+        )
+        let legacy = try decoder.container(keyedBy: LegacyKeys.self)
+        let enabled = try legacy.decodeIfPresent(Bool.self, forKey: .gpuAccelerationEnabled) ?? true
+        computeBackend = try container.decodeIfPresent(DeepSkyComputeBackend.self, forKey: .computeBackend)
+            ?? (enabled ? .automatic : .cpu)
         let decodedCurvePresets = try container.decodeIfPresent([CustomCurvePreset].self, forKey: .customCurvePresets) ?? []
         customCurvePresets = Self.presetsWithUniqueIdentifiers(decodedCurvePresets)
         exportOptions = try container.decodeIfPresent(ExportOptions.self, forKey: .exportOptions) ?? ExportOptions()
@@ -2632,6 +2682,18 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public mutating func deduplicateRecentProjects(limit: Int = 8) {
         recentProjects = Self.deduplicatedRecentProjects(recentProjects, limit: limit)
+    }
+
+    public static func normalizedAnalysisWorkerCount(_ count: Int) -> Int {
+        normalizedWorkerCount(count, maximum: maximumAnalysisWorkerCount)
+    }
+
+    public static func normalizedStackWorkerCount(_ count: Int) -> Int {
+        normalizedWorkerCount(count, maximum: maximumStackWorkerCount)
+    }
+
+    private static func normalizedWorkerCount(_ count: Int, maximum: Int) -> Int {
+        (0...maximum).contains(count) ? count : 0
     }
 
     private static func deduplicatedRecentProjects(_ projects: [RecentProject], limit: Int) -> [RecentProject] {

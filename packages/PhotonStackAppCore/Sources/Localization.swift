@@ -5,8 +5,32 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
     case simplifiedChinese
 
     public static var systemDefault: AppLanguage {
-        let preferred = Locale.preferredLanguages.first?.lowercased() ?? ""
-        return preferred.hasPrefix("zh") ? .simplifiedChinese : .english
+        preferred(from: Locale.preferredLanguages)
+    }
+
+    public static func preferred(from languageIdentifiers: [String]) -> AppLanguage {
+        for identifier in languageIdentifiers {
+            if let language = settingValue(from: identifier) {
+                return language
+            }
+        }
+        return .simplifiedChinese
+    }
+
+    public static func settingValue(from identifier: String) -> AppLanguage? {
+        let normalized = identifier
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "_", with: "-")
+            .lowercased()
+        let languageCode = normalized.split(separator: "-").first.map(String.init) ?? normalized
+        switch languageCode {
+        case "en", "english":
+            return .english
+        case "zh", "chinese", "simplifiedchinese", "中文", "简体中文":
+            return .simplifiedChinese
+        default:
+            return nil
+        }
     }
 
     public var displayName: String {
@@ -20,6 +44,20 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
 
     public func text(_ key: LocalizedTextKey) -> String {
         LocalizedTextCatalog.text(key, language: self)
+    }
+
+    public func localizedMessage(_ message: String) -> String {
+        guard let separator = message.range(of: " / ", options: .backwards) else {
+            return message
+        }
+        let chineseVariant = message[..<separator.lowerBound]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let englishVariant = message[separator.upperBound...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard chineseVariant.isEmpty == false, englishVariant.isEmpty == false else {
+            return message
+        }
+        return self == .simplifiedChinese ? chineseVariant : englishVariant
     }
 
     public func roleName(_ role: CalibrationFrameRole) -> String {
@@ -71,6 +109,7 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
         case (.english, .normalize): "Normalize"
         case (.english, .histogram): "Histogram"
         case (.english, .stretch): "Stretch"
+        case (.english, .photoAdjust): "Light and Color"
         case (.english, .curves): "Curves"
         case (.english, .localContrast): "Local Contrast"
         case (.english, .denoise): "Denoise"
@@ -101,6 +140,7 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
         case (.simplifiedChinese, .normalize): "归一化"
         case (.simplifiedChinese, .histogram): "直方图"
         case (.simplifiedChinese, .stretch): "拉伸"
+        case (.simplifiedChinese, .photoAdjust): "明暗与色彩"
         case (.simplifiedChinese, .curves): "曲线"
         case (.simplifiedChinese, .localContrast): "局部对比度"
         case (.simplifiedChinese, .denoise): "降噪"
@@ -201,9 +241,9 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
         case (.english, .removed):
             return "Bias already removed"
         case (.simplifiedChinese, .included):
-            return "包含 Bias"
+            return "包含偏置"
         case (.simplifiedChinese, .removed):
-            return "已移除 Bias"
+            return "已移除偏置"
         }
     }
 
@@ -1566,7 +1606,7 @@ private enum LocalizedTextCatalog {
         .removeSelectedClouds: "去除已选云雾",
         .cloudRemovalStrength: "去云强度",
         .cloudSummary: "云雾候选",
-        .topCloudRegions: "候选区域 Top20",
+        .topCloudRegions: "前 20 个候选区域",
         .selectAllClouds: "全选云雾",
         .clearCloudSelection: "清空",
         .selectedCloudPreviewHint: "勾选的云雾区域会在标记预览中高亮。",
@@ -1608,7 +1648,7 @@ private enum LocalizedTextCatalog {
         .allowMeteorRemoval: "允许去除选中的流星",
         .artifactTrailSummary: "识别数量",
         .protectedMeteors: "已保护流星",
-        .topArtifactTrails: "候选 Top20",
+        .topArtifactTrails: "前 20 个候选",
         .artifactTrailWeight: "权重",
         .artifactTrailTop20Hint: "候选较多时先展示权重最高的 20 条。",
         .selectAllArtificialTrails: "全选人造",
@@ -1680,7 +1720,7 @@ private enum LocalizedTextCatalog {
         .cancellingTask: "正在取消当前任务...",
         .cancelledTask: "任务已取消",
         .restoredPreview: "已恢复上一张预览",
-        .workflowNoLights: "运行工作流前至少需要一个 Light 素材。",
+        .workflowNoLights: "运行工作流前至少需要一个亮场素材。",
         .toolsPanel: "工具",
         .expandAllTools: "全部展开",
         .collapseAllTools: "全部收起",

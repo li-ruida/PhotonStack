@@ -139,6 +139,25 @@ actor NativePreviewImageLoader {
 // default interpolation otherwise blends even an integer 2x enlargement.
 // Keep the normal smooth downsampling when fitting a larger image to a window.
 final class NativePreviewImageView: NSImageView {
+    var samplePoint: ((CGPoint) -> Void)? {
+        didSet {
+            if (samplePoint == nil) != (oldValue == nil) { window?.invalidateCursorRects(for: self) }
+        }
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if samplePoint != nil { addCursorRect(visibleRect, cursor: .crosshair) }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let samplePoint, image != nil else { super.mouseDown(with: event); return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard bounds.width > 0, bounds.height > 0, bounds.contains(point) else { return }
+        let y = (point.y - bounds.minY) / bounds.height
+        samplePoint(CGPoint(x: (point.x - bounds.minX) / bounds.width, y: isFlipped ? y : 1 - y))
+    }
+
     var usesNearestNeighbor = false {
         didSet {
             guard usesNearestNeighbor != oldValue else { return }
@@ -164,6 +183,8 @@ struct NativeImagePreview: NSViewRepresentable {
     @Binding var magnification: Double
     @Binding var fitToWindow: Bool
     var decodedImage: CGImage? = nil
+    var decodedSize: CGSize? = nil
+    var samplePoint: ((CGPoint) -> Void)? = nil
     var centerFirstImage = false
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -192,6 +213,7 @@ struct NativeImagePreview: NSViewRepresentable {
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        (context.coordinator.imageView as? NativePreviewImageView)?.samplePoint = samplePoint
         context.coordinator.centerFirstImage = centerFirstImage
         if let nativeScrollView = scrollView as? NativePreviewScrollView {
             nativeScrollView.viewportLaidOut = { [weak coordinator = context.coordinator] in
@@ -218,8 +240,8 @@ struct NativeImagePreview: NSViewRepresentable {
             coordinator?.applyZoom(magnification: self.magnification, fitToWindow: self.fitToWindow,
                                    updateMagnification: { self.magnification = $0 })
         }
-        if context.coordinator.url != url {
-            context.coordinator.updateImage(url, decodedImage: decodedImage)
+        if context.coordinator.url != url || context.coordinator.decodedImage !== decodedImage {
+            context.coordinator.updateImage(url, decodedImage: decodedImage, decodedSize: decodedSize)
         }
 
         context.coordinator.applyZoom(
@@ -252,6 +274,7 @@ struct NativeImagePreview: NSViewRepresentable {
         weak var imageView: NSImageView?
         weak var scrollView: NSScrollView?
         var url: URL?
+        var decodedImage: CGImage?
         var naturalImageSize: CGSize = .zero
         var centerFirstImage = false
         private var needsInitialCenter = false
@@ -269,11 +292,12 @@ struct NativeImagePreview: NSViewRepresentable {
             imageTask = nil
         }
 
-        func updateImage(_ newURL: URL, decodedImage: CGImage? = nil) {
+        func updateImage(_ newURL: URL, decodedImage: CGImage? = nil, decodedSize: CGSize? = nil) {
             cancelImageLoad()
             url = newURL
+            self.decodedImage = decodedImage
             if let image = decodedImage {
-                setImage(NSImage(cgImage: image, size: CGSize(width: image.width, height: image.height)))
+                setImage(NSImage(cgImage: image, size: decodedSize ?? CGSize(width: image.width, height: image.height)))
                 imageLoaded?()
                 return
             }

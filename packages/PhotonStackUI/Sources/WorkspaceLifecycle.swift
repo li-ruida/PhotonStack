@@ -30,7 +30,12 @@ struct ApplicationStateSynchronizationModifier: ViewModifier {
             }
             .onDisappear {
                 PhotonStackApplicationActivity.update(hasActiveProcessing: false)
-                let snapshot = PhotonStackApplicationCommandSnapshot.inactive(language: model.language)
+                let snapshot = PhotonStackApplicationCommandSnapshot.inactive(
+                    language: model.language,
+                    analysisWorkerCount: model.analysisWorkerCount,
+                    stackWorkerCount: model.stackWorkerCount,
+                    computeBackend: model.computeBackend
+                )
                 commandState.update(snapshot)
             }
     }
@@ -41,6 +46,26 @@ struct ApplicationStateSynchronizationModifier: ViewModifier {
             window.isDocumentEdited = model.hasUnsavedChanges
         }
         #endif
+    }
+}
+
+struct PerformanceSettingsNotificationModifier: ViewModifier {
+    @ObservedObject var model: PhotonStackWorkspaceModel
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .photonStackSetAnalysisWorkerCount)) { notification in
+                guard let count = notification.object as? Int else { return }
+                model.setAnalysisWorkerCount(count)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .photonStackSetStackWorkerCount)) { notification in
+                guard let count = notification.object as? Int else { return }
+                model.setStackWorkerCount(count)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .photonStackSetGPUAccelerationEnabled)) { notification in
+                if let backend = notification.object as? DeepSkyComputeBackend { model.setComputeBackend(backend) }
+                else if let enabled = notification.object as? Bool { model.setGPUAccelerationEnabled(enabled) }
+            }
     }
 }
 

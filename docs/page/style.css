@@ -27,8 +27,11 @@ nav span { font: .85em system-ui, sans-serif; }
 .intro { padding-right: 1.5rem; }
 h1 { font: italic 400 clamp(52px, 6.15vw, 101px)/1 var(--serif); letter-spacing: -.055em; }
 .intro p { margin-top: 14px; font-size: clamp(15px, 1.35vw, 22px); letter-spacing: .035em; }
-.cta { display: inline-flex; gap: .45em; align-items: center; margin-top: clamp(38px, 4.2vw, 66px); padding: 6px 0; border-bottom: 1px solid; font-size: 15px; }
+.hero-links { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 24px; margin-top: clamp(38px, 4.2vw, 66px); font-size: 15px; }
+.hero-links a { display: inline-flex; gap: .45em; align-items: center; padding: 6px 0; }
+.cta { border-bottom: 1px solid; }
 .cta:hover { color: var(--quiet); text-decoration: none; }
+.process-link { color: var(--quiet); }
 figure a { display: block; cursor: zoom-in; }
 figure img { width: 100%; height: auto; }
 figcaption { color: var(--quiet); font-size: 13px; line-height: 1.6; }
@@ -62,7 +65,7 @@ footer a { padding-block: 6px; }
   .intro { padding-right: 0; }
   h1 { font-size: clamp(55px, 12vw, 78px); }
   .intro p { margin-top: 10px; font-size: 15px; }
-  .cta { margin-top: 15px; font-size: 14px; }
+  .hero-links { margin-top: 15px; font-size: 14px; }
   .plate figcaption, .workspace figcaption { font-size: 12px; }
   .process-head p { margin-right: 0; }
   .steps { margin-top: 14px; }

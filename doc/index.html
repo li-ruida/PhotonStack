@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <meta name="description" content="PhotonStack 是开源的 macOS 深空摄影叠加工作台。跟随一次 M31 实拍，从 200 张 FITS 原片走到最终成片。">
+  <title>PhotonStack · 深空摄影工作台</title>
+  <link rel="icon" href="assets/app-icon.png" type="image/png">
+  <link rel="stylesheet" href="style.css">
+  <script src="gallery.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">跳至正文</a>
+  <header>
+    <a class="brand" href="#main" aria-label="PhotonStack 首页"><img src="assets/app-icon.png" width="40" height="40" alt=""></a>
+    <nav aria-label="主导航">
+      <a href="https://github.com/li-ruida/PhotonStack/blob/master/docs/README.md">文档</a>
+      <a href="https://github.com/li-ruida/PhotonStack">GitHub <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+  <main id="main">
+    <section class="hero" aria-labelledby="title">
+      <div class="intro">
+        <h1 id="title" lang="en">PhotonStack</h1>
+        <p>macOS 深空摄影叠加工作台</p>
+        <a class="cta" href="#process">查看处理过程 <span aria-hidden="true">↓</span></a>
+      </div>
+      <figure class="plate">
+        <a href="assets/m31.jpg" aria-label="查看仙女座星系完整彩色成片">
+          <img width="1120" height="574" src="assets/m31-detail.webp" alt="黑白局部：仙女座星系明亮的核心与两侧的暗尘埃带。" fetchpriority="high">
+        </a>
+        <figcaption><span>M31 · 仙女座星系</span><span>182 帧叠加</span></figcaption>
+      </figure>
+    </section>
+    <section id="process" aria-labelledby="process-title">
+      <div class="process-head">
+        <div>
+          <h2 id="process-title">处理过程</h2>
+          <p>从 200 张 FITS 亮场，到一张仙女座星系成片。</p>
+        </div>
+        <ol class="steps" aria-label="选择处理步骤">
+          <li><a href="assets/01-import-200.webp" aria-current="step" data-caption="导入 200 张 FITS 亮场，逐张预览原片。">导入</a></li>
+          <li><a href="assets/02-analysis-review.webp" data-caption="按星点形状筛选，逐帧复核自动排除的 18 张原片。">筛选</a></li>
+          <li><a href="assets/03-stacked-result.webp" data-caption="对齐余下的 182 帧，以 Winsorized 模式抑制异常值。">叠加</a></li>
+          <li><a href="assets/04-color-adjustment.webp" data-caption="以 0.35 强度中和色偏，同时保留星系亮度。">调色</a></li>
+          <li><a href="assets/05-export-success.webp" data-caption="导出 1928 × 3638 像素的 TIFF，并保存处理记录。">导出</a></li>
+        </ol>
+      </div>
+      <figure class="workspace">
+        <a id="preview-link" href="assets/01-import-200.webp" aria-label="放大查看当前步骤截图">
+          <img id="preview" width="1600" height="1000" src="assets/01-import-200.webp" alt="PhotonStack 导入界面，左侧列出原片，中央显示单帧预览。" loading="lazy">
+        </a>
+        <figcaption id="caption" aria-live="polite">导入 200 张 FITS 亮场，逐张预览原片。</figcaption>
+      </figure>
+    </section>
+  </main>
+  <footer aria-label="项目资源">
+    <a href="https://github.com/li-ruida/PhotonStack/blob/master/docs/build.md">构建指南</a>
+    <a href="https://github.com/li-ruida/PhotonStack/blob/master/docs/cli.md">命令行文档</a>
+    <a href="https://github.com/li-ruida/PhotonStack/blob/master/LICENSE">Apache 2.0</a>
+  </footer>
+</body>
+</html>

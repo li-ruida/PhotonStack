@@ -1,6 +1,9 @@
 #ifdef __APPLE__
 #include "MetalCompute.hpp"
 #endif
+#include "RegisteredStackCache.hpp"
+#include "WorkingMemory.hpp"
+#include <cstring>
 #include "photonstack/WorkerPool.hpp"
 #include "photonstack/StageProfile.hpp"
 #include "photonstack/Stacker.hpp"
@@ -20,6 +23,12 @@
 #include <system_error>
 #include <thread>
 #include <vector>
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/resource.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cerrno>
+#endif
 
 #include "photonstack/FrameQualityAnalyzer.hpp"
 #include "photonstack/ImageCodec.hpp"
@@ -1142,9 +1151,40 @@ void processRobustTile(const std::vector<float>& tileData, std::size_t frameCoun
     if (options.preferMetalCombine) {
 #ifdef __APPLE__
         if (options.method == StackMethod::WinsorizedSigmaClip && channels == 4 && frameCount >= 8 &&
-            frameCount <= 240 && tilePixels >= 256 && options.frameWeights.empty() && !noise && !groups)
-            detail::metalWinsorCenters(tileData, tilePixels, frameCount, centers);
-        else detail::recordBackend("cpu", "Metal centers require an unweighted RGBA Winsor tile with 8–240 frames");
+            tilePixels >= 256 && !noise && !groups) {
+            detail::metalWinsorCenters(tileData, tilePixels, frameCount, options.frameWeights, centers);
+            std::vector<float> reduced;
+            if (!centers.empty() && detail::metalWinsorReduce(tileData, tilePixels, frameCount, options.frameWeights,
+                    centers, options.winsorizedSigma.sigmaLow, options.winsorizedSigma.sigmaHigh, report != nullptr, reduced)) {
+                const auto blocks = (tilePixels + 255) / 256;
+                if (report) for (std::size_t frame = 0; frame < frameCount; ++frame)
+                    for (std::size_t b = 0; b < blocks; ++b) {
+                        const auto counters = reduced.data() + 4 * (3 * tilePixels + frame * blocks + b);
+                        report->comparedSamples[frame] += std::uint64_t(counters[0]);
+                        report->rejectedLowSamples[frame] += std::uint64_t(counters[1]);
+                        report->rejectedHighSamples[frame] += std::uint64_t(counters[2]);
+                    }
+                for (std::size_t pixel = 0; pixel < tilePixels;) {
+                    const auto* samples = reduced.data() + 12 * pixel;
+                    if (samples[3] < 0) {
+                        const auto first = pixel++;
+                        while (pixel < tilePixels && reduced[12 * pixel + 3] < 0) ++pixel;
+                        processRobustRange(tileData, frameCount, tilePixels, channels, outputPixelOffset, options,
+                                           inputOrder, output, report, report, nullptr, nullptr, first, pixel, centers.data());
+                        continue;
+                    }
+                    const auto offset = (outputPixelOffset + pixel) * 4;
+                    std::copy_n(samples, 4, output.pixels.data() + offset);
+                    if (report) {
+                        std::copy_n(samples + 4, 4, report->rejectionLow.pixels.data() + offset);
+                        std::copy_n(samples + 8, 4, report->rejectionHigh.pixels.data() + offset);
+                    }
+                    ++pixel;
+                }
+                return;
+            }
+        }
+        else detail::recordBackend("cpu", "Metal reduction requires an RGBA Winsor tile with at least 8 frames and no independent noise groups");
 #else
         detail::recordBackend("cpu", "Metal unavailable on this platform");
 #endif
@@ -1195,34 +1235,117 @@ std::size_t robustTilePixelCount(const ImageBuffer& image, std::size_t frameCoun
     return pixelCapacity >= image.width ? (pixelCapacity / image.width) * image.width : pixelCapacity;
 }
 
-StackResult stackCachedRobustFrames(const TemporaryFrameCache& cache, std::size_t frameCount,
+StackResult stackCachedRobustFrames(const std::vector<std::filesystem::path>& paths,
+                                    const std::vector<detail::RegisteredFrame>& registered,
                                     const StackOptions& options, const std::vector<std::size_t>& inputOrder,
                                     ImageBuffer output, StackResult metrics,
                                     StackProgressReporter& progress, double start, double end) {
     const detail::StageScope timer(detail::Stage::Combine);
+    const auto frameCount = paths.size();
     const auto tilePixels = robustTilePixelCount(output, frameCount, options.combineTileBytes);
     if (tilePixels == 0)
         return stackError("StackTileBudgetInsufficient", "Robust tile budget must hold at least one pixel from every frame");
 
-    // Reads advance sequentially through each frame. A bounded shared budget
-    // amortizes filebuf's small underlying reads without caching another image
-    // sequence. Declare storage before streams so it outlives their buffers.
+    const auto bytesPerFrameTile = tilePixels * output.channels * sizeof(float);
+    // Large sequences interleave hundreds of independent reads per tile.
+    // Keep several reads in flight, bounded by the same combine worker limit
+    // as CPU reduction. Tiny or single-worker jobs retain buffered serial I/O.
+    const auto readerCount = frameCount >= 32 && bytesPerFrameTile >= 16384
+        ? std::clamp<std::size_t>(options.combineWorkers ? options.combineWorkers : 8, 1, 8) : 1;
     constexpr std::size_t readBufferBudget = 64ULL * 1024ULL * 1024ULL;
     const auto proposedBuffer = std::min<std::size_t>(256 * 1024, readBufferBudget / frameCount) / 4096 * 4096;
-    const auto readBufferSize = proposedBuffer >= 8192 ? proposedBuffer : 0;
-    std::vector<char> readBuffers(readBufferSize * frameCount);
-    std::vector<std::ifstream> streams;
-    streams.reserve(frameCount);
-    for (std::size_t frame = 0; frame < frameCount; ++frame) {
-        streams.emplace_back();
-        if (readBufferSize) streams.back().rdbuf()->pubsetbuf(readBuffers.data() + frame * readBufferSize,
-                                                           static_cast<std::streamsize>(readBufferSize));
-        streams.back().open(cache.framePath(frame), std::ios::binary);
-        if (!streams.back()) {
-            return stackError("TemporaryStorageReadFailed",
-                              "Unable to open stack cache file: " + cache.framePath(frame).string());
+    std::size_t readBufferSize = proposedBuffer >= 8192 ? proposedBuffer : 0;
+    std::size_t openLimit = 128;
+#if defined(__unix__) || defined(__APPLE__)
+    struct FileDescriptors {
+        std::vector<int> values;
+        ~FileDescriptors() { for (const int fd : values) if (fd >= 0) ::close(fd); }
+    } descriptors;
+    const auto frameBytes = output.sampleCount() * sizeof(float);
+    std::size_t blockBytes = 0;
+    const bool directReads = bytesPerFrameTile >= 16384;
+    if (directReads) {
+        descriptors.values.resize(frameCount, -1);
+        readBufferSize = 0;
+        if (frameCount >= 64 && frameBytes > bytesPerFrameTile) {
+            // Interleaving hundreds of short sequential streams can trigger
+            // multi-terabyte speculative disk traffic on a single stack.
+            // Read adjacent tiles explicitly, sized to current available RAM.
+            const auto budget = detail::workingMemoryBudget() / 2;
+            const auto perFrame = std::min<std::size_t>({2U << 20, budget / frameCount, frameBytes});
+            if (perFrame / bytesPerFrameTile >= 2)
+                blockBytes = (perFrame / bytesPerFrameTile) * bytesPerFrameTile;
+            readBufferSize = blockBytes;
         }
     }
+    const auto openDirect = [&](std::size_t frame) {
+        const int fd = ::open(paths[frame].c_str(), O_RDONLY | O_CLOEXEC);
+#ifdef __APPLE__
+        if (fd >= 0 && frameCount >= 64) ::fcntl(fd, F_RDAHEAD, 0);
+#endif
+        return fd;
+    };
+    struct rlimit limit{};
+    if (getrlimit(RLIMIT_NOFILE, &limit) == 0)
+        openLimit = std::min<std::uint64_t>(frameCount, limit.rlim_cur > 64 ? limit.rlim_cur - 64 : limit.rlim_cur / 2);
+#endif
+    std::vector<char> readBuffers;
+    try {
+        readBuffers.resize(readBufferSize * frameCount);
+    } catch (const std::bad_alloc&) {
+        // Continue with direct reads/default stream buffers under pressure.
+        readBufferSize = 0;
+#if defined(__unix__) || defined(__APPLE__)
+        blockBytes = 0;
+#endif
+    }
+    std::vector<std::ifstream> streams(frameCount);
+    for (std::size_t frame = 0; frame < std::min(frameCount, openLimit); ++frame) {
+#if defined(__unix__) || defined(__APPLE__)
+        if (directReads) {
+            descriptors.values[frame] = openDirect(frame);
+            if (descriptors.values[frame] >= 0) continue;
+            if (errno == EMFILE) break;
+            return stackError("TemporaryStorageReadFailed", "Unable to open stack cache file: " + paths[frame].string());
+        }
+#endif
+        if (readBufferSize) streams[frame].rdbuf()->pubsetbuf(readBuffers.data() + frame * readBufferSize,
+                                                               static_cast<std::streamsize>(readBufferSize));
+        streams[frame].open(paths[frame], std::ios::binary);
+        if (!streams[frame]) return stackError("TemporaryStorageReadFailed",
+                                               "Unable to open stack cache file: " + paths[frame].string());
+    }
+    const auto readFrameTile = [&](std::size_t frame, std::size_t offset, char* destination, std::size_t bytes) {
+#if defined(__unix__) || defined(__APPLE__)
+        if (directReads) {
+            const auto inBlock = blockBytes ? offset % blockBytes : 0;
+            char* buffer = blockBytes ? readBuffers.data() + frame * blockBytes : destination;
+            if (inBlock) {
+                std::memcpy(destination, buffer + inBlock, bytes);
+                return true;
+            }
+            const auto readBytes = blockBytes ? std::min(blockBytes, frameBytes - offset) : bytes;
+            const bool transient = descriptors.values[frame] < 0;
+            const int fd = transient ? openDirect(frame) : descriptors.values[frame];
+            if (fd < 0) return false;
+            std::size_t done = 0;
+            while (done < readBytes) {
+                const auto n = ::pread(fd, buffer + done, readBytes - done, static_cast<off_t>(offset + done));
+                if (n > 0) done += static_cast<std::size_t>(n);
+                else if (n != -1 || errno != EINTR) break;
+            }
+            if (transient) ::close(fd);
+            if (done != readBytes) return false;
+            if (blockBytes) std::memcpy(destination, buffer, bytes);
+            return true;
+        }
+#endif
+        auto& stream = streams[frame];
+        if (stream.is_open()) return bool(stream.read(destination, static_cast<std::streamsize>(bytes)));
+        std::ifstream overflow(paths[frame], std::ios::binary);
+        return bool(overflow.seekg(static_cast<std::streamoff>(offset)).read(destination,
+                     static_cast<std::streamsize>(bytes)));
+    };
 
     std::vector<float> tileData;
     if (!options.acceptedGroups.empty()) {
@@ -1260,17 +1383,30 @@ StackResult stackCachedRobustFrames(const TemporaryFrameCache& cache, std::size_
         tileData.resize(tileSamples * frameCount);
         const auto byteCount = tileSamples * sizeof(float);
 
-        for (std::size_t frame = 0; frame < frameCount; ++frame) {
-            auto& stream = streams[frame];
-            // Previous iterations consumed exactly their complete tiles. Seeking
-            // to this same logical position discards useful prefetched bytes.
-            stream.read(reinterpret_cast<char*>(tileData.data() + frame * tileSamples),
-                        static_cast<std::streamsize>(byteCount));
-            if (stream.gcount() != static_cast<std::streamsize>(byteCount)) {
-                return stackError("TemporaryStorageReadFailed",
-                                  "Unable to read stack cache file: " + cache.framePath(frame).string());
+        std::array<std::size_t, 8> errors;
+        errors.fill(frameCount);
+        detail::runWorkers(readerCount, [&](std::size_t worker) {
+            for (std::size_t frame = frameCount * worker / readerCount;
+                 frame < frameCount * (worker + 1) / readerCount; ++frame) {
+                auto* samples = tileData.data() + frame * tileSamples;
+                if (!readFrameTile(frame, startPixel * output.channels * sizeof(float),
+                                   reinterpret_cast<char*>(samples), byteCount)) {
+                    errors[worker] = frame;
+                    break;
+                }
+                if (options.normalizeBackground && !registered.empty() && frame != 0) {
+                    std::array<float, 3> delta{};
+                    for (unsigned c = 0; c < 3; ++c) delta[c] = registered[0].background[c] - registered[frame].background[c];
+                    for (std::size_t offset = 0; offset < tileSamples; offset += 4) {
+                        if (rowPixelCoverage(samples, 4, offset) <= 0) continue;
+                        for (unsigned c = 0; c < 3; ++c) samples[offset + c] += delta[c];
+                    }
+                }
             }
-        }
+        });
+        const auto failed = *std::min_element(errors.begin(), errors.end());
+        if (failed < frameCount)
+            return stackError("TemporaryStorageReadFailed", "Unable to read stack cache file: " + paths[failed].string());
 
         processRobustTile(tileData, frameCount, pixelCount, output.channels,
                           startPixel, options, inputOrder, output,
@@ -1287,6 +1423,7 @@ StackResult stackCachedRobustFrames(const TemporaryFrameCache& cache, std::size_
         }
     }
 
+    progress.report(StackProgressStage::Finalizing, end);
     metrics.image = std::move(output);
     metrics.ok = true;
     return metrics;
@@ -1462,7 +1599,9 @@ StackResult streamRobustFiles(const std::vector<std::filesystem::path>& inputs, 
     if (options.collectNoiseDiagnostic)
         for (std::size_t position=0;position<inputOrder.size();++position)
             combineOptions.frameNoiseVariances[position] = options.frameNoiseVariances[inputOrder[position]];
-    auto result = stackCachedRobustFrames(cache, inputs.size(), combineOptions, inputOrder, std::move(output), std::move(metrics), progress,
+    std::vector<std::filesystem::path> paths;
+    for (std::size_t i = 0; i < inputs.size(); ++i) paths.push_back(cache.framePath(i));
+    auto result = stackCachedRobustFrames(paths, {}, combineOptions, inputOrder, std::move(output), std::move(metrics), progress,
                                          framePhaseEnd, 1.0);
     if (result.ok && options.collectRejectionMaps) {
         const auto low = result.rejectedLowSamples, high = result.rejectedHighSamples, count = result.comparedSamples;
@@ -1477,7 +1616,8 @@ StackResult streamRobustFiles(const std::vector<std::filesystem::path>& inputs, 
 
 } // namespace
 
-StackResult Stacker::stack(const std::vector<std::filesystem::path>& inputs, const StackOptions& requestedOptions) const {
+static StackResult stackInputs(const std::vector<std::filesystem::path>& inputs, const StackOptions& requestedOptions,
+                               const std::vector<detail::RegisteredFrame>& registered) {
     StackOptions options = requestedOptions;
     if (!options.acceptedGroups.empty()) {
         if (options.method != StackMethod::SigmaClip || options.fitsDecodeMode != FitsDecodeMode::Scientific ||
@@ -1560,6 +1700,32 @@ StackResult Stacker::stack(const std::vector<std::filesystem::path>& inputs, con
         options.fitsDecodeMode != FitsDecodeMode::Scientific) {
         return stackError("ArgumentInvalid", "Unsupported FITS decode mode");
     }
+    if (!registered.empty()) {
+        if (registered.size() != inputs.size()) return stackError("TemporaryStorageInvalid", "Missing registered frame metadata");
+        auto validation = validateRobustOptions(options);
+        if (!validation.ok) return validation;
+        const auto& shape = registered.front();
+        ImageBuffer output;
+        output.width = shape.width; output.height = shape.height; output.channels = 4;
+        output.format = PixelFormat::Float32RGBA; output.colorEncoding = ColorEncoding::Linear;
+        output.sourceBitsPerChannel = 32;
+        for (const auto& frame : registered)
+            if (frame.width != shape.width || frame.height != shape.height)
+                return stackError("ImageSizeMismatch", "Registered frames have different geometry");
+        output.pixels.resize(output.sampleCount());
+        if (inputs.size() == 1) {
+            std::ifstream frame(inputs.front(), std::ios::binary);
+            const auto bytes = static_cast<std::streamsize>(output.sampleCount() * sizeof(float));
+            if (!frame.read(reinterpret_cast<char*>(output.pixels.data()), bytes))
+                return stackError("TemporaryStorageReadFailed", "Unable to read the registered frame");
+            StackProgressReporter progress(options, inputs.size());
+            return normalizeSingleFrameCoverage(std::move(output), progress, 0, 1);
+        }
+        std::vector<std::size_t> order(inputs.size());
+        std::iota(order.begin(), order.end(), 0);
+        StackProgressReporter progress(options, inputs.size());
+        return stackCachedRobustFrames(inputs, registered, options, order, std::move(output), {}, progress, 0, 1);
+    }
     switch (options.method) {
     case StackMethod::Average:
     case StackMethod::Maximum:
@@ -1574,6 +1740,23 @@ StackResult Stacker::stack(const std::vector<std::filesystem::path>& inputs, con
         return streamRobustFiles(inputs, options);
     }
     return stackError("StackMethodInvalid", "Unsupported stack method");
+}
+
+StackResult Stacker::stack(const std::vector<std::filesystem::path>& inputs, const StackOptions& options) const {
+    return stackInputs(inputs, options, {});
+}
+
+StackResult detail::writeRegisteredFrame(const std::filesystem::path& path, const ImageBuffer& image,
+                                          bool normalize, RegisteredFrame& metadata) {
+    if (image.channels != 4 || image.colorEncoding != ColorEncoding::Linear || image.pixels.size() != image.sampleCount())
+        return stackError("TemporaryStorageInvalid", "Expected registered linear RGBA samples");
+    metadata = {image.width, image.height, normalize ? sampledBackground(image) : std::array<float,3>{}};
+    return writeCachedFrame(path, image);
+}
+
+StackResult detail::combineRegisteredFrames(const std::vector<std::filesystem::path>& inputs,
+                                             const std::vector<RegisteredFrame>& frames, const StackOptions& options) {
+    return stackInputs(inputs, options, frames);
 }
 
 StackResult Stacker::average(const std::vector<std::filesystem::path>& inputs) const {

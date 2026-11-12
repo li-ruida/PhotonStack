@@ -129,6 +129,7 @@ public struct DeepSkyRunPerformance: Codable, Equatable, Sendable {
         public var peakWorkers: Int
         public var wallSeconds: Double
         public var gpuSeconds: Double?
+        public var metalOperations: [String: Int]?
     }
 }
 

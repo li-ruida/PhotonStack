@@ -15,7 +15,7 @@ struct AstroDevelopControl: View {
         }
         .help(chinese ? "对线性 RGB 堆栈进行恒星白平衡与高亮压缩" : "Stellar balance and highlight compression for a linear RGB stack")
         .popover(isPresented: $presented) {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(chinese ? "深空显影" : "Deep Sky Development").font(.headline)
                 Text(chinese ? "从线性 RGB 图像开始。先去除背景梯度，再显影。" : "Start with linear RGB data after background gradient removal.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -54,21 +54,11 @@ struct AstroDevelopControl: View {
                         model.startAstroDevelop(settings: settings)
                     }.buttonStyle(.borderedProminent)
                 }
-            }.padding(18).frame(width: 330)
+            }.controlSize(.small).padding(14).frame(width: 330)
         }
     }
 
     private func adjustment(_ title: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
-        VStack(spacing: 3) {
-            HStack {
-                Text(title)
-                Spacer()
-                TextField(title, value: value, format: .number.precision(.fractionLength(2...3)))
-                    .labelsHidden().textFieldStyle(.roundedBorder)
-                    .multilineTextAlignment(.trailing).frame(width: 70)
-                    .accessibilityLabel(title)
-            }
-            Slider(value: value, in: range)
-        }.font(.caption)
+        ParameterSlider(title: title, value: value, range: range, continuous: true, fractionLength: 2...3)
     }
 }

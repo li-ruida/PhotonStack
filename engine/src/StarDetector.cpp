@@ -1,7 +1,11 @@
 #include "photonstack/StageProfile.hpp"
 #include "photonstack/StarDetector.hpp"
 
+#ifdef __APPLE__
+#include "MetalCompute.hpp"
+#endif
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <span>
@@ -112,6 +116,12 @@ StarDetectionResult detectLuminanceBuffer(
         return mean + (static_cast<double>(luminance[index]) - mean) * weight;
     };
 
+    std::vector<float> peakMask;
+#ifdef __APPLE__
+    if (detail::currentStage.preferMetal && threshold > mean && luminance.size() >= 65536 &&
+        luminance.size() <= UINT32_MAX)
+        detail::metalPeakMask(luminance, std::nextafter(float(threshold), -INFINITY), peakMask);
+#endif
     struct RankedStar {
         Star star;
         double flux = 0.0;
@@ -119,6 +129,18 @@ StarDetectionResult detectLuminanceBuffer(
     std::vector<RankedStar> stars;
     for (std::uint32_t y = options.border; y < height - options.border; ++y) {
         for (std::uint32_t x = options.border; x < width - options.border; ++x) {
+            if (!peakMask.empty()) {
+                const std::size_t index = static_cast<std::size_t>(y) * width + x;
+                const auto word = index / 32;
+                if (word < peakMask.size()) {
+                    const auto bits = std::bit_cast<std::uint32_t>(peakMask[word]) >> (index % 32);
+                    const auto skip = bits ? unsigned(std::countr_zero(bits)) : unsigned(32 - index % 32);
+                    if (skip) {
+                        x += std::min(skip, width - options.border - x) - 1;
+                        continue;
+                    }
+                }
+            }
             const auto centerIndex = static_cast<std::size_t>(y) * width + x;
             if (!isValid(centerIndex)) {
                 continue;

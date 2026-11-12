@@ -1,5 +1,9 @@
 #include "photonstack/Calibrator.hpp"
 
+#include "photonstack/StageProfile.hpp"
+#ifdef __APPLE__
+#include "MetalCompute.hpp"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -75,6 +79,7 @@ const char* calibrationBiasStateName(CalibrationBiasState state) {
 }
 
 CalibrationResult Calibrator::calibrate(const ImageBuffer& light, const CalibrationOptions& options) const {
+    const detail::StageScope timer(detail::Stage::Calibration);
     if (light.empty() || (light.channels != 1 && light.channels != 3 && light.channels != 4) ||
         light.pixels.size() != light.sampleCount()) {
         return calibrationError("ImageBufferInvalid", "Light frame must be a non-empty float image");
@@ -166,6 +171,12 @@ CalibrationResult Calibrator::calibrate(const ImageBuffer& light, const Calibrat
         }
     }
 
+#ifdef __APPLE__
+    if (detail::currentStage.preferMetal && light.channels == 4 && light.pixelCount() >= 65536 &&
+        light.pixelCount() <= UINT32_MAX &&
+        detail::metalCalibrate(light, options, subtractBiasFromLight, subtractBiasFromFlat, flatMeans, output))
+        return {true, std::move(output), subtractBiasFromLight, subtractBiasFromFlat, {}, {}};
+#endif
     std::vector<double> calibrated(light.channels, 0.0);
     for (std::size_t pixel = 0; pixel < light.pixelCount(); ++pixel) {
         const auto offset = pixel * light.channels;

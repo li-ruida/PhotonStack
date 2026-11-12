@@ -174,3 +174,10 @@ add_test(NAME photonstack_registration_acceptance_tests COMMAND photonstack_regi
 add_executable(photonstack_stack_numerics_tests StackNumericsTests.cpp)
 target_link_libraries(photonstack_stack_numerics_tests PRIVATE photonstack_engine)
 add_test(NAME photonstack_stack_numerics_tests COMMAND photonstack_stack_numerics_tests)
+
+if(APPLE)
+    add_executable(photonstack_metal_workflow_tests MetalWorkflowTests.mm)
+    target_link_libraries(photonstack_metal_workflow_tests PRIVATE photonstack_engine)
+    add_test(NAME photonstack_metal_workflow_tests COMMAND photonstack_metal_workflow_tests)
+    set_tests_properties(photonstack_metal_workflow_tests PROPERTIES SKIP_RETURN_CODE 77)
+endif()

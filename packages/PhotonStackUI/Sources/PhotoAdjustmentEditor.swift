@@ -132,10 +132,11 @@ struct PhotoAdjustmentEditor: View {
     private var chinese: Bool { model.language == .simplifiedChinese }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             if PhotoAdjustments.supports(input) {
                 HStack {
                     Button(chinese ? "重置" : "Reset") { draft.cancelPicker(); draft.settings = PhotoAdjustments() }
+                        .buttonStyle(.borderless)
                     Toggle(chinese ? "看原效果" : "Before", isOn: $showBefore)
                         .toggleStyle(.button)
                     Spacer()
@@ -146,10 +147,6 @@ struct PhotoAdjustmentEditor: View {
                     .accessibilityIdentifier("finish.apply")
                 }
                 .disabled(draft.settings.isNeutral)
-                if !draft.settings.isNeutral {
-                    Text(chinese ? "当前为试调，应用后可导出。" : "Previewing edits. Apply to include them in export.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
                 if composition {
                     Picker(chinese ? "裁切比例" : "Aspect ratio", selection: $draft.settings.aspect) {
                         ForEach(PhotoAdjustments.Aspect.allCases, id: \.self) { aspect in
@@ -188,6 +185,17 @@ struct PhotoAdjustmentEditor: View {
                             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     }
                 } else {
+                    sectionTitle(chinese ? "明暗" : "Light")
+                    adjustmentRows([.exposure, .contrast, .highlights, .shadows, .blackPoint, .whitePoint])
+                    HStack {
+                        Toggle(chinese ? "欠曝（蓝）" : "Shadows (blue)", isOn: $warnShadows)
+                            .accessibilityIdentifier("finish.warn-shadows")
+                            .help(chinese ? "三个通道均达到黑场" : "All three channels clip to black")
+                        Toggle(chinese ? "过曝（红）" : "Highlights (red)", isOn: $warnHighlights)
+                            .accessibilityIdentifier("finish.warn-highlights")
+                            .help(chinese ? "任一通道达到白场" : "Any channel clips to white")
+                    }.toggleStyle(.checkbox)
+                    sectionTitle(chinese ? "色彩" : "Color")
                     HStack {
                         Button {
                             showBefore = false
@@ -217,22 +225,11 @@ struct PhotoAdjustmentEditor: View {
                             : (chinese ? "请点画布中的中性灰区域（5 × 5 像素）。" : "Click a neutral gray area on the canvas (5 × 5 pixels).")
                         Text(draft.sampleError ?? prompt).font(.caption)
                     }
-                    HStack {
-                        Toggle(chinese ? "欠曝提示（蓝）" : "Shadows (blue)", isOn: $warnShadows)
-                            .accessibilityIdentifier("finish.warn-shadows")
-                            .help(chinese ? "三个通道均达到黑场" : "All three channels clip to black")
-                        Toggle(chinese ? "过曝提示（红）" : "Highlights (red)", isOn: $warnHighlights)
-                            .accessibilityIdentifier("finish.warn-highlights")
-                            .help(chinese ? "任一通道达到白场" : "Any channel clips to white")
-                    }.toggleStyle(.button)
-                    ForEach(PhotoAdjustments.Control.allCases, id: \.self) { control in
-                        ParameterSlider(title: control.title(chinese: chinese), value: Binding(
-                            get: { draft.settings[control] },
-                            set: { draft.settings[control] = $0; showBefore = false }
-                        ), range: draft.settings.allowedRange(for: control), continuous: true, resetValue: control.neutralValue,
-                           resetLabel: chinese ? "重置" : "Reset")
-                        .accessibilityIdentifier("finish." + control.rawValue)
-                    }
+                    adjustmentRows([.warmth, .tint, .saturation, .vibrance])
+                }
+                if !draft.settings.isNeutral {
+                    Text(chinese ? "当前为试调，应用后可导出。" : "Previewing edits. Apply to include them in export.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 PhotoPreviewError(preview: model.photoPreview)
             } else if AssetKind.detect(from: input) == .fits {
@@ -262,6 +259,27 @@ struct PhotoAdjustmentEditor: View {
         .onChange(of: composition) { _, value in if value { draft.cancelPicker() } }
         .onChange(of: showBefore) { _, value in if value { draft.cancelPicker() } }
         .onDisappear { draft.cancelPicker(); model.photoPreview.clear() }
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        HStack(spacing: 8) {
+            Text(title).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+            Rectangle().fill(.separator).frame(height: 1)
+        }
+        .padding(.top, 4)
+    }
+
+    private func adjustmentRows(_ controls: [PhotoAdjustments.Control]) -> some View {
+        VStack(spacing: 1) {
+            ForEach(controls, id: \.self) { control in
+                ParameterSlider(title: control.title(chinese: chinese), value: Binding(
+                    get: { draft.settings[control] },
+                    set: { draft.settings[control] = $0; showBefore = false }
+                ), range: draft.settings.allowedRange(for: control), continuous: true,
+                   resetValue: control.neutralValue, resetLabel: chinese ? "重置" : "Reset")
+                    .accessibilityIdentifier("finish." + control.rawValue)
+            }
+        }
     }
 
     private struct PreviewRequest: Equatable {

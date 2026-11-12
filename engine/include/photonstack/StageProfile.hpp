@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <map>
+#include <string>
 
 namespace photonstack::detail {
 
@@ -25,6 +27,7 @@ enum class Stage : unsigned {
     Channels,
     Develop,
     Write,
+    Calibration,
     Count
 };
 constexpr std::array<const char*, unsigned(Stage::Count)> stageNames{"workflow",
@@ -42,7 +45,7 @@ constexpr std::array<const char*, unsigned(Stage::Count)> stageNames{"workflow",
                                                                      "background-model",
                                                                      "channel-alignment",
                                                                      "stretch-and-finish",
-                                                                     "file-write"};
+                                                                     "file-write", "calibration"};
 
 struct StageMetrics {
     unsigned active = 0, peakWorkers = 0;
@@ -51,6 +54,7 @@ struct StageMetrics {
     std::chrono::steady_clock::time_point started;
     const char* backend = "cpu";
     bool backendReported = false;
+    std::map<std::string, std::uint64_t> metalOperations;
     const char* fallback = "";
 };
 
@@ -65,6 +69,7 @@ struct StageProfile {
 struct StageContext {
     StageProfile* profile = nullptr;
     Stage stage = Stage::Other;
+    bool preferMetal = false;
 };
 extern thread_local StageContext currentStage;
 
@@ -73,7 +78,7 @@ extern thread_local StageContext currentStage;
 class StageScope {
   public:
     explicit StageScope(StageContext next);
-    explicit StageScope(Stage next) : StageScope({currentStage.profile, next}) {}
+    explicit StageScope(Stage next) : StageScope({currentStage.profile, next, currentStage.preferMetal}) {}
     ~StageScope();
     StageScope(const StageScope&) = delete;
 
@@ -90,5 +95,5 @@ class FrameActivity {
     ~FrameActivity();
 };
 
-void recordBackend(const char* backend, const char* reason, double gpuSeconds = 0);
+void recordBackend(const char* backend, const char* reason, double gpuSeconds = 0, const char* operation = nullptr);
 } // namespace photonstack::detail

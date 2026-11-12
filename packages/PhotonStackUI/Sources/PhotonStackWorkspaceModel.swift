@@ -537,7 +537,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         autosaveEnabled: Bool = true,
         analysisWorkerCount: Int = 0,
         stackWorkerCount: Int = 0,
-        gpuAccelerationEnabled: Bool = true,
+        gpuAccelerationEnabled: Bool? = nil,
         computeBackend: DeepSkyComputeBackend? = nil,
         exportOptions: ExportOptions = ExportOptions(),
         recentProjects: [RecentProject] = [],
@@ -557,7 +557,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         self.autosaveEnabled = autosaveEnabled
         self.analysisWorkerCount = AppSettings.normalizedAnalysisWorkerCount(analysisWorkerCount)
         self.stackWorkerCount = AppSettings.normalizedStackWorkerCount(stackWorkerCount)
-        self.computeBackend = computeBackend ?? (gpuAccelerationEnabled ? .automatic : .cpu)
+        self.computeBackend = computeBackend ?? DeepSkyComputeBackend(gpuAcceleration: gpuAccelerationEnabled)
         self.lastPerformance = project.deepSkySettings?.lastReport?.performance
         self.exportOptions = exportOptions
         self.recentProjects = AppSettings(recentProjects: recentProjects).recentProjects
@@ -2067,7 +2067,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public func setGPUAccelerationEnabled(_ isEnabled: Bool) {
-        setComputeBackend(isEnabled ? .automatic : .cpu)
+        setComputeBackend(isEnabled ? .metal : .cpu)
     }
 
     public func setComputeBackend(_ backend: DeepSkyComputeBackend) {
@@ -3481,6 +3481,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             self.clearProjectTransientState()
             self.project = loaded
+            self.lastPerformance = loaded.deepSkySettings?.lastReport?.performance
             if self.usesManagedPreviewDirectory {
                 self.previewDirectory = Self.managedPreviewDirectory(for: loaded.id)
             }
@@ -3571,6 +3572,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     private func clearProjectTransientState() {
+        lastPerformance = nil
         // Interactive previews do not count as foreground processing. Invalidate
         // their tasks and base inputs before replacing either project or cache root.
         cancelCurvePreview(restoreBasePreview: false)

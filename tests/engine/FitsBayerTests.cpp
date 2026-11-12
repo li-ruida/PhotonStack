@@ -55,6 +55,16 @@ void testParallelBayerTiles(const std::filesystem::path& path) {
                 .cfaInterpolationGains = {.68F, 1, 1.03F}};
             const auto parallel = codec.read(path, options);
             require(parallel.ok);
+            if (algorithm == photonstack::FitsDemosaic::Malvar) {
+                auto metal = options;
+                metal.preferMetal = true;
+                const auto accelerated = codec.read(path, metal);
+                require(accelerated.ok && accelerated.image.pixels.size() == parallel.image.pixels.size());
+                for (std::size_t i = 0; i < parallel.image.pixels.size(); ++i) {
+                    const float a = parallel.image.pixels[i], b = accelerated.image.pixels[i];
+                    require(a == b || (std::isnan(a) && std::isnan(b)));
+                }
+            }
             for (unsigned first = 0; first < raw.height; first += 101) {
                 const unsigned end = std::min(raw.height, first + 101);
                 const unsigned top = first < 2 ? 0 : first - 2;

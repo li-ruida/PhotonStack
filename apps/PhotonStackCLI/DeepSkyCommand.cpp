@@ -75,8 +75,8 @@ Options:
   --analyze-only          Measure and select frames without stacking or finishing.
   --analysis-workers      Concurrent frame analysis; 0 is memory-aware automatic (default).
   --stack-workers         Robust stack-combine workers; 0 is automatic (default).
-  --gpu-acceleration      Allow Metal-backed Apple RAW rendering (legacy RAW override).
-  --compute-backend       auto, cpu, or metal (CFA interpolation, similarity warp and Winsor centers).
+  --gpu-acceleration      Select Metal or CPU when no compute backend is specified.
+  --compute-backend       auto, cpu, or metal for calibration, star analysis, resampling and Winsorized stacking.
   --preflight             Inspect headers and estimate resources; writes no outputs.
   --from-master           Refinish an existing linear RGB FITS using a recipe;
                           cannot be combined with --input or --analyze-only.
@@ -221,6 +221,14 @@ std::string performanceReport(const detail::StageProfile& profile, const DeepSky
         if (i == unsigned(detail::Stage::RawDecode) && stage.backendReported && std::string_view(stage.backend) != "cpu")
             out << "null"; // Core Image does not expose its command-buffer timestamps.
         else out << stage.gpu;
+        out << R"(,"metalOperations":{)";
+        bool first = true;
+        for (const auto& [operation, count] : stage.metalOperations) {
+            if (!first) out << ',';
+            first = false;
+            out << json(operation) << ':' << count;
+        }
+        out << '}';
         out << '}';
     }
     out << "]}\n";
@@ -338,7 +346,8 @@ int runDeepSkyCommand(const std::vector<std::string>& args) {
         recipe.options.analysisOnly = analysisOnly;
         recipe.options.analysisWorkers = analysisWorkers.value_or(0);
         recipe.options.stack.combineWorkers = stackWorkers.value_or(0);
-        recipe.options.computeBackend = computeBackend.value_or(ComputeBackend::Automatic);
+        recipe.options.computeBackend = computeBackend.value_or(gpuAcceleration.has_value()
+            ? (*gpuAcceleration ? ComputeBackend::Metal : ComputeBackend::CPU) : ComputeBackend::Automatic);
         recipe.options.gpuAcceleration = recipe.options.computeBackend != ComputeBackend::CPU && gpuAcceleration.value_or(true);
         if (!fromMaster.empty() && (analysisOnly || !inputDirectory.empty() || recipePath.empty()))
             throw std::invalid_argument("--from-master requires a recipe and cannot analyze or import lights");

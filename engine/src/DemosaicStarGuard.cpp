@@ -7,6 +7,8 @@
 #include <cmath>
 #ifdef __APPLE__
 #include <CommonCrypto/CommonDigest.h>
+#include "MetalCompute.hpp"
+#include "photonstack/StageProfile.hpp"
 #else
 #include <openssl/evp.h>
 #endif
@@ -132,7 +134,16 @@ bool guardDemosaicStars(ImageBuffer& image, std::span<const float> mosaic,
     ImageBuffer mono;
     mono.width = w; mono.height = h; mono.channels = 1;
     mono.format = PixelFormat::Float32Gray; mono.pixels.resize(image.pixelCount());
+    bool gpuLuminance = false;
+#ifdef __APPLE__
+    if (currentStage.preferMetal && image.pixelCount() >= 65536 && image.pixelCount() <= UINT32_MAX)
+        gpuLuminance = metalGuardLuminance(image, gains, mono.pixels);
+#endif
     for (std::size_t p = 0; p < image.pixelCount(); ++p) {
+        if (gpuLuminance && std::isfinite(mono.pixels[p])) {
+            if (!std::isfinite(mosaic[p])) mono.pixels[p] = 0;
+            continue;
+        }
         const double value = .2126 * gains[0] * image.pixels[p * 4] +
             .7152 * gains[1] * image.pixels[p * 4 + 1] + .0722 * gains[2] * image.pixels[p * 4 + 2];
         mono.pixels[p] = std::isfinite(value) && std::isfinite(mosaic[p])
@@ -163,7 +174,8 @@ bool guardDemosaicStars(ImageBuffer& image, std::span<const float> mosaic,
         } catch (const std::bad_alloc&) { allocationFailed.store(true, std::memory_order_relaxed); }
     });
     if (allocationFailed.load(std::memory_order_relaxed)) throw std::bad_alloc();
-    std::vector<unsigned char> occupied(image.pixelCount());
+    struct Candidate { std::size_t index; double radius; int outer; };
+    std::vector<Candidate> candidates;
     for (std::size_t i = 0; i < stars.size(); ++i) {
         const auto& fit = fits[i];
         if (!fit.ok) continue;
@@ -180,6 +192,30 @@ bool guardDemosaicStars(ImageBuffer& image, std::span<const float> mosaic,
         const double radius = std::min(std::clamp(4 * fwhm, 6., 14.), .8 * nearest);
         const int x = std::lround(fit.x), y = std::lround(fit.y), outer = std::ceil(radius) + 7;
         if (x < outer || y < outer || x + outer >= w || y + outer >= h) continue;
+        candidates.push_back({i, radius, outer});
+    }
+    std::vector<float> gpuSky;
+#ifdef __APPLE__
+    // Native integer samples have exactly representable absolute deviations.
+    // For fractional calibrated values retain the original double MAD.
+    if (gpuLuminance && candidates.size() >= 32 &&
+        std::all_of(mosaic.begin(), mosaic.end(), [](float v) { return v >= -65535 && v <= 65535 && v == std::trunc(v); })) {
+        std::vector<float> apertures;
+        apertures.reserve(4*candidates.size());
+        for (const auto& c : candidates) {
+            const auto& fit = fits[c.index];
+            apertures.insert(apertures.end(), {fit.x,fit.y,float(c.radius),float(c.outer)});
+        }
+        metalGuardSky(mosaic, image.width, colors, apertures, gpuSky);
+    }
+#endif
+    std::vector<unsigned char> occupied(image.pixelCount());
+    for (std::size_t j=0; j<candidates.size(); ++j) {
+        const auto [i, radius, outer] = candidates[j];
+        const auto& fit = fits[i];
+        const int x = std::lround(fit.x), y = std::lround(fit.y);
+        const float* statistics = gpuSky.empty() ? nullptr : gpuSky.data() + 6*j;
+        const bool measured = statistics && std::all_of(statistics, statistics+6, [](float v) { return std::isfinite(v); });
         std::array<std::vector<double>, 3> skySamples;
         bool valid = true;
         for (int dy = -outer; dy <= outer; ++dy)
@@ -188,11 +224,16 @@ bool guardDemosaicStars(ImageBuffer& image, std::span<const float> mosaic,
                 if (distance > outer) continue;
                 const auto p = std::size_t(y + dy) * w + x + dx;
                 if (!std::isfinite(mosaic[p]) || occupied[p]) { valid = false; continue; }
-                if (distance > radius + 4) skySamples[color(x + dx, y + dy)].push_back(mosaic[p]);
+                if (!measured && distance > radius + 4) skySamples[color(x + dx, y + dy)].push_back(mosaic[p]);
             }
-        if (!valid || std::any_of(skySamples.begin(), skySamples.end(), [](const auto& s) { return s.size() < 12; })) continue;
+        if (!valid || (!measured && std::any_of(skySamples.begin(), skySamples.end(), [](const auto& s) { return s.size() < 12; }))) continue;
         std::array<double, 3> sky, noise;
         for (int c = 0; c < 3; ++c) {
+            if (measured) {
+                sky[c] = statistics[2*c];
+                noise[c] = 1.4826 * double(statistics[2*c+1]);
+                continue;
+            }
             sky[c] = median(skySamples[c]);
             for (auto& value : skySamples[c]) value = std::abs(value - sky[c]);
             noise[c] = 1.4826 * median(skySamples[c]);

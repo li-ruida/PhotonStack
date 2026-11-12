@@ -2424,8 +2424,31 @@ namespace {
 
 template <typename Mapper, typename Sampler>
 bool renderMappedRows(const ImageBuffer& image, const RegistrationRowConsumer& consumer,
-                      const RegistrationPixelGrid* grid, Mapper mapper, Sampler sampler) {
+                      const RegistrationPixelGrid* grid, Mapper mapper, Sampler sampler,
+                      std::optional<RegistrationInterpolation> metalInterpolation = {}) {
     if (!consumer || !validImageBuffer(image)) return false;
+#ifdef __APPLE__
+    if (metalInterpolation && !grid && image.channels == 4 && image.pixelCount() >= 65536 &&
+        image.pixelCount() <= UINT32_MAX) {
+        std::vector<float> coordinates(2 * image.pixelCount());
+        detail::parallelRanges(image.height, std::max<std::size_t>(1, 8192 / image.width),
+            [&](std::size_t begin, std::size_t end) noexcept {
+                for (auto y = begin; y < end; ++y) for (unsigned x = 0; x < image.width; ++x) {
+                    const auto [sx, sy] = mapper(x, static_cast<unsigned>(y));
+                    const auto i = 2 * (y * image.width + x);
+                    coordinates[i] = sx;
+                    coordinates[i + 1] = sy;
+                }
+            });
+        ImageBuffer result;
+        if (detail::metalMappedWarp(image, coordinates, *metalInterpolation, result)) {
+            const auto stride = std::size_t(image.width) * image.channels;
+            for (unsigned y = 0; y < image.height; ++y)
+                if (!consumer(y, result.pixels.data() + y * stride, stride)) return false;
+            return true;
+        }
+    }
+#endif
     const auto render = [&](std::uint32_t width, std::uint32_t height, auto targetX, auto targetY) {
         const auto rowSamples = static_cast<std::size_t>(width) * image.channels;
         // A bounded strip lets independent rows share the pool and still calls
@@ -2786,7 +2809,7 @@ bool Registration::renderDistortionRows(const ImageBuffer& image, const Distorti
             },
             [&](float sourceX, float sourceY, std::uint16_t channel) {
                 return sampleRegistered(image, sourceX, sourceY, channel, interpolation_);
-            });
+            }, backend_ == ComputeBackend::Metal ? std::optional(interpolation_) : std::nullopt);
     }
 
     constexpr std::uint32_t gridSpacing = 32;
@@ -2923,7 +2946,7 @@ bool Registration::renderDistortionRows(const ImageBuffer& image, const Distorti
         },
         [&](float sourceX, float sourceY, std::uint16_t channel) {
             return sampleRegistered(image, sourceX, sourceY, channel, interpolation_);
-        });
+        }, backend_ == ComputeBackend::Metal ? std::optional(interpolation_) : std::nullopt);
 }
 
 bool Registration::renderDistortionForwardRows(const ImageBuffer& image, const DistortionTransform& transform,
@@ -2983,7 +3006,13 @@ ImageBuffer Registration::applySimilarity(const ImageBuffer& image, SimilarityTr
 ImageBuffer Registration::applyAffine(const ImageBuffer& image, AffineTransform transform,
                                           const RegistrationPixelGrid* grid) const {
     const detail::StageScope scope(detail::Stage::Warp);
-    if (backend_ == ComputeBackend::Metal) detail::recordBackend("cpu", "transform model requires CPU");
+#ifdef __APPLE__
+    if (backend_ == ComputeBackend::Metal && !grid && image.channels == 4 && image.pixelCount() >= 65536 &&
+        image.pixelCount() <= UINT32_MAX && finiteAffineTransform(transform) && validImageBuffer(image)) {
+        ImageBuffer result;
+        if (detail::metalAffine(image, transform, interpolation_, result)) return result;
+    }
+#endif
     return collectRegisteredRows(image, grid, [&](const auto& consume) {
         return renderAffineRows(image, transform, consume, grid);
     });
@@ -2992,7 +3021,8 @@ ImageBuffer Registration::applyAffine(const ImageBuffer& image, AffineTransform 
 ImageBuffer Registration::applyDistortion(const ImageBuffer& image, const DistortionTransform& transform,
                                           const RegistrationPixelGrid* grid) const {
     const detail::StageScope scope(detail::Stage::Warp);
-    if (backend_ == ComputeBackend::Metal) detail::recordBackend("cpu", "transform model requires CPU");
+    if (backend_ == ComputeBackend::Metal && transform.controlPoints.empty() && !transform.useProjective &&
+        finiteDistortionTransform(transform)) return applySimilarity(image, transform.global, grid);
     return collectRegisteredRows(image, grid, [&](const auto& consume) {
         return renderDistortionRows(image, transform, consume, grid);
     });

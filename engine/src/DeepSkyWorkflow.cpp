@@ -1,4 +1,5 @@
 #include "photonstack/StageProfile.hpp"
+#include "RegisteredStackCache.hpp"
 #include "photonstack/DeepSkyWorkflow.hpp"
 #include "photonstack/BackgroundDenoiser.hpp"
 #include "photonstack/FitsCodec.hpp"
@@ -21,40 +22,12 @@
 #include <set>
 #include <stdexcept>
 #include <optional>
-#if defined(__unix__) || defined(__APPLE__)
-#include <unistd.h>
-#endif
-#ifdef __APPLE__
-#include <mach/mach.h>
-#endif
+#include "WorkingMemory.hpp"
 
 namespace photonstack {
 namespace fs = std::filesystem;
 namespace {
-std::uint64_t analysisMemoryBudget() {
-#if defined(_SC_PHYS_PAGES) && defined(_SC_PAGESIZE)
-    const auto pages = sysconf(_SC_PHYS_PAGES), pageBytes = sysconf(_SC_PAGESIZE);
-    if (pages <= 0 || pageBytes <= 0) return 0;
-    auto budget = std::min<std::uint64_t>(3ULL << 30, std::uint64_t(pages) * pageBytes / 4);
-#ifdef __APPLE__
-    vm_statistics64_data_t stats{};
-    mach_msg_type_number_t length = HOST_VM_INFO64_COUNT;
-    const auto host = mach_host_self();
-    const auto status = host_statistics64(host, HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&stats), &length);
-    mach_port_deallocate(mach_task_self(), host);
-    if (status != KERN_SUCCESS) return 0;
-    const auto available = std::uint64_t(stats.free_count) + stats.inactive_count;
-    budget = std::min(budget, available * pageBytes / 2);
-#elif defined(_SC_AVPHYS_PAGES)
-    const auto available = sysconf(_SC_AVPHYS_PAGES);
-    if (available <= 0) return 0;
-    budget = std::min(budget, std::uint64_t(available) * pageBytes / 2);
-#endif
-    return budget;
-#else
-    return 0;
-#endif
-}
+
 struct WorkflowFailure : std::runtime_error {
     std::string code;
     WorkflowFailure(std::string code, std::string message) : std::runtime_error(message), code(std::move(code)) {}
@@ -355,7 +328,10 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             o.stack.fitsDemosaic == FitsDemosaic::MalvarGuarded && o.stack.debayerFits &&
             o.stack.method == StackMethod::WinsorizedSigmaClip && o.stack.frameWeights.empty() &&
             std::all_of(inputs.begin(), inputs.end(), [](const auto& path) { return isFitsPath(path); });
-        const auto backend = automaticMetal ? ComputeBackend::Metal : o.computeBackend;
+        const auto backend = !o.gpuAcceleration ? ComputeBackend::CPU :
+            automaticMetal ? ComputeBackend::Metal : o.computeBackend;
+        const detail::StageScope execution({detail::currentStage.profile, detail::currentStage.stage,
+                                            backend == ComputeBackend::Metal});
         ImageReadOptions readOptions;
         readOptions.raw = o.stack.raw; readOptions.raw.linearOutput = true;
         readOptions.raw.useGPU = o.gpuAcceleration && backend != ComputeBackend::CPU;
@@ -437,7 +413,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             o.stack.fitsDemosaic != FitsDemosaic::Ratio;
         const auto cpuLimit = std::min<std::size_t>(std::thread::hardware_concurrency(),
             o.analysisWorkers == 0 ? 4 : o.analysisWorkers);
-        const auto available = eligible && cpuLimit > 1 ? analysisMemoryBudget() : 0;
+        const auto available = eligible && cpuLimit > 1 ? detail::workingMemoryBudget() : 0;
         const auto reserved = guardReplay.empty() ? 0 : replayBudget;
         const auto memoryBudget = available > reserved ? available - reserved : 0;
         const auto frameCapacity = [&](std::size_t i, std::uint64_t referencePixels) -> std::size_t {
@@ -539,6 +515,18 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         const auto& referenceImage = prepared ? prepared->image() : ref.image;
         std::vector<double> registeredVariances(inputs.size(),0);
         std::vector<fs::path> aligned(inputs.size());
+        const auto method = o.stack.method;
+        const bool directCache = method == StackMethod::WinsorizedSigmaClip || method == StackMethod::SigmaClip ||
+                                 method == StackMethod::Median || method == StackMethod::PercentileClip;
+        const auto suffix = directCache ? ".f32" : ".fits";
+        std::vector<detail::RegisteredFrame> registered(inputs.size());
+        const auto saveAligned = [&](std::size_t index, const ImageBuffer& image) {
+            aligned[index] = work.path / (std::to_string(index) + suffix);
+            if (directCache) {
+                const auto r = detail::writeRegisteredFrame(aligned[index], image, o.stack.normalizeBackground, registered[index]);
+                ensure(r.ok, r.errorCode, r.message);
+            } else write(image, aligned[index]);
+        };
         std::vector<DistortionTransform> distortions(inputs.size());
         const auto prepareAlignment = [&](std::size_t i) {
             auto& f = result.frames[i];
@@ -632,8 +620,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             samples[i].medianEccentricity = f.native.medianEccentricity;
             if (!samples[i].ok) { f.errorCode = samples[i].errorCode; f.message = samples[i].message; return; }
             if (!o.analysisOnly && !o.sensorPattern) {
-                aligned[i] = work.path / (std::to_string(i) + ".fits");
-                write(i == reference ? referenceImage : measured.pixelsToWrite, aligned[i]);
+                saveAligned(i, i == reference ? referenceImage : measured.pixelsToWrite);
             }
         };
         detail::orderedAnalysisFrames(inputs.size(), prepareAlignment,
@@ -743,7 +730,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                     ensure(measured.ok,measured.errorCode,measured.message);
                     registeredVariances[i]=measured.noise*measured.noise;
                 }
-                aligned[i]=work.path/(std::to_string(i)+".fits"); write(image, aligned[i]);
+                saveAligned(i, image);
                 emit("sensor-pattern-apply", .64 + .06*(slot+1)/usable.size(), slot+1, usable.size());
             }
         }
@@ -775,7 +762,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         }
         const auto releaseAligned = [&](std::size_t sourceIndex) {
             const auto& path = aligned.at(sourceIndex);
-            ensure(path.parent_path() == work.path && path.filename() == std::to_string(sourceIndex) + ".fits" &&
+            ensure(path.parent_path() == work.path && path.filename() == std::to_string(sourceIndex) + suffix &&
                 !fs::is_symlink(path), "TemporaryStorageInvalid", "Aligned input is not an owned work file");
             std::error_code error;
             const bool removed = fs::remove(path, error);
@@ -792,7 +779,14 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                 emit("stack-combine", fraction, p.row, p.rowCount);
             else emit("stack", fraction, p.frame, p.frameCount);
         };
-        auto stacked = Stacker().stack(selected, stackOptions);
+        std::vector<detail::RegisteredFrame> metadata;
+        if (directCache) {
+            for (const auto i : selectedIndices) metadata.push_back(registered[i]);
+            stackOptions.inputConsumed = {};
+        }
+        auto stacked = directCache ? detail::combineRegisteredFrames(selected, metadata, stackOptions)
+                                   : Stacker().stack(selected, stackOptions);
+        if (directCache && stacked.ok) for (auto i : selectedIndices) releaseAligned(i);
         ensure(stacked.ok, stacked.errorCode, stacked.message);
         result.master = directory / "stack-linear.fits"; write(stacked.image, result.master);
         ImageBuffer noise;

@@ -2579,6 +2579,14 @@ public struct RecentProject: Identifiable, Codable, Equatable, Sendable {
 
 public enum DeepSkyComputeBackend: String, Codable, CaseIterable, Sendable {
     case automatic = "auto", metal, cpu
+
+    public init(gpuAcceleration: Bool?) {
+        if let gpuAcceleration {
+            self = gpuAcceleration ? .metal : .cpu
+        } else {
+            self = .automatic
+        }
+    }
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
@@ -2597,7 +2605,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var computeBackend: DeepSkyComputeBackend
     public var gpuAccelerationEnabled: Bool {
         get { computeBackend != .cpu }
-        set { computeBackend = newValue ? .automatic : .cpu }
+        set { computeBackend = newValue ? .metal : .cpu }
     }
     private enum LegacyKeys: String, CodingKey { case gpuAccelerationEnabled }
     public var customCurvePresets: [CustomCurvePreset]
@@ -2622,7 +2630,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         language: AppLanguage? = nil,
         analysisWorkerCount: Int = 0,
         stackWorkerCount: Int = 0,
-        gpuAccelerationEnabled: Bool = true,
+        gpuAccelerationEnabled: Bool? = nil,
         computeBackend: DeepSkyComputeBackend? = nil,
         customCurvePresets: [CustomCurvePreset] = [],
         exportOptions: ExportOptions = ExportOptions()
@@ -2639,7 +2647,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
             stackWorkerCount,
             maximum: Self.maximumStackWorkerCount
         )
-        self.computeBackend = computeBackend ?? (gpuAccelerationEnabled ? .automatic : .cpu)
+        self.computeBackend = computeBackend ?? DeepSkyComputeBackend(gpuAcceleration: gpuAccelerationEnabled)
         self.customCurvePresets = Self.presetsWithUniqueIdentifiers(customCurvePresets)
         self.exportOptions = exportOptions
     }
@@ -2665,9 +2673,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
             maximum: Self.maximumStackWorkerCount
         )
         let legacy = try decoder.container(keyedBy: LegacyKeys.self)
-        let enabled = try legacy.decodeIfPresent(Bool.self, forKey: .gpuAccelerationEnabled) ?? true
+        let enabled = try legacy.decodeIfPresent(Bool.self, forKey: .gpuAccelerationEnabled)
         computeBackend = try container.decodeIfPresent(DeepSkyComputeBackend.self, forKey: .computeBackend)
-            ?? (enabled ? .automatic : .cpu)
+            ?? DeepSkyComputeBackend(gpuAcceleration: enabled)
         let decodedCurvePresets = try container.decodeIfPresent([CustomCurvePreset].self, forKey: .customCurvePresets) ?? []
         customCurvePresets = Self.presetsWithUniqueIdentifiers(decodedCurvePresets)
         exportOptions = try container.decodeIfPresent(ExportOptions.self, forKey: .exportOptions) ?? ExportOptions()

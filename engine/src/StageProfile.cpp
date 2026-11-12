@@ -74,7 +74,7 @@ void StageProfile::sampleResidentMemory() {
 }
 StageScope::StageScope(StageContext next)
     : previous(currentStage),
-      switched(next.profile != previous.profile || (next.profile && next.stage != previous.stage)) {
+      switched(next.preferMetal != previous.preferMetal || next.profile != previous.profile || (next.profile && next.stage != previous.stage)) {
     if (switched)
         transition(next);
 }
@@ -94,7 +94,7 @@ FrameActivity::~FrameActivity() {
     std::lock_guard lock(profile->mutex);
     --profile->activeFrames;
 }
-void recordBackend(const char* backend, const char* reason, double gpuSeconds) {
+void recordBackend(const char* backend, const char* reason, double gpuSeconds, const char* operation) {
     if (!currentStage.profile)
         return;
     std::lock_guard lock(currentStage.profile->mutex);
@@ -104,5 +104,6 @@ void recordBackend(const char* backend, const char* reason, double gpuSeconds) {
     if (*reason)
         m.fallback = reason;
     m.gpu += gpuSeconds;
+    if (operation) ++m.metalOperations[operation];
 }
 } // namespace photonstack::detail

@@ -119,7 +119,7 @@ public extension ProcessingService {
         analyzeOnly: Bool,
         analysisWorkers: Int = 0,
         stackWorkers: Int = 0,
-        gpuAcceleration: Bool = true,
+        gpuAcceleration: Bool? = nil,
         computeBackend: DeepSkyComputeBackend? = nil,
         buildIdentity: String? = nil
     ) async throws -> DeepSkyReport {
@@ -141,10 +141,10 @@ public extension ProcessingService {
         if analyzeOnly { args.append("--analyze-only") }
         if analysisWorkers > 0 { args += ["--analysis-workers", String(analysisWorkers)] }
         if stackWorkers > 0 { args += ["--stack-workers", String(stackWorkers)] }
-        let backend = computeBackend ?? (gpuAcceleration ? .automatic : .cpu)
+        let backend = computeBackend ?? DeepSkyComputeBackend(gpuAcceleration: gpuAcceleration)
         reuse?.computeBackend = backend
         args += ["--gpu-acceleration", backend == .cpu ? "off" : "on"]
-        if let computeBackend { args += ["--compute-backend", computeBackend.rawValue] }
+        args += ["--compute-backend", backend.rawValue]
         var report: DeepSkyReport = try decodeDeepSkyOutput(await runCLI(arguments: args))
         try report.validate()
         if let data = try? Data(contentsOf: outputDirectory.appendingPathComponent("performance.json")) {

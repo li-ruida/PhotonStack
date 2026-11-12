@@ -1910,7 +1910,7 @@ import Testing
 
 @Test func deepSkyComputeBackendMigratesLegacyPreferencesAndRoundTripsMetal() throws {
     for (json, expected) in [(#"{"gpuAccelerationEnabled":false}"#, DeepSkyComputeBackend.cpu),
-                             (#"{"gpuAccelerationEnabled":true}"#, .automatic), ("{}", .automatic)] {
+                             (#"{"gpuAccelerationEnabled":true}"#, .metal), ("{}", .automatic)] {
         let settings = try JSONDecoder().decode(AppSettings.self, from: Data(json.utf8))
         #expect(settings.computeBackend == expected)
     }

@@ -16,7 +16,7 @@ public struct PhotonStackApplicationCommandSnapshot: Equatable, Sendable {
         language: AppLanguage,
         analysisWorkerCount: Int = 0,
         stackWorkerCount: Int = 0,
-        gpuAccelerationEnabled: Bool = true,
+        gpuAccelerationEnabled: Bool? = nil,
         computeBackend: DeepSkyComputeBackend? = nil,
         performance: DeepSkyRunPerformance? = nil,
         isWorkspaceActive: Bool,
@@ -26,7 +26,7 @@ public struct PhotonStackApplicationCommandSnapshot: Equatable, Sendable {
         self.language = language
         self.analysisWorkerCount = AppSettings.normalizedAnalysisWorkerCount(analysisWorkerCount)
         self.stackWorkerCount = AppSettings.normalizedStackWorkerCount(stackWorkerCount)
-        self.computeBackend = computeBackend ?? (gpuAccelerationEnabled ? .automatic : .cpu)
+        self.computeBackend = computeBackend ?? DeepSkyComputeBackend(gpuAcceleration: gpuAccelerationEnabled)
         self.performance = performance
         self.isWorkspaceActive = isWorkspaceActive
         self.canRunBatchRegistration = canRunBatchRegistration
@@ -37,7 +37,7 @@ public struct PhotonStackApplicationCommandSnapshot: Equatable, Sendable {
         language: AppLanguage,
         analysisWorkerCount: Int = 0,
         stackWorkerCount: Int = 0,
-        gpuAccelerationEnabled: Bool = true,
+        gpuAccelerationEnabled: Bool? = nil,
         computeBackend: DeepSkyComputeBackend? = nil
     ) -> Self {
         Self(
@@ -110,7 +110,7 @@ public final class PhotonStackApplicationCommandState: ObservableObject {
     }
 
     public func requestGPUAccelerationEnabled(_ isEnabled: Bool) {
-        requestComputeBackend(isEnabled ? .automatic : .cpu)
+        requestComputeBackend(isEnabled ? .metal : .cpu)
     }
 
     public func requestComputeBackend(_ backend: DeepSkyComputeBackend) {

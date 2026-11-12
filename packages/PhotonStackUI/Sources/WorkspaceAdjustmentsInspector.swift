@@ -17,36 +17,34 @@ struct AdjustmentsInspectorSection: View {
     @StateObject private var advanced = AdvancedToolSettings()
 
     private var chinese: Bool { model.language == .simplifiedChinese }
-    private let columns = [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            LazyVGrid(columns: columns, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 0) {
                 ForEach(AdjustmentInspectorTab.allCases, id: \.self) { tab in
                     Button {
                         selectedTab = tab
                     } label: {
-                        Label(tab.title(chinese: chinese), systemImage: tab.icon)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, minHeight: 26)
+                        Text(tab.shortTitle(chinese: chinese))
+                            .font(.system(size: 12, weight: selectedTab == tab ? .semibold : .regular))
+                            .foregroundStyle(selectedTab == tab ? .primary : .secondary)
+                            .frame(maxWidth: .infinity, minHeight: 28)
                             .contentShape(Rectangle())
+                            .overlay(alignment: .bottom) {
+                                if selectedTab == tab {
+                                    Capsule().fill(Color.accentColor).frame(width: 22, height: 2)
+                                }
+                            }
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(selectedTab == tab ? Color.accentColor : Color.primary)
-                    .background(selectedTab == tab ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.10),
-                                in: RoundedRectangle(cornerRadius: 6))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(selectedTab == tab ? Color.accentColor : .clear)
-                            .allowsHitTesting(false)
-                    }
+                    .help(tab.title(chinese: chinese))
+                    .accessibilityLabel(tab.title(chinese: chinese))
                     .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
                     .accessibilityIdentifier("finish.tab." + tab.rawValue)
                 }
             }
+            .background(alignment: .bottom) { Divider() }
 
-            Divider()
             if !model.canModifyProcessingConfiguration {
                 Text(chinese ? "任务进行中，可浏览其他工具。" : "Processing. You can browse other tools.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -64,6 +62,7 @@ struct AdjustmentsInspectorSection: View {
                 .disabled(!model.canModifyProcessingConfiguration ||
                           (selectedTab != .export && (!model.canProcessCurrentInput || model.editGraphNeedsReplay)))
         }
+        .controlSize(.small)
 
     }
 
@@ -101,14 +100,14 @@ private enum AdjustmentInspectorTab: String, CaseIterable {
         }
     }
 
-    var icon: String {
+    func shortTitle(chinese: Bool) -> String {
         switch self {
-        case .basic: "circle.lefthalf.filled"
-        case .curves: "point.topleft.down.curvedto.point.bottomright.up"
-        case .detail: "slider.horizontal.3"
-        case .export: "square.and.arrow.up"
-        case .composition: "crop.rotate"
-        case .advanced: "wand.and.stars"
+        case .basic: chinese ? "调色" : "Tone"
+        case .curves: chinese ? "曲线" : "Curves"
+        case .detail: chinese ? "细节" : "Detail"
+        case .composition: chinese ? "构图" : "Crop"
+        case .advanced: chinese ? "高级" : "Tools"
+        case .export: chinese ? "导出" : "Export"
         }
     }
 }
@@ -743,46 +742,116 @@ struct ParameterSlider: View {
     var continuous = false
     var resetValue: Double? = nil
     var resetLabel = "Reset"
+    var fractionLength: ClosedRange<Int> = 2...2
     @State private var dragValue: Double?
+    @FocusState private var editingNumber: Bool
+    @FocusState private var trackFocused: Bool
+    @Environment(\.layoutDirection) private var direction
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack {
-                Text(title)
-                Spacer()
-                if let resetValue {
-                    Button { value = resetValue } label: { Image(systemName: "arrow.counterclockwise") }
-                        .buttonStyle(.borderless)
-                        .accessibilityLabel("\(resetLabel) \(title)")
-                        .help("\(resetLabel) \(title)")
-                        .disabled(value == resetValue)
-                }
-                TextField(title, value: Binding(
-                    get: { dragValue ?? value },
-                    set: { if $0.isFinite { value = min(max($0, range.lowerBound), range.upperBound) } }
-                ), format: .number.precision(.fractionLength(2)))
-                    .textFieldStyle(.roundedBorder)
-                    .multilineTextAlignment(.trailing)
-                    .monospacedDigit()
-                    .frame(width: 62)
-                    .accessibilityLabel(title)
-            }
-            Slider(value: Binding(
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 11))
+                .frame(width: 84, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            track
+                .disabled(range.lowerBound == range.upperBound)
+
+            TextField(title, value: Binding(
                 get: { dragValue ?? value },
-                set: { next in
-                    if continuous || dragValue == nil { value = next }
-                    if dragValue != nil { dragValue = next }
+                set: { if $0.isFinite { value = min(max($0, range.lowerBound), range.upperBound) } }
+            ), format: .number.precision(.fractionLength(fractionLength)))
+                .labelsHidden()
+                .textFieldStyle(.plain)
+                .font(.system(size: 11).monospacedDigit())
+                .multilineTextAlignment(.trailing)
+                .focused($editingNumber)
+                .padding(.horizontal, 3)
+                .frame(width: 48, height: 22)
+                .background(alignment: .bottom) {
+                    Rectangle().fill(editingNumber ? Color.accentColor : Color.secondary.opacity(0.24))
+                        .frame(height: 1)
                 }
-            ), in: range.lowerBound == range.upperBound ? range.lowerBound...(range.lowerBound + 1) : range) { editing in
-                if editing {
-                    dragValue = value
-                } else if let final = dragValue {
-                    if final != value { value = final }
-                    dragValue = nil
+                .accessibilityLabel(title)
+            if let resetValue {
+                Button { value = resetValue } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 10))
+                        .frame(width: 18, height: 22)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("\(resetLabel) \(title)")
+                .help("\(resetLabel) \(title)")
+                .disabled(value == resetValue)
+                .opacity(value == resetValue ? 0 : 1)
+                .accessibilityHidden(value == resetValue)
             }
-            .accessibilityLabel(title)
-            .disabled(range.lowerBound == range.upperBound)
+        }
+        .frame(minHeight: 24)
+    }
+    private var track: some View {
+        GeometryReader { geometry in
+            let radius: CGFloat = 4.5
+            let length = max(1, geometry.size.width - 2 * radius)
+            let midY = geometry.size.height / 2
+            let span = range.upperBound - range.lowerBound
+            let position: (Double) -> CGFloat = { setting in
+                let fraction = span > 0 ? min(1, max(0, (setting - range.lowerBound) / span)) : 0
+                return radius + (direction == .rightToLeft ? 1 - fraction : fraction) * length
+            }
+            let thumb = position(dragValue ?? value)
+            let origin = position(resetValue ?? range.lowerBound)
+            let setting: (CGFloat) -> Double = { x in
+                let fraction = min(1, max(0, (x - radius) / length))
+                return range.lowerBound + (direction == .rightToLeft ? 1 - fraction : fraction) * span
+            }
+
+            ZStack {
+                Capsule().fill(.secondary.opacity(0.32))
+                    .frame(width: length, height: 2)
+                Capsule().fill(Color.accentColor)
+                    .frame(width: abs(thumb - origin), height: 2)
+                    .position(x: (origin + thumb) / 2, y: midY)
+                if let resetValue, range.lowerBound < resetValue, resetValue < range.upperBound {
+                    Rectangle().fill(.secondary)
+                        .frame(width: 1, height: 6)
+                        .position(x: origin, y: midY)
+                }
+                Circle().fill(.primary)
+                    .frame(width: 2 * radius, height: 2 * radius)
+                    .position(x: thumb, y: midY)
+            }
+            .frame(width: geometry.size.width, height: geometry.size.height)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                .onChanged { gesture in
+                    if dragValue == nil { trackFocused = true }
+                    let next = setting(gesture.location.x)
+                    dragValue = next
+                    if continuous && value != next { value = next }
+                }
+                .onEnded { gesture in
+                    let final = setting(gesture.location.x)
+                    if value != final { value = final }
+                    dragValue = nil
+                })
+        }
+        .frame(height: 24)
+        .focusable()
+        .focused($trackFocused)
+        .onKeyPress(keys: [.leftArrow, .rightArrow]) { event in
+            let increases = (event.key == .rightArrow) == (direction == .leftToRight)
+            let step = (range.upperBound - range.lowerBound) / 100
+            value = min(range.upperBound, max(range.lowerBound, value + (increases ? step : -step)))
+            return .handled
+        }
+        .accessibilityRepresentation {
+            Slider(value: $value, in: range.lowerBound == range.upperBound ? range.lowerBound...(range.lowerBound + 1) : range) {
+                Text(title)
+            }
         }
     }
+
 }

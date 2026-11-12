@@ -750,6 +750,7 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
             return colors[2 * (y & 1U) + (x & 1U)];
         };
         bool reconstructedOnGPU = false;
+        std::vector<float> scientificRGB;
         if (options.preferMetal) {
 #ifdef __APPLE__
             // With 16-bit integer samples and unity gains the Malvar stencil
@@ -761,7 +762,12 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
                 (options.demosaic == FitsDemosaic::Malvar || options.demosaic == FitsDemosaic::MalvarGuarded) &&
                 result.image.width >= 4 && result.image.height >= 4 && pixelCount >= 65536 && pixelCount <= UINT32_MAX)
                 reconstructedOnGPU = detail::metalDemosaic(mosaic, colors, result.image, options.demosaic == FitsDemosaic::MalvarGuarded);
-            else detail::recordBackend("cpu", "requires native 16-bit Malvar CFA, unit gains and a full-size image");
+            else if (options.mode == FitsDecodeMode::Scientific &&
+                     (options.demosaic == FitsDemosaic::Malvar || options.demosaic == FitsDemosaic::MalvarGuarded) &&
+                     result.image.width >= 4 && result.image.height >= 4 && pixelCount >= 65536 && pixelCount <= UINT32_MAX) {
+                detail::metalScientificCFA(mosaic,result.image.width,result.image.height,colors,
+                                           options.cfaInterpolationGains,scientificRGB);
+            } else detail::recordBackend("cpu", "Metal CFA requires full-size scientific Malvar interpolation");
 #else
             detail::recordBackend("cpu", "Metal unavailable on this platform");
 #endif
@@ -772,6 +778,10 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
                 for (int y = static_cast<int>(firstRow); y < static_cast<int>(lastRow); ++y) {
                     for (int x = 0; x < static_cast<int>(result.image.width); ++x) {
                         const auto pixel = static_cast<std::size_t>(y) * result.image.width + x;
+                        if (!scientificRGB.empty() && std::isfinite(scientificRGB[pixel*4])) {
+                            std::copy_n(scientificRGB.data()+pixel*4,3,result.image.pixels.data()+pixel*4);
+                            continue;
+                        }
                         for (int channel = 0; channel < 3; ++channel) {
                             if (colorAt(x, y) == channel) {
                                 result.image.pixels[pixel * 4 + channel] = mosaic[pixel];

@@ -1118,7 +1118,7 @@ import Testing
     #expect(parameters.mosaicOverlapPixels == 0)
     #expect(parameters.mosaicProjection == .planar)
     #expect(parameters.mosaicLayout == .horizontal)
-    #expect(parameters.mosaicAlignment == .manual)
+    #expect(parameters.mosaicAlignment == .auto)
     #expect(parameters.mosaicBlendMode == .feather)
     #expect(parameters.mosaicExposureMatching)
     #expect(parameters.mosaicColumns == 2)

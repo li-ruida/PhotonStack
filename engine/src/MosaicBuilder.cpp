@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <new>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -214,10 +215,26 @@ struct MosaicBounds {
     float maxY = 0.0F;
 };
 
+MosaicPoint localResidual(const MosaicPlacement& p, float x, float y) {
+    if (p.residuals.empty())
+        return {};
+    const float q = p.residualAlongY ? y : x;
+    const auto it = std::lower_bound(p.residuals.begin(), p.residuals.end(), q,
+                                     [](const auto& knot, float pos) { return knot.position < pos; });
+    if (it == p.residuals.end())
+        return {p.residuals.back().x, p.residuals.back().y};
+    if (it == p.residuals.begin())
+        return {it->x, it->y};
+    const auto& prev = *(it - 1);
+    const float t = (q - prev.position) / (it->position - prev.position);
+    return {std::lerp(prev.x, it->x, t), std::lerp(prev.y, it->y, t)};
+}
+
 MosaicPoint transformPoint(const MosaicPlacement& placement, float x, float y) {
+    const auto residual = localResidual(placement, x, y);
     return {
-        .x = placement.a * x + placement.b * y + placement.x,
-        .y = placement.c * x + placement.d * y + placement.y,
+        .x = residual.x + placement.a * x + placement.b * y + placement.x,
+        .y = residual.y + placement.c * x + placement.d * y + placement.y,
     };
 }
 
@@ -232,6 +249,13 @@ bool inverseTransformPoint(const MosaicPlacement& placement, float x, float y, M
         .x = (placement.d * translatedX - placement.b * translatedY) / determinant,
         .y = (-placement.c * translatedX + placement.a * translatedY) / determinant,
     };
+    if (!placement.residuals.empty()) {
+        for (int i = 0; i < 2; ++i) {
+            const auto offset = localResidual(placement, point.x, point.y);
+            point = {(placement.d * (translatedX - offset.x) - placement.b * (translatedY - offset.y)) / determinant,
+                     (placement.a * (translatedY - offset.y) - placement.c * (translatedX - offset.x)) / determinant};
+        }
+    }
     return std::isfinite(point.x) && std::isfinite(point.y);
 }
 
@@ -255,6 +279,16 @@ MosaicBounds transformedBounds(const ImageBuffer& image, const MosaicPlacement& 
         bounds.minY = std::min(bounds.minY, corner.y);
         bounds.maxX = std::max(bounds.maxX, corner.x);
         bounds.maxY = std::max(bounds.maxY, corner.y);
+    }
+    for (const auto& knot : placement.residuals) {
+        for (float edge : {0.f, placement.residualAlongY ? maxLocalX : maxLocalY}) {
+            const auto p = placement.residualAlongY ? transformPoint(placement, edge, knot.position)
+                                                    : transformPoint(placement, knot.position, edge);
+            bounds.minX = std::min(bounds.minX, p.x);
+            bounds.maxX = std::max(bounds.maxX, p.x);
+            bounds.minY = std::min(bounds.minY, p.y);
+            bounds.maxY = std::max(bounds.maxY, p.y);
+        }
     }
     return bounds;
 }
@@ -311,24 +345,24 @@ MosaicPoint transformedCenterOffset(
     };
 }
 
-bool saneHorizontalOffset(const ImageBuffer& reference, const ImageBuffer& moving, const AffineTransform& transform) {
+bool saneHorizontalOffset(const ImageBuffer& reference, const ImageBuffer& moving, const AffineTransform& transform, bool forward) {
     if (!saneLinearTransform(transform)) {
         return false;
     }
     const auto offset = transformedCenterOffset(reference, moving, transform);
     const float expectedMinimum = static_cast<float>(std::min(reference.width, moving.width)) * 0.15F;
     const float maxVerticalDrift = static_cast<float>(std::max(reference.height, moving.height)) * 0.75F;
-    return offset.x > expectedMinimum && std::fabs(offset.y) <= maxVerticalDrift;
+    return (forward ? offset.x : -offset.x) > expectedMinimum && std::fabs(offset.y) <= maxVerticalDrift;
 }
 
-bool saneVerticalOffset(const ImageBuffer& reference, const ImageBuffer& moving, const AffineTransform& transform) {
+bool saneVerticalOffset(const ImageBuffer& reference, const ImageBuffer& moving, const AffineTransform& transform, bool forward) {
     if (!saneLinearTransform(transform)) {
         return false;
     }
     const auto offset = transformedCenterOffset(reference, moving, transform);
     const float expectedMinimum = static_cast<float>(std::min(reference.height, moving.height)) * 0.15F;
     const float maxHorizontalDrift = static_cast<float>(std::max(reference.width, moving.width)) * 0.75F;
-    return offset.y > expectedMinimum && std::fabs(offset.x) <= maxHorizontalDrift;
+    return (forward ? offset.y : -offset.y) > expectedMinimum && std::fabs(offset.x) <= maxHorizontalDrift;
 }
 
 struct MosaicAlignmentImage {
@@ -456,6 +490,30 @@ AffineTransform restoreRegistrationStripTransform(
     return restored;
 }
 
+// Score local contrast in the common sky, independently of the star matches.
+double overlapCorrelation(const ImageBuffer& reference, const ImageBuffer& moving, const AffineTransform& t) {
+    const auto channel = moving.channels >= 3 ? 1 : 0;
+    const auto step = std::max(1U, std::min(moving.width, moving.height) / 180);
+    double dot = 0, aa = 0, bb = 0;
+    unsigned count = 0;
+    for (unsigned y = 2; y + 2 < moving.height; y += step) {
+        for (unsigned x = 2; x + 2 < moving.width; x += step) {
+            const float rx = t.a*x + t.b*y + t.dx, ry = t.c*x + t.d*y + t.dy;
+            if (rx < 3 || ry < 3 || rx + 3 >= reference.width || ry + 3 >= reference.height) continue;
+            if (moving.channels == 4 && (sampleBilinear(moving,x,y,3) < 0.99F ||
+                sampleBilinear(reference,rx,ry,3) < 0.99F)) continue;
+            const double a = sampleBilinear(reference,rx,ry,channel)
+                - sampleBilinear(reference,rx+2*t.a,ry+2*t.c,channel);
+            const double b = sampleBilinear(moving,x,y,channel) - sampleBilinear(moving,x+2,y,channel);
+            dot += a*b;
+            aa += a*a;
+            bb += b*b;
+            ++count;
+        }
+    }
+    return count >= 32 && aa > 0 && bb > 0 ? dot / std::sqrt(aa*bb) : 0;
+}
+
 struct MosaicAlignmentCandidate {
     MosaicPlacement placement;
     MosaicTransformModel transformModel = MosaicTransformModel::Manual;
@@ -546,11 +604,59 @@ MosaicPlacement fuseAlignmentCandidates(
         placement.x = x / totalWeight;
         placement.y = y / totalWeight;
     }
+    if (consensus.size() != 1) placement.residuals.clear();
     placement.matches = acceptedMatches;
     placement.referenceCount = consensus.size();
     placement.autoAligned = true;
     placement.usedFallback = !best->referenceTrusted;
     return placement;
+}
+
+// Estimate smooth residual drift along the overlap. Use robust bin medians and
+// require improvement on independent stars before changing any sampling position.
+std::size_t refineCommonSky(const ImageBuffer& reference, const ImageBuffer& moving, const AffineTransform& seed,
+                            const MosaicPlacement& parent, MosaicPlacement& placement, bool horizontal) {
+    const auto pairs = Registration::overlapCentroids(reference, moving, seed);
+    if (pairs.size() < 64)
+        return 0;
+    std::vector<MosaicResidualKnot> train, validation;
+    for (std::size_t i = 0; i < pairs.size(); ++i) {
+        const auto [rx, ry, mx, my] = pairs[i];
+        const auto target = transformPoint(parent, rx, ry);
+        const auto predicted = transformPoint(placement, mx, my);
+        (i % 4 ? train : validation).push_back({horizontal ? my : mx, target.x - predicted.x, target.y - predicted.y});
+    }
+    std::sort(train.begin(), train.end(), [](auto a, auto b) { return a.position < b.position; });
+    auto median = [](std::vector<float>& values) {
+        auto mid = values.begin() + values.size() / 2;
+        std::nth_element(values.begin(), mid, values.end());
+        return *mid;
+    };
+    placement.residualAlongY = horizontal;
+    const auto bins = std::min<std::size_t>(16, train.size() / 12);
+    for (std::size_t i = 0; i < bins; ++i) {
+        std::vector<float> pos, x, y;
+        for (auto j = i * train.size() / bins; j < (i + 1) * train.size() / bins; ++j) {
+            pos.push_back(train[j].position);
+            x.push_back(train[j].x);
+            y.push_back(train[j].y);
+        }
+        MosaicResidualKnot knot{median(pos), median(x), median(y)};
+        if (!placement.residuals.empty() && knot.position <= placement.residuals.back().position + 4)
+            continue;
+        placement.residuals.push_back(knot);
+    }
+    std::vector<float> before, after;
+    for (const auto& v : validation) {
+        const auto correction = localResidual(placement, v.position, v.position);
+        before.push_back(std::hypot(v.x, v.y));
+        after.push_back(std::hypot(v.x - correction.x, v.y - correction.y));
+    }
+    if (placement.residuals.size() < 3 || median(after) > .85F * median(before)) {
+        placement.residuals.clear();
+        return 0;
+    }
+    return pairs.size();
 }
 
 std::vector<MosaicPlacement> automaticPlacements(
@@ -596,50 +702,79 @@ std::vector<MosaicPlacement> automaticPlacements(
             const auto& registrationMovingImage = usedCoarseAlignment
                 ? registrationImages[index].image
                 : images[index];
-            const auto registrationReference = registrationStrip(
-                registrationReferenceImage,
-                images[neighbor.index],
-                options.overlapPixels,
-                neighbor.horizontal,
-                true);
-            const auto registrationMoving = registrationStrip(
-                registrationMovingImage,
-                images[index],
-                options.overlapPixels,
-                neighbor.horizontal,
-                false);
-            const auto registrationResult = registration.estimateAffine(
-                registrationReference.image, registrationMoving.image, options.registration);
-            if (!registrationResult.ok) {
-                continue;
-            }
-            const auto registrationTransform = restoreRegistrationStripTransform(
-                registrationResult.affine, registrationReference, registrationMoving);
-            const auto fullTransform = usedCoarseAlignment
-                ? liftAlignmentTransform(
-                      registrationTransform,
-                      registrationImages[neighbor.index],
-                      registrationImages[index])
-                : registrationTransform;
-            const bool sane = neighbor.horizontal
-                ? saneHorizontalOffset(images[neighbor.index], images[index], fullTransform)
-                : saneVerticalOffset(images[neighbor.index], images[index], fullTransform);
-            if (!sane) {
-                continue;
-            }
+            std::optional<MosaicAlignmentCandidate> best;
+            AffineTransform bestRelative;
+            double bestCorrelation = -1;
+            const unsigned directions = options.projection == MosaicProjection::Planar ? 4 : 1;
+            for (unsigned attempt = 0; attempt < directions; ++attempt) {
+                const bool horizontal = attempt < 2 ? neighbor.horizontal : !neighbor.horizontal;
+                const bool forward = attempt % 2 == 0;
+                const auto registrationReference = registrationStrip(
+                    registrationReferenceImage,
+                    images[neighbor.index],
+                    options.overlapPixels,
+                    horizontal,
+                    forward);
+                const auto registrationMoving = registrationStrip(
+                    registrationMovingImage,
+                    images[index],
+                    options.overlapPixels,
+                    horizontal,
+                    !forward);
+                const auto registrationResult = registration.estimateAffine(
+                    registrationReference.image, registrationMoving.image, options.registration);
+                if (!registrationResult.ok) {
+                    continue;
+                }
+                const auto registrationTransform = restoreRegistrationStripTransform(
+                    registrationResult.affine, registrationReference, registrationMoving);
+                const auto fullTransform = usedCoarseAlignment
+                    ? liftAlignmentTransform(
+                          registrationTransform,
+                          registrationImages[neighbor.index],
+                          registrationImages[index])
+                    : registrationTransform;
+                const bool sane = horizontal
+                    ? saneHorizontalOffset(images[neighbor.index], images[index], fullTransform, forward)
+                    : saneVerticalOffset(images[neighbor.index], images[index], fullTransform, forward);
+                if (!sane) {
+                    continue;
+                }
 
-            const bool referenceTrusted = !placements[neighbor.index].usedFallback;
-            const float modelWeight = registrationResult.usedFallback ? 0.85F : 1.0F;
-            const float score = static_cast<float>(registrationResult.matches) *
-                                std::max(0.05F, registrationResult.inlierRatio) * modelWeight;
-            candidates.push_back({
-                .placement = composePlacement(placements[neighbor.index], fullTransform),
-                .transformModel = registrationTransformModel(registrationResult),
-                .matches = registrationResult.matches,
-                .score = score,
-                .referenceTrusted = referenceTrusted,
-                .usedReducedModel = registrationResult.usedFallback,
-            });
+                const bool referenceTrusted = !placements[neighbor.index].usedFallback;
+                const float modelWeight = registrationResult.usedFallback ? 0.85F : 1.0F;
+                const float score = static_cast<float>(registrationResult.matches) *
+                                    std::max(0.05F, registrationResult.inlierRatio) * modelWeight;
+                const double correlation = overlapCorrelation(registrationReference.image, registrationMoving.image,
+                                                              registrationResult.affine);
+                // Tiny synthetic or thumbnail panels have too few interior samples for a contrast test.
+                const bool small = std::min({registrationMoving.image.width, registrationMoving.image.height,
+                                             registrationReference.image.width, registrationReference.image.height}) < 32;
+                if (directions > 1 && ((!small && correlation < 0.25) || correlation <= bestCorrelation)) continue;
+                bestCorrelation = correlation;
+                bestRelative = fullTransform;
+                best = MosaicAlignmentCandidate{
+                    .placement = composePlacement(placements[neighbor.index], fullTransform),
+                    .transformModel = registrationTransformModel(registrationResult),
+                    .matches = registrationResult.matches,
+                    .score = score,
+                    .referenceTrusted = referenceTrusted,
+                    .usedReducedModel = registrationResult.usedFallback,
+                };
+                if (small || correlation >= 0.85) break;
+            }
+            if (best) {
+                if (options.projection == MosaicProjection::Planar && images[index].pixelCount() >= 65536) {
+                    const auto& parent = placements[neighbor.index];
+                    const bool horizontal = std::abs(bestRelative.dx) / images[index].width >=
+                                            std::abs(bestRelative.dy) / images[index].height;
+                    const auto count = refineCommonSky(images[neighbor.index], images[index], bestRelative, parent,
+                                                       best->placement, horizontal);
+                    if (count)
+                        best->matches = count;
+                }
+                candidates.push_back(*best);
+            }
         }
         if (candidates.empty()) {
             const double fraction = images.size() <= 1
@@ -929,7 +1064,7 @@ float featherWeight(const ImageBuffer& image, float x, float y) {
         static_cast<float>(image.height) - y,
     });
     const float featherRadius = std::max(1.0F, static_cast<float>(std::min(image.width, image.height)) * 0.08F);
-    return std::clamp(edgeDistance / featherRadius, 0.08F, 1.0F);
+    return std::clamp(edgeDistance / featherRadius, 1.0e-4F, 1.0F);
 }
 
 float multibandWeight(const ImageBuffer& image, float x, float y) {
@@ -1446,7 +1581,12 @@ MosaicResult composeMosaic(
                 if (hasAlpha(output)) {
                     output.pixels[outputOffset + 3] = static_cast<float>(combinedColorWeight);
                 }
-                weights[outputPixel] += hasAlpha(output) ? baseWeight : colorWeight;
+                if (hasAlpha(output) && options.blendMode == MosaicBlendMode::Feather) {
+                    // An opaque panel covers a partial edge of its neighbor.
+                    weights[outputPixel] = std::max(weights[outputPixel], alpha);
+                } else {
+                    weights[outputPixel] += hasAlpha(output) ? baseWeight : colorWeight;
+                }
             }
             progress.reportRow(
                 MosaicProgressStage::Blending,
@@ -1476,7 +1616,8 @@ MosaicResult composeMosaic(
                 }
             }
             if (hasAlpha(output)) {
-                output.pixels[offset + 3] = std::clamp(normalizationWeight / weights[pixel], 0.0F, 1.0F);
+                output.pixels[offset + 3] = options.blendMode == MosaicBlendMode::Feather
+                    ? weights[pixel] : std::clamp(normalizationWeight / weights[pixel], 0.0F, 1.0F);
             }
         }
         progress.reportRow(MosaicProgressStage::Normalizing, y + 1, output.height, 0.88, 0.98);
@@ -1507,7 +1648,7 @@ MosaicResult loadInputs(const std::vector<std::filesystem::path>& inputs, const 
         progress.report(MosaicProgressStage::Reading, 0.0, 1);
         for (std::size_t index = 0; index < inputs.size(); ++index) {
             const auto& input = inputs[index];
-            const auto read = codec.read(input, readOptions);
+            auto read = codec.read(input, readOptions);
             if (!read.ok) {
                 return mosaicError(read.errorCode, "Failed to read " + input.string() + ": " + read.message);
             }
@@ -1604,6 +1745,11 @@ MosaicResult MosaicBuilder::stitchHorizontal(const std::vector<std::filesystem::
         for (auto& placement : result.placements) {
             placement.x *= outputScaleX;
             placement.y *= outputScaleY;
+            for (auto& k : placement.residuals) {
+                k.position *= placement.residualAlongY ? outputScaleY : outputScaleX;
+                k.x *= outputScaleX;
+                k.y *= outputScaleY;
+            }
             placement.dx *= outputScaleX;
             placement.dy *= outputScaleY;
             if (placement.autoAligned && sourceWidest > workingWidest) {
@@ -1626,6 +1772,9 @@ MosaicResult MosaicBuilder::stitchHorizontal(const std::vector<ImageBuffer>& ima
     }
     if (images.empty()) {
         return mosaicError("InputMissing", "At least one input image is required");
+    }
+    if (images.size() == 1 && options.alignment == MosaicAlignment::Auto) {
+        return mosaicError("InputMissing", "Star-aligned mosaics require at least two overlapping panels");
     }
     if (!validImage(images.front())) {
         return mosaicError("ImageBufferInvalid", "Input images must be non-empty finite float buffers");
@@ -1669,6 +1818,13 @@ MosaicResult MosaicBuilder::stitchHorizontal(const std::vector<ImageBuffer>& ima
             : manualPlacements(workingImages, options);
         if (options.alignment != MosaicAlignment::Auto) {
             progress.report(MosaicProgressStage::Aligning, 0.44, workingImages.size());
+        }
+        if (options.alignment == MosaicAlignment::Auto) {
+            for (std::size_t i = 1; i < placements.size(); ++i) {
+                if (placements[i].usedFallback)
+                    return mosaicError("MosaicInsufficientOverlap", "Panel " + std::to_string(i + 1) +
+                        " has no verified common stars connecting it to the first panel");
+            }
         }
         auto result = composeMosaic(workingImages, placements, options, progress);
         result.usedAutoAlignment = options.alignment == MosaicAlignment::Auto && matchedPairs > 0;

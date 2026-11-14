@@ -236,7 +236,8 @@ enum WorkspaceReportDecoder {
                 autoAligned: placementAutoAligned,
                 fallback: fallback,
                 reducedModel: reducedModel,
-                coarseAlignment: coarseAlignment
+                coarseAlignment: coarseAlignment,
+                locallyRefined: (placement["residuals"] as? [[Double]])?.isEmpty == false
             )
         }
         guard Set(placements.map(\.index)).count == expectedPanelCount else {

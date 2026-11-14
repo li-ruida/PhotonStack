@@ -1465,7 +1465,7 @@ private enum LocalizedTextCatalog {
         .previewMosaic: "Preview Mosaic",
         .overlapPixels: "Overlap pixels",
         .runMosaic: "Run Mosaic",
-        .mosaicNoPanels: "Assign at least one asset as Mosaic before running mosaic.",
+        .mosaicNoPanels: "Add panels that share an area of sky. Star alignment requires at least two panels.",
     ]
 
     private static let simplifiedChinese: [LocalizedTextKey: String] = [
@@ -1874,7 +1874,7 @@ private enum LocalizedTextCatalog {
         .previewMosaic: "预览接片",
         .overlapPixels: "重叠像素",
         .runMosaic: "运行接片",
-        .mosaicNoPanels: "运行接片前至少需要一个接片素材。",
+        .mosaicNoPanels: "添加有重叠天区的面板。星点配准至少需要两张面板。",
     ]
 
     static func text(_ key: LocalizedTextKey, language: AppLanguage) -> String {

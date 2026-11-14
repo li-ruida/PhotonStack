@@ -63,7 +63,14 @@ struct MosaicProgress {
 
 using MosaicProgressCallback = std::function<void(const MosaicProgress&)>;
 
+struct MosaicResidualKnot {
+    float position, x, y;
+};
+
 struct MosaicPlacement {
+    // Piecewise-linear residual in canvas pixels along the common sky strip.
+    std::vector<MosaicResidualKnot> residuals;
+    bool residualAlongY = true;
     float x = 0.0F;
     float y = 0.0F;
     float a = 1.0F;

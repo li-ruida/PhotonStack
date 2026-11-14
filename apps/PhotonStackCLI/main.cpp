@@ -2762,6 +2762,7 @@ int buildMasterFrame(const std::vector<std::string>& args) {
 int buildMosaic(const std::vector<std::string>& args) {
     std::optional<std::filesystem::path> outputPath;
     photonstack::MosaicOptions options;
+    bool explicitAlignment = false;
     std::vector<std::filesystem::path> inputFiles;
 
     for (std::size_t i = 0; i < args.size(); ++i) {
@@ -2827,13 +2828,12 @@ int buildMosaic(const std::vector<std::string>& args) {
                 printError("ArgumentMissing", "--alignment requires manual or auto");
                 return 1;
             }
+            explicitAlignment = true;
             const auto alignment = args[++i];
             if (alignment == "manual") {
                 options.alignment = photonstack::MosaicAlignment::Manual;
             } else if (alignment == "auto") {
                 options.alignment = photonstack::MosaicAlignment::Auto;
-                options.registration.matchTolerance = 4.0F;
-                options.registration.starDetection.sigmaThreshold = 2.0F;
             } else {
                 printError("ArgumentInvalid", "--alignment must be manual or auto");
                 return 1;
@@ -2902,6 +2902,15 @@ int buildMosaic(const std::vector<std::string>& args) {
     if (inputFiles.empty()) {
         printError("InputMissing", "mosaic requires at least one input image");
         return 1;
+    }
+
+    if (!explicitAlignment && inputFiles.size() >= 2 &&
+        std::all_of(inputFiles.begin(), inputFiles.end(), photonstack::isFitsPath)) {
+        options.alignment = photonstack::MosaicAlignment::Auto;
+    }
+    if (options.alignment == photonstack::MosaicAlignment::Auto) {
+        options.registration.matchTolerance = 4.0F;
+        options.registration.starDetection.sigmaThreshold = 2.0F;
     }
 
     std::optional<photonstack::MosaicProgressStage> lastMosaicStage;
@@ -3039,7 +3048,14 @@ int buildMosaic(const std::vector<std::string>& args) {
                   << ",\"fallback\":" << (placement.usedFallback ? "true" : "false")
                   << ",\"reducedModel\":" << (placement.usedReducedModel ? "true" : "false")
                   << ",\"coarseAlignment\":" << (placement.usedCoarseAlignment ? "true" : "false")
-                  << "}";
+                  << ",\"residualAxis\":\"" << (placement.residualAlongY ? "y" : "x") << "\""
+                  << ",\"residuals\":[";
+        for (std::size_t j = 0; j < placement.residuals.size(); ++j) {
+            const auto& knot = placement.residuals[j];
+            if (j > 0) std::cout << ",";
+            std::cout << "[" << knot.position << "," << knot.x << "," << knot.y << "]";
+        }
+        std::cout << "]}";
     }
     std::cout << "],\n"
               << "  \"output\": \"" << jsonEscape(outputPath->string()) << "\"\n"

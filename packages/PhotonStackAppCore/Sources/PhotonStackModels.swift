@@ -1870,7 +1870,7 @@ public struct ProcessingParameters: Codable, Equatable, Sendable {
         mosaicOverlapPixels: Int = 0,
         mosaicProjection: MosaicProjection = .planar,
         mosaicLayout: MosaicLayoutMode = .horizontal,
-        mosaicAlignment: MosaicAlignmentMode = .manual,
+        mosaicAlignment: MosaicAlignmentMode = .auto,
         mosaicBlendMode: MosaicBlendMode = .feather,
         mosaicExposureMatching: Bool = true,
         mosaicColumns: Int = 2,
@@ -2006,7 +2006,7 @@ public struct ProcessingParameters: Codable, Equatable, Sendable {
         mosaicOverlapPixels = try container.decodeIfPresent(Int.self, forKey: .mosaicOverlapPixels) ?? legacy.mosaicOverlapPixels
         mosaicProjection = try container.decodeIfPresent(MosaicProjection.self, forKey: .mosaicProjection) ?? legacy.mosaicProjection
         mosaicLayout = try container.decodeIfPresent(MosaicLayoutMode.self, forKey: .mosaicLayout) ?? legacy.mosaicLayout
-        mosaicAlignment = try container.decodeIfPresent(MosaicAlignmentMode.self, forKey: .mosaicAlignment) ?? legacy.mosaicAlignment
+        mosaicAlignment = try container.decodeIfPresent(MosaicAlignmentMode.self, forKey: .mosaicAlignment) ?? .manual
         mosaicBlendMode = try container.decodeIfPresent(MosaicBlendMode.self, forKey: .mosaicBlendMode) ?? legacy.mosaicBlendMode
         mosaicExposureMatching = try container.decodeIfPresent(Bool.self, forKey: .mosaicExposureMatching) ?? legacy.mosaicExposureMatching
         mosaicColumns = try container.decodeIfPresent(Int.self, forKey: .mosaicColumns) ?? legacy.mosaicColumns

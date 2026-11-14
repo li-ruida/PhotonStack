@@ -2350,6 +2350,41 @@ RegistrationResult matchDistortion(const ImageBuffer& reference, const ImageBuff
 
 } // namespace
 
+std::vector<std::array<float, 4>>
+Registration::overlapCentroids(const ImageBuffer& reference, const ImageBuffer& moving, const AffineTransform& seed) {
+    std::vector<std::array<float, 4>> pairs;
+    const unsigned step = std::max(32U, std::max(moving.width, moving.height) / 64);
+    const unsigned channel = moving.channels >= 3 ? 1 : 0;
+    // One peak per cell prevents bright clusters from dominating a narrow overlap.
+    for (unsigned y = 8; y + step + 8 < moving.height; y += step) {
+        for (unsigned x = 8; x + step + 8 < moving.width; x += step) {
+            const float rx = seed.a * x + seed.b * y + seed.dx, ry = seed.c * x + seed.d * y + seed.dy;
+            if (rx < -2.f * step || ry < -2.f * step || rx > reference.width + 2.f * step ||
+                ry > reference.height + 2.f * step)
+                continue;
+            float peak = -std::numeric_limits<float>::infinity();
+            unsigned px = x, py = y;
+            for (unsigned j = y; j < y + step; ++j)
+                for (unsigned k = x; k < x + step; ++k) {
+                    const float value = moving.pixels[(std::size_t(j) * moving.width + k) * moving.channels + channel];
+                    if (value > peak) {
+                        peak = value;
+                        px = k;
+                        py = j;
+                    }
+                }
+            const auto m = fitStarCentroid(moving, px, py);
+            if (!m.ok)
+                continue;
+            const float ex = seed.a * m.x + seed.b * m.y + seed.dx, ey = seed.c * m.x + seed.d * m.y + seed.dy;
+            const auto r = fitStarCentroid(reference, ex, ey);
+            if (r.ok && std::hypot(r.x - ex, r.y - ey) <= 2.5F)
+                pairs.push_back({r.x, r.y, m.x, m.y});
+        }
+    }
+    return pairs;
+}
+
 PreparedRegistrationReference Registration::prepareReference(ImageBuffer&& image, const RegistrationOptions& options,
                                                             bool forDistortion) const {
     PreparedRegistrationReference reference;

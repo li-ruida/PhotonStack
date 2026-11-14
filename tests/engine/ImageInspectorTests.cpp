@@ -35,6 +35,7 @@
 #include "photonstack/MasterFrameBuilder.hpp"
 #include "photonstack/MeteorLayerComposer.hpp"
 #include "photonstack/MosaicBuilder.hpp"
+#include "photonstack/StarCentroid.hpp"
 #include "photonstack/NoiseReducer.hpp"
 #include "photonstack/PhotonStackBridge.h"
 #include "photonstack/Registration.hpp"
@@ -7422,6 +7423,50 @@ void testMosaicBuilderAutoAffineGeometry() {
     std::filesystem::remove(movingPath);
 }
 
+void testMosaicCorrectsCurvedOverlap() {
+    photonstack::ImageBuffer reference;
+    reference.width = 512;
+    reference.height = 768;
+    reference.channels = 4;
+    reference.pixels.assign(reference.sampleCount(), 0.01F);
+    auto moving = reference;
+    std::vector<std::pair<float, float>> expectedCenters;
+    std::uint32_t state = 12345;
+    const auto jitter = [&state]() {
+        state = state * 1664525U + 1013904223U;
+        return static_cast<float>(state >> 8) / 16777216.0F;
+    };
+    for (int row = 0; row < 23; ++row) {
+        for (int column = 0; column < 7; ++column) {
+            const float x = 12 + 32 * column + 18 * jitter();
+            const float y = 12 + 32 * row + 18 * jitter();
+            const float height = (y - 384) / 384;
+            const float referenceX = x + 280 + 2.0F * height * height;
+            const float peak = 0.35F + 0.65F * jitter();
+            addGaussianStar(reference, referenceX, y, peak);
+            addGaussianStar(moving, x, y, peak);
+            expectedCenters.emplace_back(referenceX, y);
+        }
+    }
+    photonstack::MosaicOptions options;
+    options.alignment = photonstack::MosaicAlignment::Auto;
+    options.blendMode = photonstack::MosaicBlendMode::Average;
+    options.exposureMatching = false;
+    const auto result = photonstack::MosaicBuilder().stitchHorizontal({reference, moving}, options);
+    assert(result.ok);
+    assert(!result.placements[1].residuals.empty());
+    std::vector<float> errors;
+    for (const auto& [x, y] : expectedCenters) {
+        const float outputX = result.placements.front().x + x;
+        const float outputY = result.placements.front().y + y;
+        const auto fit = photonstack::fitStarCentroid(result.image, outputX, outputY);
+        if (fit.ok) errors.push_back(std::hypot(fit.x - outputX, fit.y - outputY));
+    }
+    assert(errors.size() > expectedCenters.size() * 0.8);
+    std::sort(errors.begin(), errors.end());
+    assert(errors[errors.size() * 9 / 10] < 0.2F);
+}
+
 void testMosaicBuilderAutoAffineExposureMatching() {
     constexpr float a = 1.008F;
     constexpr float b = -0.018F;
@@ -7589,6 +7634,10 @@ void testMosaicBuilderAutoGridUsesAvailableNeighbors() {
     assert(std::fabs((result.placements[3].x - result.placements[0].x) - 100.0F) < 3.0F);
     assert(std::fabs((result.placements[3].y - result.placements[0].y) - 70.0F) < 3.0F);
 
+    const auto reversed = builder.stitchHorizontal({topRight, topLeft}, options);
+    assert(reversed.ok && reversed.fallbackPanels == 0);
+    assert(std::fabs(reversed.placements[1].dx + 100.0F) < 3.0F);
+
     options.projection = photonstack::MosaicProjection::Cylindrical;
     const auto cylindrical = builder.stitchHorizontal({topLeft, topRight, makePanel(0.0F, 70.0F, 0.9F), bottomRight}, options);
     assert(cylindrical.ok);
@@ -7686,11 +7735,8 @@ void testMosaicBuilderPropagatesFallbackTrust() {
 
     const photonstack::MosaicBuilder builder;
     const auto result = builder.stitchHorizontal({blank, middle, right}, options);
-    assert(result.ok);
-    assert(result.placements[1].usedFallback);
-    assert(result.placements[2].autoAligned);
-    assert(result.placements[2].usedFallback);
-    assert(result.fallbackPanels == 2);
+    assert(!result.ok && result.image.empty());
+    assert(result.errorCode == "MosaicInsufficientOverlap");
 }
 
 void testMosaicBuilderExposureMatching() {
@@ -7847,6 +7893,11 @@ void testMosaicBuilderPreservesCoverageAndReportsExposure() {
     assert(transparentOverlap.image.pixels[overlapOffset + 3] > 0.999F);
     const auto transparentOnlyOffset = static_cast<std::size_t>(2) * transparentOverlap.image.channels;
     assert(transparentOverlap.image.pixels[transparentOnlyOffset + 3] < 0.001F);
+
+    auto partial = red;
+    partial.pixels[3] = 0.4F;
+    const auto feather = builder.stitchHorizontal({red, partial}, {.overlapPixels = 1});
+    assert(feather.ok && feather.image.pixels[overlapOffset + 3] == 1.0F);
 
     photonstack::ImageBuffer invalid = black;
     invalid.pixels.clear();
@@ -9751,6 +9802,7 @@ int main() {
     testMosaicBuilderGridLayout();
     testMosaicBuilderAutoAlignment();
     testMosaicBuilderAutoAffineGeometry();
+    testMosaicCorrectsCurvedOverlap();
     testMosaicBuilderAutoAffineExposureMatching();
     testMosaicBuilderAutoGridUsesAvailableNeighbors();
     testMosaicBuilderPropagatesFallbackTrust();

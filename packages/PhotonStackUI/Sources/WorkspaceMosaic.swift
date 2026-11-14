@@ -28,6 +28,16 @@ struct MosaicSection: View {
                     .foregroundStyle(.secondary)
             }
 
+            Button {
+                if let urls = NativeFilePanels.importAssetURLs(message: model.language == .simplifiedChinese
+                    ? "选择每个天区已堆叠的面板图像" : "Select the stacked image for each sky panel") {
+                    model.importMosaicPanels(from: urls)
+                }
+            } label: {
+                Label(model.language == .simplifiedChinese ? "添加拼接面板…" : "Add mosaic panels…", systemImage: "plus")
+            }
+            .disabled(!model.canImportAssetsImmediately || !model.canModifyProcessingConfiguration)
+
             Stepper(
                 "\(model.localized(.overlapPixels)) \(parameters.mosaicOverlapPixels)",
                 value: $parameters.mosaicOverlapPixels,
@@ -100,33 +110,40 @@ struct MosaicSection: View {
                 .buttonStyle(.bordered)
                 .disabled(plan.suggestedOverlapPixels == nil || model.isProcessing)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(model.localized(.mosaicEstimatedSize))
-                        Spacer()
-                        if let width = plan.estimatedWidth, let height = plan.estimatedHeight {
-                            Text("\(width) x \(height)")
-                                .font(.system(.caption, design: .monospaced))
-                        } else {
-                            Text(model.localized(.mosaicMissingMetadata))
+                if parameters.mosaicAlignment == .manual {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(model.localized(.mosaicEstimatedSize))
+                            Spacer()
+                            if let width = plan.estimatedWidth, let height = plan.estimatedHeight {
+                                Text("\(width) x \(height)")
+                                    .font(.system(.caption, design: .monospaced))
+                            } else {
+                                Text(model.localized(.mosaicMissingMetadata))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
+                        if plan.missingMetadataCount > 0 {
+                            Text("\(model.localized(.mosaicMissingMetadata)): \(plan.missingMetadataCount)")
                                 .foregroundStyle(.secondary)
                         }
-                    }
 
-                    if plan.missingMetadataCount > 0 {
-                        Text("\(model.localized(.mosaicMissingMetadata)): \(plan.missingMetadataCount)")
-                            .foregroundStyle(.secondary)
+                        if plan.hasHeightMismatch {
+                            Text(model.localized(.mosaicHeightMismatch))
+                                .foregroundStyle(.orange)
+                        }
                     }
+                    .font(.caption)
 
-                    if plan.hasHeightMismatch {
-                        Text(model.localized(.mosaicHeightMismatch))
-                            .foregroundStyle(.orange)
-                    }
+                    MosaicLayoutPreviewView(plan: plan)
+                        .frame(height: 72)
+                } else {
+                    Text(model.language == .simplifiedChinese
+                        ? "根据重叠天区的共同星点定位并合成。面板需要有重叠区域。"
+                        : "Shared stars in the overlap determine the placement of each panel.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                .font(.caption)
-
-                MosaicLayoutPreviewView(plan: plan)
-                    .frame(height: 72)
 
                 ForEach(Array(model.mosaicAssets.enumerated()), id: \.element.id) { index, asset in
                     HStack(spacing: 8) {
@@ -237,6 +254,9 @@ private struct MosaicQualityReportView: View {
                     }
                     VStack(alignment: .trailing, spacing: 1) {
                         Text("\(placement.matches)")
+                        if placement.locallyRefined {
+                            Text(model.language == .simplifiedChinese ? "星点精校" : "Locally refined")
+                        }
                         if placement.references > 0 {
                             Label("\(placement.references)", systemImage: "link")
                         }

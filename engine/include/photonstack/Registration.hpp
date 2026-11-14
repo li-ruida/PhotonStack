@@ -142,6 +142,9 @@ class Registration {
     // errors are reported on matching, like the single-image-pair overloads.
     PreparedRegistrationReference prepareReference(ImageBuffer&& reference, const RegistrationOptions& options,
                                                     bool forDistortion = false) const;
+    // Native centroids in reference x/y, moving x/y order for valid, coarsely aligned panels.
+    static std::vector<std::array<float, 4>> overlapCentroids(const ImageBuffer& reference, const ImageBuffer& moving,
+                                            const AffineTransform& seed);
     RegistrationResult estimateTranslation(const PreparedRegistrationReference& reference, const ImageBuffer& moving) const;
     RegistrationResult estimateSimilarity(const PreparedRegistrationReference& reference, const ImageBuffer& moving) const;
     RegistrationResult estimateAffine(const PreparedRegistrationReference& reference, const ImageBuffer& moving) const;

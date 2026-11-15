@@ -2374,7 +2374,9 @@ RegistrationResult matchDistortion(const ImageBuffer& reference, const ImageBuff
 std::vector<std::array<float, 4>>
 Registration::overlapCentroids(const ImageBuffer& reference, const ImageBuffer& moving, const AffineTransform& seed) {
     std::vector<std::array<float, 4>> pairs;
-    const unsigned step = std::max(32U, std::max(moving.width, moving.height) / 64);
+    // At thumbnail scale a 32-pixel cell can leave too few independent stars in a narrow overlap.
+    const unsigned minimumCell = std::clamp(std::max(moving.width, moving.height) / 16, 16U, 32U);
+    const unsigned step = std::max(minimumCell, std::max(moving.width, moving.height) / 64);
     const unsigned channel = moving.channels >= 3 ? 1 : 0;
     // One peak per cell prevents bright clusters from dominating a narrow overlap.
     for (unsigned y = 8; y + step + 8 < moving.height; y += step) {
@@ -2404,6 +2406,38 @@ Registration::overlapCentroids(const ImageBuffer& reference, const ImageBuffer& 
         }
     }
     return pairs;
+}
+
+RegistrationResult Registration::refineOverlapAffine(const ImageBuffer& reference, const ImageBuffer& moving,
+    const AffineTransform& seed, const std::vector<std::array<float, 4>>& centroids, std::size_t minimumMatches) {
+    // Reserve one cell in four to evaluate the proposed correction independently.
+    std::vector<MatchedStarPair> pairs;
+    std::vector<std::size_t> training, validation;
+    for (const auto& p : centroids) {
+        (pairs.size() % 4 == 0 ? validation : training).push_back(pairs.size());
+        pairs.push_back({.reference = {.x = p[0], .y = p[1]}, .moving = {.x = p[2], .y = p[3]}});
+    }
+    if (validation.size() < 5) return {};
+    const auto fit = fitCentroidModel(pairs, training, true, std::max<std::size_t>(12, minimumMatches), 2.5F, reference);
+    if (!fit.ok) return {};
+    const auto& t = fit.transform;
+    for (const float x : {0.F, static_cast<float>(moving.width - 1)})
+        for (const float y : {0.F, static_cast<float>(moving.height - 1)})
+            if (std::hypot((t.a-seed.a)*x + (t.b-seed.b)*y + t.dx-seed.dx,
+                           (t.c-seed.c)*x + (t.d-seed.d)*y + t.dy-seed.dy) > 3.F) return {};
+
+    std::vector<float> before, after;
+    for (const auto i : validation) {
+        before.push_back(affineResidual(pairs[i], seed));
+        after.push_back(affineResidual(pairs[i], t));
+    }
+    if (centroidMedian(after) + .01F >= .85F * centroidMedian(before)) return {};
+    RegistrationResult result;
+    result.ok = true;
+    result.affine = t;
+    result.matches = training.size();
+    for (auto i : training) result.alignedMovingStars.push_back({pairs[i].moving.x, pairs[i].moving.y});
+    return result;
 }
 
 PreparedRegistrationReference Registration::prepareReference(ImageBuffer&& image, const RegistrationOptions& options,

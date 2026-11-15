@@ -2754,6 +2754,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 for path in operation.parameters.values where path.hasPrefix("/") && !path.contains("\n") {
                     add(URL(fileURLWithPath: path))
                 }
+                if let selection = operation.parameters["panelSources"], let folders = try? MosaicPanelFolder.decodeSelection(selection) {
+                    for folder in folders.values { folder.frames.forEach { add($0) } }
+                }
                 if let report = operation.parameters["report"] {
                     add(URL(fileURLWithPath: report).deletingLastPathComponent().appendingPathComponent(DeepSkyResultReuse.receiptFileName))
                 }
@@ -2774,7 +2777,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         add(project.layers)
         // Imported products can live inside an app-managed cache directory.
         // Once imported, their source bytes are originals regardless of name.
-        project.assets.forEach { add($0.originalURL) }
+        for asset in project.assets {
+            add(asset.originalURL)
+            asset.mosaicFolder?.frames.forEach { add($0) }
+        }
         if let report = project.deepSkySettings?.lastReport {
             for path in [report.master, report.backgroundMaster, report.developed,
                          report.rejectionLow, report.rejectionHigh, report.sensorPatternReport ?? ""]
@@ -3026,6 +3032,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     private func adoptMosaicFolders(_ groups: [MosaicPanelFolder]) -> Bool {
+        project.preserveLegacyMosaicSelections()
         cancelRawPreviewUpdate()
         var changed = false
         for group in groups {
@@ -6590,7 +6597,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         for (index, panel) in panels.enumerated() {
             try Task.checkCancellation()
             guard let group = panel.mosaicFolder, group.frames.count > 1 else {
-                inputs.append(panel.originalURL)
+                inputs.append(panel.mosaicFolder?.frames.first ?? panel.originalURL)
                 continue
             }
             do {
@@ -6671,6 +6678,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 "panels": String(panels.count),
                 "panelIDs": panels.map(\.id.uuidString).joined(separator: ","),
                 "panelSignature": self.mosaicInputSignature(panels),
+                "panelSources": try MosaicPanelFolder.encodeSelection(panels),
                 "overlapPixels": String(self.parameters.mosaicOverlapPixels),
                 "projection": self.parameters.mosaicProjection.rawValue,
                 "layout": self.parameters.mosaicLayout.rawValue,
@@ -10660,7 +10668,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         _ operation: EditOperation,
         mode: EditGraphReplayMode
     ) async throws -> URL {
-        let panels = try replayAssetsParameter("panelIDs", in: operation, fallback: mosaicAssets)
+        var panels = try replayAssetsParameter("panelIDs", in: operation, fallback: mosaicAssets)
+        if let value = operation.parameters["panelSources"] {
+            let folders = try MosaicPanelFolder.decodeSelection(value)
+            for index in panels.indices { panels[index].mosaicFolder = folders[panels[index].id.uuidString] }
+        }
         guard panels.isEmpty == false else {
             throw EditGraphReplayError(
                 message: "\(localized(.editGraphInvalidRecordedAssets)): \(operation.kind.rawValue)"
@@ -10678,8 +10690,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             defaultValue: parameters.mosaicExposureMatching
         )
         let columns = intParameter("columns", in: operation, defaultValue: parameters.mosaicColumns)
-        let cacheInput = panels.map(\.originalURL.path).joined(separator: "|")
-        let cacheURL = URL(fileURLWithPath: cacheInput)
+        let cacheURL = panels[0].originalURL
         let output = makeCachedPreviewOutput(
             prefix: "replay-mosaic",
             input: cacheURL,
@@ -10719,16 +10730,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 blendMode: blendMode,
                 exposureMatching: exposureMatching,
                 columns: columns,
-                previewWidth: nil
+                previewWidth: mode == .preview ? parameters.previewWidth : nil
             )
             try Task.checkCancellation()
             if mode != .fullResolutionExport {
-                _ = try await processingService.makePreview(
-                    input: mosaicOutput,
-                    output: output,
-                    width: parameters.previewWidth,
-                    rawOptions: parameters.rawProcessingOptions
-                )
+                _ = try await renderMosaicPreview(input: mosaicOutput, output: output, width: parameters.previewWidth)
             }
             return result
         }
@@ -12957,7 +12963,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     private func makeCachedMosaicPreviewOutput(for panels: [PhotonStackAsset]) -> URL {
-        let cacheInput = URL(fileURLWithPath: panels.map(\.originalURL.path).joined(separator: "|"))
+        let cacheInput = panels.first?.originalURL ?? previewDirectory
         return makeCachedPreviewOutput(
             prefix: "mosaic-preview",
             input: cacheInput,

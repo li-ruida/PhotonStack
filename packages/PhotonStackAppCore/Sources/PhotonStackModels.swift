@@ -503,9 +503,10 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
         let oldName = oldURL.lastPathComponent
         let replacementName = replacementURL.lastPathComponent
 
-        if var folder = assets[assetIndex].mosaicFolder {
+        for index in assets.indices {
+            guard var folder = assets[index].mosaicFolder else { continue }
             folder.frames = folder.frames.map { Self.urlsReferenceSameFile($0, oldURL) ? replacementURL : $0 }
-            assets[assetIndex].mosaicFolder = folder
+            assets[index].mosaicFolder = folder
         }
         assets[assetIndex].originalURL = replacementURL
         assets[assetIndex].kind = AssetKind.detect(from: replacementURL)
@@ -618,7 +619,15 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
         oldPath: String,
         replacementPath: String
     ) -> [String: String] {
-        values.mapValues { value in
+        var updated = values
+        if let selection = values["panelSources"], var folders = try? MosaicPanelFolder.decodeSelection(selection) {
+            for (key, var group) in folders {
+                group.frames = group.frames.map { storedPath($0.path, references: oldPath) ? URL(fileURLWithPath: replacementPath) : $0 }
+                folders[key] = group
+            }
+            updated["panelSources"] = try? MosaicPanelFolder.encodeFolders(folders)
+        }
+        return updated.mapValues { value in
             if storedPath(value, references: oldPath) { return replacementPath }
             var recipe = DeepSkySettings.replacingPath(inRecipe: value, oldPath: oldPath, newPath: replacementPath)
             recipe = DeepSkySettings.replacingPath(inRecipe: recipe,

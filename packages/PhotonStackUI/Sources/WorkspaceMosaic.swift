@@ -28,25 +28,27 @@ struct MosaicSection: View {
                     .foregroundStyle(.secondary)
             }
 
-            Button {
-                if let urls = NativeFilePanels.mosaicFolders(chinese: model.language == .simplifiedChinese) {
-                    model.chooseMosaicWorkflow(true, adoptExistingLights: false)
-                    model.importAssets(from: urls)
+            if !model.usesMosaicWorkflow {
+                Button {
+                    if let urls = NativeFilePanels.mosaicFolders(chinese: model.language == .simplifiedChinese) {
+                        model.chooseMosaicWorkflow(true, adoptExistingLights: false)
+                        model.importAssets(from: urls)
+                    }
+                } label: {
+                    Label(model.language == .simplifiedChinese ? "导入天区文件夹…" : "Add panel folders…", systemImage: "folder.badge.plus")
                 }
-            } label: {
-                Label(model.language == .simplifiedChinese ? "导入天区文件夹…" : "Add panel folders…", systemImage: "folder.badge.plus")
-            }
-            .disabled(!model.canImportAssetsImmediately || !model.canModifyProcessingConfiguration)
+                .disabled(!model.canImportAssetsImmediately || !model.canModifyProcessingConfiguration)
 
-            Button {
-                if let urls = NativeFilePanels.importAssetURLs(message: model.language == .simplifiedChinese
-                    ? "选择每个天区已堆叠的面板图像" : "Select the stacked image for each sky panel") {
-                    model.importMosaicPanels(from: urls)
+                Button {
+                    if let urls = NativeFilePanels.importAssetURLs(message: model.language == .simplifiedChinese
+                        ? "选择每个天区已堆叠的面板图像" : "Select the stacked image for each sky panel") {
+                        model.importMosaicPanels(from: urls)
+                    }
+                } label: {
+                    Label(model.language == .simplifiedChinese ? "导入已堆栈母片…" : "Add stacked masters…", systemImage: "plus")
                 }
-            } label: {
-                Label(model.language == .simplifiedChinese ? "导入已堆栈母片…" : "Add stacked masters…", systemImage: "plus")
+                .disabled(!model.canImportAssetsImmediately || !model.canModifyProcessingConfiguration)
             }
-            .disabled(!model.canImportAssetsImmediately || !model.canModifyProcessingConfiguration)
 
             Stepper(
                 "\(model.localized(.overlapPixels)) \(parameters.mosaicOverlapPixels)",
@@ -207,29 +209,31 @@ struct MosaicSection: View {
                     .padding(.vertical, 2)
                 }
 
-                if let report = model.mosaicQualityReport {
+                if let report = model.visibleMosaicReport {
                     MosaicQualityReportView(model: model, report: report)
                 }
             }
 
-            HStack {
-                Button {
-                    model.startRunMosaicPreview()
-                } label: {
-                    Label(model.localized(.previewMosaic), systemImage: "eye")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .disabled(model.canRunMosaic == false || model.isProcessing)
+            if !model.usesMosaicWorkflow {
+                HStack {
+                    Button {
+                        model.startRunMosaicPreview()
+                    } label: {
+                        Label(model.localized(.previewMosaic), systemImage: "eye")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.canRunMosaic == false || model.isProcessing)
 
-                Button {
-                    model.startRunMosaic()
-                } label: {
-                    Label(model.localized(.runMosaic), systemImage: "rectangle.3.group")
-                        .frame(maxWidth: .infinity)
+                    Button {
+                        model.startRunMosaic()
+                    } label: {
+                        Label(model.localized(.runMosaic), systemImage: "rectangle.3.group")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.canRunMosaic == false || model.isProcessing)
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.canRunMosaic == false || model.isProcessing)
             }
         }
         .disabled(model.canModifyProcessingConfiguration == false)

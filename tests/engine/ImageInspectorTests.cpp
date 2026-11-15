@@ -1,3 +1,4 @@
+#include <random>
 #include <cassert>
 #include <algorithm>
 #include <bit>
@@ -7711,6 +7712,46 @@ void testMosaicBuilderAutoGridUsesAvailableNeighbors() {
     assert(std::fabs((affinePlacement.y - affineGrid.placements[0].y) - geometries[3].y) < 3.0F);
 }
 
+void testMosaicUsesLaterBridgePanel() {
+    photonstack::ImageBuffer field;
+    field.width = 680;
+    field.height = 192;
+    field.channels = 4;
+    field.pixels.assign(field.sampleCount(), .01F);
+    makeOpaque(field);
+    std::mt19937 random(1562);
+    std::uniform_real_distribution<float> sample(0.F, 1.F);
+    for (int i = 0; i < 550; ++i) {
+        const auto x = 5 + sample(random) * 670;
+        const auto y = 5 + sample(random) * 182;
+        addGaussianStar(field, x, y, .3F + sample(random));
+    }
+    auto panel = [&](unsigned offset, float gain) {
+        photonstack::ImageBuffer image;
+        image.width = 300;
+        image.height = field.height;
+        image.channels = field.channels;
+        image.pixels.resize(image.sampleCount());
+        for (unsigned y = 0; y < image.height; ++y)
+            for (unsigned x = 0; x < image.width; ++x)
+                for (unsigned c = 0; c < image.channels; ++c)
+                    image.pixels[(y * image.width + x) * 4 + c] =
+                        field.pixels[(y * field.width + x + offset) * 4 + c] * (c == 3 ? 1.F : gain);
+        return image;
+    };
+    const auto left = panel(0, 1.F), middle = panel(190, .8F), right = panel(380, 1.3F);
+    photonstack::MosaicOptions options;
+    options.alignment = photonstack::MosaicAlignment::Auto;
+    options.overlapPixels = 110;
+    const auto result = photonstack::MosaicBuilder().stitchHorizontal({left, right, middle}, options);
+    assert(result.ok && result.exposureMatched && result.fallbackPanels == 0);
+    assert(std::abs(result.placements[1].x - result.placements[0].x - 380.F) < .2F);
+    const auto x = static_cast<unsigned>(std::round(result.placements[0].x)) + 630;
+    const auto y = static_cast<unsigned>(std::round(result.placements[0].y)) + 80;
+    assert(std::abs(result.image.pixels[(y * result.image.width + x) * 4] -
+                    field.pixels[(80 * field.width + 630) * 4]) < .002F);
+}
+
 void testMosaicBuilderPropagatesFallbackTrust() {
     photonstack::ImageBuffer blank;
     blank.width = 180;
@@ -9813,6 +9854,7 @@ int main() {
     testMosaicCorrectsCurvedOverlap();
     testMosaicBuilderAutoAffineExposureMatching();
     testMosaicBuilderAutoGridUsesAvailableNeighbors();
+    testMosaicUsesLaterBridgePanel();
     testMosaicBuilderPropagatesFallbackTrust();
     testMosaicBuilderExposureMatching();
     testMosaicBuilderPreservesCoverageAndReportsExposure();

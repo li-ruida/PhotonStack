@@ -147,6 +147,8 @@ class Registration {
     // Native centroids in reference x/y, moving x/y order for valid, coarsely aligned panels.
     static std::vector<std::array<float, 4>> overlapCentroids(const ImageBuffer& reference, const ImageBuffer& moving,
                                             const AffineTransform& seed);
+    static RegistrationResult refineOverlapAffine(const ImageBuffer& reference, const ImageBuffer& moving,
+        const AffineTransform& seed, const std::vector<std::array<float, 4>>& centroids, std::size_t minimumMatches);
     RegistrationResult estimateTranslation(const PreparedRegistrationReference& reference, const ImageBuffer& moving) const;
     RegistrationResult estimateSimilarity(const PreparedRegistrationReference& reference, const ImageBuffer& moving) const;
     RegistrationResult estimateAffine(const PreparedRegistrationReference& reference, const ImageBuffer& moving) const;

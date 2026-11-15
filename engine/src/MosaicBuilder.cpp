@@ -1,11 +1,15 @@
 #include "photonstack/MosaicBuilder.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <limits>
 #include <new>
 #include <optional>
+#include <numeric>
+#include <span>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -13,6 +17,7 @@
 #include "photonstack/ImageCodec.hpp"
 #include "photonstack/ImageResizer.hpp"
 #include "photonstack/Registration.hpp"
+#include "photonstack/ParallelRanges.hpp"
 
 #include "StraightAlphaSampling.hpp"
 
@@ -133,6 +138,29 @@ class MosaicProgressReporter {
     std::size_t panelCount_ = 0;
     double lastProgress_ = 0.0;
 };
+
+// Workers own distinct output rows. Panels and pyramid levels are still accumulated
+// in order, and only the calling thread reports progress or propagates an error.
+template <class Row, class Progress>
+bool blendRows(int first, std::uint32_t count, std::size_t width, Row row, Progress progress) {
+    const auto grain = std::max<std::size_t>(1, 16384 / std::max<std::size_t>(1, width));
+    constexpr std::size_t batchRows = 256;
+    for (std::size_t offset = 0; offset < count; offset += batchRows) {
+        const auto batch = std::min(batchRows, count - offset);
+        std::atomic<bool> invalid{false};
+        detail::parallelRanges(batch, grain, [&](std::size_t begin, std::size_t end) noexcept {
+            for (auto y = begin; y < end; ++y) {
+                if (!row(first + static_cast<int>(offset + y))) {
+                    invalid.store(true, std::memory_order_relaxed);
+                    break;
+                }
+            }
+        });
+        if (invalid.load(std::memory_order_relaxed)) return false;
+        progress(static_cast<std::uint32_t>(offset + batch));
+    }
+    return true;
+}
 
 float sampleBilinear(const ImageBuffer& image, float x, float y, std::uint16_t channel) {
     return detail::sampleBilinearStraightAlpha(image, x, y, channel, false);
@@ -522,7 +550,6 @@ struct MosaicAlignmentCandidate {
     MosaicTransformModel transformModel = MosaicTransformModel::Manual;
     std::size_t matches = 0;
     float score = 0.0F;
-    bool referenceTrusted = false;
     bool usedReducedModel = false;
 };
 
@@ -566,9 +593,6 @@ MosaicPlacement fuseAlignmentCandidates(
     std::vector<const MosaicAlignmentCandidate*> consensus;
     consensus.reserve(candidates.size());
     for (const auto& candidate : candidates) {
-        if (candidate.referenceTrusted != best->referenceTrusted) {
-            continue;
-        }
         if (&candidate == &*best ||
             placementDisagreement(candidate.placement, best->placement, image) <= consistencyTolerance) {
             consensus.push_back(&candidate);
@@ -618,15 +642,14 @@ MosaicPlacement fuseAlignmentCandidates(
     placement.matches = acceptedMatches;
     placement.referenceCount = consensus.size();
     placement.autoAligned = true;
-    placement.usedFallback = !best->referenceTrusted;
+    placement.usedFallback = false;
     return placement;
 }
 
 // Estimate smooth residual drift along the overlap. Use robust bin medians and
 // require improvement on independent stars before changing any sampling position.
-std::size_t refineCommonSky(const ImageBuffer& reference, const ImageBuffer& moving, const AffineTransform& seed,
+std::size_t refineCommonSky(const std::vector<std::array<float, 4>>& pairs,
                             const MosaicPlacement& parent, MosaicPlacement& placement, bool horizontal) {
-    const auto pairs = Registration::overlapCentroids(reference, moving, seed);
     if (pairs.size() < 64)
         return 0;
     std::vector<MosaicResidualKnot> train, validation;
@@ -678,6 +701,7 @@ std::vector<MosaicPlacement> automaticPlacements(
     const std::vector<ImageBuffer>& images,
     const MosaicOptions& options,
     std::size_t& matchedPairs,
+    std::vector<std::size_t>& connected,
     MosaicProgressReporter& progress
 ) {
     auto placements = manualPlacements(images, options);
@@ -697,22 +721,17 @@ std::vector<MosaicPlacement> automaticPlacements(
 
     progress.report(MosaicProgressStage::Aligning, 0.24, images.empty() ? 0 : 1);
 
-    for (std::size_t index = 1; index < images.size(); ++index) {
-        struct Neighbor {
-            std::size_t index = 0;
-            bool horizontal = false;
-        };
-        std::vector<Neighbor> neighbors;
-        if (index % columns != 0) {
-            neighbors.push_back({.index = index - 1, .horizontal = true});
-        }
-        if (index >= columns) {
-            neighbors.push_back({.index = index - columns, .horizontal = false});
-        }
-
+    struct Neighbor {
+        std::size_t index;
+        bool horizontal;
+    };
+    std::set<std::pair<std::size_t, std::size_t>> tried;
+    connected = {0};
+    auto attach = [&](std::size_t index, const std::vector<Neighbor>& neighbors, bool layoutNeighbor) {
         std::vector<MosaicAlignmentCandidate> candidates;
         candidates.reserve(neighbors.size());
         for (const auto& neighbor : neighbors) {
+            if (placements[neighbor.index].usedFallback || !tried.emplace(neighbor.index, index).second) continue;
             const auto& registrationReferenceImage = usedCoarseAlignment
                 ? registrationImages[neighbor.index].image
                 : images[neighbor.index];
@@ -722,8 +741,7 @@ std::vector<MosaicPlacement> automaticPlacements(
             std::optional<MosaicAlignmentCandidate> best;
             AffineTransform bestRelative;
             double bestCorrelation = -1;
-            const unsigned directions = options.projection == MosaicProjection::Planar ? 4 : 1;
-            for (unsigned attempt = 0; attempt < directions; ++attempt) {
+            for (unsigned attempt = 0; attempt < 4; ++attempt) {
                 const bool horizontal = attempt < 2 ? neighbor.horizontal : !neighbor.horizontal;
                 const bool forward = attempt % 2 == 0;
                 const auto registrationReference = registrationStrip(
@@ -758,7 +776,6 @@ std::vector<MosaicPlacement> automaticPlacements(
                     continue;
                 }
 
-                const bool referenceTrusted = !placements[neighbor.index].usedFallback;
                 const float modelWeight = registrationResult.usedFallback ? 0.85F : 1.0F;
                 const float score = static_cast<float>(registrationResult.matches) *
                                     std::max(0.05F, registrationResult.inlierRatio) * modelWeight;
@@ -767,7 +784,10 @@ std::vector<MosaicPlacement> automaticPlacements(
                 // Tiny synthetic or thumbnail panels have too few interior samples for a contrast test.
                 const bool small = std::min({registrationMoving.image.width, registrationMoving.image.height,
                                              registrationReference.image.width, registrationReference.image.height}) < 32;
-                if (directions > 1 && ((!small && correlation < 0.25) || correlation <= bestCorrelation)) continue;
+                // Cylindrical resampling changes the local shape of stars. Prefer the
+                // configured direction when its star geometry is verified.
+                const bool preferredCylinder = layoutNeighbor && attempt == 0 && options.projection == MosaicProjection::Cylindrical;
+                if (!preferredCylinder && ((!small && correlation < 0.25) || correlation <= bestCorrelation)) continue;
                 bestCorrelation = correlation;
                 bestRelative = fullTransform;
                 best = MosaicAlignmentCandidate{
@@ -775,7 +795,6 @@ std::vector<MosaicPlacement> automaticPlacements(
                     .transformModel = registrationTransformModel(registrationResult),
                     .matches = registrationResult.matches,
                     .score = score,
-                    .referenceTrusted = referenceTrusted,
                     .usedReducedModel = registrationResult.usedFallback,
                 };
                 for (const auto& star : registrationResult.alignedMovingStars) {
@@ -784,7 +803,7 @@ std::vector<MosaicPlacement> automaticPlacements(
                     best->placement.alignmentStars.push_back({(star[0] + registrationMoving.originX) / sx,
                                                              (star[1] + registrationMoving.originY) / sy});
                 }
-                if (small || correlation >= 0.85) break;
+                if (preferredCylinder || small || correlation >= 0.85) break;
             }
             if (best) {
                 best->affineMatchCount = best->matches;
@@ -793,32 +812,26 @@ std::vector<MosaicPlacement> automaticPlacements(
                     const auto& parent = placements[neighbor.index];
                     const bool horizontal = std::abs(bestRelative.dx) / images[index].width >=
                                             std::abs(bestRelative.dy) / images[index].height;
-                    const auto count = refineCommonSky(images[neighbor.index], images[index], bestRelative, parent,
-                                                       best->placement, horizontal);
-                    if (count)
+                    const auto pairs = Registration::overlapCentroids(images[neighbor.index], images[index], bestRelative);
+                    const auto count = refineCommonSky(pairs, parent, best->placement, horizontal);
+                    if (count) {
                         best->matches = count;
+                    } else {
+                        auto refined = Registration::refineOverlapAffine(images[neighbor.index], images[index],
+                            bestRelative, pairs, registrationOptions.minimumMatches);
+                        if (refined.ok) {
+                            best->placement = composePlacement(parent, refined.affine);
+                            best->transformModel = MosaicTransformModel::Affine;
+                            best->usedReducedModel = false;
+                            best->matches = best->affineMatchCount = refined.matches;
+                            best->placement.alignmentStars = best->affineStars = std::move(refined.alignedMovingStars);
+                        }
+                    }
                 }
-                candidates.push_back(*best);
+                candidates.push_back(std::move(*best));
             }
         }
-        if (candidates.empty()) {
-            const double fraction = images.size() <= 1
-                ? 1.0
-                : static_cast<double>(index) / static_cast<double>(images.size() - 1);
-            progress.report(MosaicProgressStage::Aligning, 0.24 + 0.20 * fraction, index + 1);
-            continue;
-        }
-
-        const bool hasTrustedCandidate = std::any_of(
-            candidates.begin(), candidates.end(),
-            [](const MosaicAlignmentCandidate& candidate) { return candidate.referenceTrusted; });
-        if (hasTrustedCandidate) {
-            candidates.erase(
-                std::remove_if(
-                    candidates.begin(), candidates.end(),
-                    [](const MosaicAlignmentCandidate& candidate) { return !candidate.referenceTrusted; }),
-                candidates.end());
-        }
+        if (candidates.empty()) return;
 
         std::size_t acceptedMatches = 0;
         auto placement = fuseAlignmentCandidates(
@@ -826,10 +839,25 @@ std::vector<MosaicPlacement> automaticPlacements(
         placement.usedCoarseAlignment = usedCoarseAlignment;
         placements[index] = placement;
         matchedPairs += acceptedMatches;
-        const double fraction = images.size() <= 1
-            ? 1.0
-            : static_cast<double>(index) / static_cast<double>(images.size() - 1);
+        connected.push_back(index);
+        const double fraction = static_cast<double>(connected.size() - 1) / (images.size() - 1);
         progress.report(MosaicProgressStage::Aligning, 0.24 + 0.20 * fraction, index + 1);
+    };
+
+    // Prefer the requested grid: its two adjacent observations can be fused.
+    for (std::size_t index = 1; index < images.size(); ++index) {
+        std::vector<Neighbor> neighbors;
+        if (index % columns != 0) neighbors.push_back({index - 1, true});
+        if (index >= columns) neighbors.push_back({index - columns, false});
+        attach(index, neighbors, true);
+    }
+    // A folder's name or selection order need not correspond to a sky coordinate.
+    // Grow from verified panels; new connections can bridge an earlier missing edge.
+    for (std::size_t cursor = 0; connected.size() < images.size() && cursor < connected.size(); ++cursor) {
+        const auto reference = connected[cursor];
+        for (std::size_t moving = 1; moving < images.size(); ++moving) {
+            if (placements[moving].usedFallback) attach(moving, {{reference, true}}, false);
+        }
     }
 
     progress.report(MosaicProgressStage::Aligning, 0.44, images.size());
@@ -941,13 +969,14 @@ ChannelSamples overlapSamples(
     const std::vector<MosaicPlacement>& placements,
     const std::vector<ExposureCorrection>& corrections,
     std::size_t movingIndex,
+    std::span<const std::size_t> references,
     bool clampColor
 ) {
     ChannelSamples samples;
     const auto& moving = images[movingIndex];
     const auto movingBounds = transformedBounds(moving, placements[movingIndex]);
 
-    for (std::size_t referenceIndex = 0; referenceIndex < movingIndex; ++referenceIndex) {
+    for (const auto referenceIndex : references) {
         const auto& reference = images[referenceIndex];
         const auto referenceBounds = transformedBounds(reference, placements[referenceIndex]);
         const int left = static_cast<int>(std::ceil(std::max(referenceBounds.minX, movingBounds.minX)));
@@ -999,6 +1028,7 @@ double median(std::vector<double>& values) {
 std::vector<ExposureCorrection> exposureCorrections(
     const std::vector<ImageBuffer>& images,
     const std::vector<MosaicPlacement>& placements,
+    std::span<const std::size_t> order,
     bool& applied,
     MosaicProgressReporter& progress,
     bool clampColor
@@ -1006,12 +1036,13 @@ std::vector<ExposureCorrection> exposureCorrections(
     std::vector<ExposureCorrection> corrections(images.size());
     applied = false;
     progress.report(MosaicProgressStage::ExposureMatching, 0.44, images.empty() ? 0 : 1);
-    for (std::size_t imageIndex = 1; imageIndex < images.size(); ++imageIndex) {
-        auto samples = overlapSamples(images, placements, corrections, imageIndex, clampColor);
+    for (std::size_t position = 1; position < order.size(); ++position) {
+        const auto imageIndex = order[position];
+        auto samples = overlapSamples(images, placements, corrections, imageIndex, order.first(position), clampColor);
         if (samples.samples < 16) {
             const double fraction = images.size() <= 1
                 ? 1.0
-                : static_cast<double>(imageIndex) / static_cast<double>(images.size() - 1);
+                : static_cast<double>(position) / static_cast<double>(images.size() - 1);
             progress.report(MosaicProgressStage::ExposureMatching, 0.44 + 0.06 * fraction, imageIndex + 1);
             continue;
         }
@@ -1074,7 +1105,7 @@ std::vector<ExposureCorrection> exposureCorrections(
         applied = true;
         const double fraction = images.size() <= 1
             ? 1.0
-            : static_cast<double>(imageIndex) / static_cast<double>(images.size() - 1);
+            : static_cast<double>(position) / static_cast<double>(images.size() - 1);
         progress.report(MosaicProgressStage::ExposureMatching, 0.44 + 0.06 * fraction, imageIndex + 1);
     }
     progress.report(MosaicProgressStage::ExposureMatching, 0.50, images.size());
@@ -1300,7 +1331,7 @@ MosaicResult composeMultiband(
                 progress.report(MosaicProgressStage::Blending, workStart, imageIndex + 1,
                                 0, workRows, levelIndex + 1, levelCount);
 
-                for (int outY = top; outY <= bottom; ++outY) {
+                const bool valid = blendRows(top, workRows, right - left + 1, [&](int outY) {
                     const float globalY = (static_cast<float>(outY) + 0.5F) / outputScaleY - 0.5F;
                     for (int outX = left; outX <= right; ++outX) {
                         const float globalX = (static_cast<float>(outX) + 0.5F) / outputScaleX - 0.5F;
@@ -1351,8 +1382,7 @@ MosaicResult composeMultiband(
                             const double previous = accumulator.image.pixels[outputOffset + channel];
                             const double blended = previous + (value - previous) * incomingFraction;
                             if (!representableFloat(blended)) {
-                                return mosaicError(
-                                    "ImageValueInvalid", "Multiband mosaic values exceed the Float32 range");
+                                return false;
                             }
                             accumulator.image.pixels[outputOffset + channel] = static_cast<float>(blended);
                         }
@@ -1363,11 +1393,13 @@ MosaicResult composeMultiband(
                         accumulator.weights[outputPixel] +=
                             hasAlpha(accumulator.image) ? baseWeight : colorWeight;
                     }
-                    progress.reportRow(
-                        MosaicProgressStage::Blending,
-                        static_cast<std::uint32_t>(outY - top + 1), workRows,
-                        workStart, workEnd, imageIndex + 1, levelIndex + 1, levelCount);
-                }
+                    return true;
+                }, [&](std::uint32_t completed) {
+                    progress.report(MosaicProgressStage::Blending,
+                                    workStart + (workEnd - workStart) * completed / workRows,
+                                    imageIndex + 1, completed, workRows, levelIndex + 1, levelCount);
+                });
+                if (!valid) return mosaicError("ImageValueInvalid", "Multiband mosaic values exceed the Float32 range");
                 if (coarser != nullptr) {
                     ownedSource = std::move(coarserStorage);
                     source = &ownedSource;
@@ -1478,13 +1510,14 @@ MosaicResult composeMultiband(
 MosaicResult composeMosaic(
     const std::vector<ImageBuffer>& images,
     std::vector<MosaicPlacement> placements,
+    std::span<const std::size_t> order,
     const MosaicOptions& options,
     MosaicProgressReporter& progress
 ) {
     const bool clampColor = options.fitsDecodeMode == FitsDecodeMode::DisplayNormalized;
     bool exposureMatched = false;
     const auto corrections = options.exposureMatching
-        ? exposureCorrections(images, placements, exposureMatched, progress, clampColor)
+        ? exposureCorrections(images, placements, order, exposureMatched, progress, clampColor)
         : std::vector<ExposureCorrection>(images.size());
     if (!options.exposureMatching) {
         progress.report(MosaicProgressStage::ExposureMatching, 0.50, images.size());
@@ -1562,7 +1595,7 @@ MosaicResult composeMosaic(
         const double workEnd = 0.50 + 0.38 * static_cast<double>(imageIndex + 1) /
             static_cast<double>(images.size());
         progress.report(MosaicProgressStage::Blending, workStart, imageIndex + 1, 0, workRows);
-        for (int outY = top; outY <= bottom; ++outY) {
+        const bool valid = blendRows(top, workRows, right - left + 1, [&](int outY) {
             for (int outX = left; outX <= right; ++outX) {
                 MosaicPoint source;
                 if (!inverseTransformPoint(
@@ -1603,7 +1636,7 @@ MosaicResult composeMosaic(
                     const double previous = output.pixels[outputOffset + channel];
                     const double blended = previous + (value - previous) * incomingFraction;
                     if (!representableFloat(blended)) {
-                        return mosaicError("ImageValueInvalid", "Mosaic values exceed the Float32 range");
+                        return false;
                     }
                     output.pixels[outputOffset + channel] = static_cast<float>(blended);
                 }
@@ -1617,11 +1650,13 @@ MosaicResult composeMosaic(
                     weights[outputPixel] += hasAlpha(output) ? baseWeight : colorWeight;
                 }
             }
-            progress.reportRow(
-                MosaicProgressStage::Blending,
-                static_cast<std::uint32_t>(outY - top + 1), workRows,
-                workStart, workEnd, imageIndex + 1);
-        }
+            return true;
+        }, [&](std::uint32_t completed) {
+            progress.report(MosaicProgressStage::Blending,
+                            workStart + (workEnd - workStart) * completed / workRows,
+                            imageIndex + 1, completed, workRows);
+        });
+        if (!valid) return mosaicError("ImageValueInvalid", "Mosaic values exceed the Float32 range");
     }
 
     for (std::uint32_t y = 0; y < output.height; ++y) {
@@ -1842,8 +1877,10 @@ MosaicResult MosaicBuilder::stitchHorizontal(const std::vector<ImageBuffer>& ima
 
         const auto& workingImages = *sourceImages;
         std::size_t matchedPairs = 0;
+        std::vector<std::size_t> order(workingImages.size());
+        std::iota(order.begin(), order.end(), 0);
         const auto placements = options.alignment == MosaicAlignment::Auto
-            ? automaticPlacements(workingImages, options, matchedPairs, progress)
+            ? automaticPlacements(workingImages, options, matchedPairs, order, progress)
             : manualPlacements(workingImages, options);
         if (options.alignment != MosaicAlignment::Auto) {
             progress.report(MosaicProgressStage::Aligning, 0.44, workingImages.size());
@@ -1855,7 +1892,7 @@ MosaicResult MosaicBuilder::stitchHorizontal(const std::vector<ImageBuffer>& ima
                         " has no verified common stars connecting it to the first panel");
             }
         }
-        auto result = composeMosaic(workingImages, placements, options, progress);
+        auto result = composeMosaic(workingImages, placements, order, options, progress);
         result.usedAutoAlignment = options.alignment == MosaicAlignment::Auto && matchedPairs > 0;
         result.matchedPairs = matchedPairs;
         result.fallbackPanels = static_cast<std::size_t>(std::count_if(

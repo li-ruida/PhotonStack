@@ -5,6 +5,19 @@ public struct MosaicPanelFolder: Codable, Equatable, Sendable {
     public var directory: URL
     public var frames: [URL]
 
+    /// Retain selection order while removing duplicate links and camera-generated display proxies.
+    static func scienceFrames(in files: [URL]) -> [URL] {
+        let originals = Set(files.filter { [.fits, .raw].contains(AssetKind.detect(from: $0)) }
+            .map { $0.deletingPathExtension().standardizedFileURL.path.lowercased() })
+        var seen = Set<String>()
+        return files.filter {
+            let kind = AssetKind.detect(from: $0)
+            if [.jpeg, .heif, .png].contains(kind),
+               originals.contains($0.deletingPathExtension().standardizedFileURL.path.lowercased()) { return false }
+            return seen.insert($0.standardizedFileURL.path).inserted
+        }
+    }
+
     public static func discover(in roots: [URL]) throws -> [Self] {
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .isPackageKey]
         func entries(_ directory: URL) throws -> [URL] {
@@ -26,15 +39,9 @@ public struct MosaicPanelFolder: Codable, Equatable, Sendable {
                 guard AssetKind.detect(from: url) != .unknown else { return false }
                 return try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true
             }
-            // Camera JPEG previews can accompany identically named FITS / RAW lights.
-            let originals = Set(files.filter { [.fits, .raw].contains(AssetKind.detect(from: $0)) }
-                .map { $0.deletingPathExtension().lastPathComponent.lowercased() })
-            let frames = files.filter {
-                let proxy = [.jpeg, .png, .heif].contains(AssetKind.detect(from: $0))
-                return !proxy || !originals.contains($0.deletingPathExtension().lastPathComponent.lowercased())
-            }
+            let frames = scienceFrames(in: files.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
             return frames.isEmpty ? nil : Self(directory: directory.standardizedFileURL.resolvingSymlinksInPath(),
-                                                frames: frames.map { $0.standardizedFileURL.resolvingSymlinksInPath() })
+                                                frames: frames)
         }
 
         var groups: [Self] = []
@@ -45,12 +52,21 @@ public struct MosaicPanelFolder: Codable, Equatable, Sendable {
             let calibration = Set(WorkflowCalibrationRole.allCases.map(\.rawValue))
             let children = try directories(contents).filter { !calibration.contains($0.lastPathComponent.lowercased()) }
             var found: [Self] = []
-            if !children.contains(where: { $0.lastPathComponent.lowercased() == "lights" }) {
+            let direct = try panel(directory, contents: contents)
+            // An explicit light sequence can also have a previews/ or exports/ subfolder.
+            if let direct, children.contains(where: { $0.lastPathComponent.lowercased() == "lights" })
+                || direct.frames.contains(where: { $0.lastPathComponent.lowercased().hasPrefix("light_") })
+                || roots.count > 1 && direct.frames.contains(where: { [.raw, .fits].contains(AssetKind.detect(from: $0)) }) {
+                found = [direct]
+            } else {
                 for child in children {
                     if let group = try panel(child, contents: entries(child)) { found.append(group) }
                 }
             }
-            if found.isEmpty, let group = try panel(directory, contents: contents) { found = [group] }
+            if let direct, found.isEmpty || (direct.frames.contains { [.raw, .fits].contains(AssetKind.detect(from: $0)) }
+                && found.allSatisfy { $0.frames.allSatisfy { [.jpeg, .heif, .png].contains(AssetKind.detect(from: $0)) } }) {
+                found = [direct]
+            }
             guard !found.isEmpty else {
                 throw WorkflowError("没有找到天区照片 / No sky panel images: \(directory.path)")
             }
@@ -71,9 +87,25 @@ public struct MosaicPanelFolder: Codable, Equatable, Sendable {
 }
 
 extension PhotonStackProject {
+    /// Older operations stored panel IDs only. Freeze their last saved membership
+    /// before a subsequent import can change which lights belong to those IDs.
+    public mutating func preserveLegacyMosaicSelections() {
+        for index in editGraph.operations.indices {
+            let operation = editGraph.operations[index]
+            guard operation.kind == .mosaic, operation.parameters["panelSources"] == nil,
+                  let recorded = operation.parameters["panelIDs"] else { continue }
+            let ids = Set(recorded.split(separator: ",").compactMap { UUID(uuidString: String($0)) })
+            let panels = assets.filter { ids.contains($0.id) }
+            if !panels.isEmpty && panels.count == ids.count {
+                editGraph.operations[index].parameters["panelSources"] = try? MosaicPanelFolder.encodeSelection(panels)
+            }
+        }
+    }
+
     /// Recover explicit light-frame directories from older flat imports. Read only
     /// project membership: opening a project must never add unselected files from disk.
     public mutating func regroupMosaicLightSequences() {
+        preserveLegacyMosaicSelections()
         let ordered = Set(mosaicPanelOrder)
         let recorded = Set(editGraph.operations.filter { $0.kind == .mosaic }
             .flatMap { ($0.parameters["panelIDs"] ?? "").split(separator: ",").compactMap { UUID(uuidString: String($0)) } })
@@ -106,9 +138,9 @@ extension PhotonStackProject {
         for (directory, indexes) in groups {
             let representative = indexes.first { assets[$0].mosaicFolder != nil } ?? indexes[0]
             if indexes.count == 1 && assets[representative].mosaicFolder != nil { continue }
-            var seen = Set<URL>()
-            let frames = indexes.flatMap { assets[$0].mosaicFolder?.frames ?? [assets[$0].originalURL] }
-                .filter { seen.insert($0.standardizedFileURL).inserted }
+            let frames = MosaicPanelFolder.scienceFrames(in: indexes.flatMap {
+                assets[$0].mosaicFolder?.frames ?? [assets[$0].originalURL]
+            })
             assets[representative].mosaicFolder = MosaicPanelFolder(directory: directory, frames: frames)
             members.formUnion(indexes.filter { $0 != representative }.map { assets[$0].id })
         }
@@ -127,5 +159,23 @@ extension PhotonStackProject {
         // Keep every source asset and its ID for existing layers, sequences and edits.
         for index in assets.indices where members.contains(assets[index].id) { assets[index].role = .light }
         mosaicPanelOrder.removeAll { members.contains($0) }
+    }
+}
+
+extension MosaicPanelFolder {
+    public static func encodeSelection(_ panels: [PhotonStackAsset]) throws -> String {
+        var folders: [String: MosaicPanelFolder] = [:]
+        for panel in panels { folders[panel.id.uuidString] = panel.mosaicFolder }
+        return try encodeFolders(folders)
+    }
+
+    static func encodeFolders(_ folders: [String: MosaicPanelFolder]) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(folders), as: UTF8.self)
+    }
+
+    public static func decodeSelection(_ value: String) throws -> [String: MosaicPanelFolder] {
+        try JSONDecoder().decode([String: MosaicPanelFolder].self, from: Data(value.utf8))
     }
 }

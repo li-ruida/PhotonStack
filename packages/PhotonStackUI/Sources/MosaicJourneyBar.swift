@@ -9,9 +9,11 @@ struct MosaicJourneyBar: View {
     private var chinese: Bool { model.language == .simplifiedChinese }
 
     var body: some View {
+        let panels = model.mosaicAssets
+        let frames = panels.reduce(0) { $0 + ($1.mosaicFolder?.frames.count ?? 1) }
         VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Text(chinese ? "面板 \(model.mosaicAssets.count) 张" : "\(model.mosaicAssets.count) panels")
+                Text(chinese ? "\(panels.count) 个天区 · \(frames) 帧" : "\(panels.count) panels · \(frames) frames")
                     .font(.callout.weight(.medium))
                 Button(chinese ? "导入天区文件夹…" : "Add panel folders…", action: onImportFolders)
                     .accessibilityIdentifier("journey.mosaic-folders")

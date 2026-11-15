@@ -2970,6 +2970,11 @@ import Testing
     #expect(model.mosaicAssets.map(\.displayName) == ["East", "West_sub"])
     #expect(model.mosaicAssets.compactMap { $0.mosaicFolder?.frames.count } == [2, 2])
     #expect(!model.importAssets(from: [east, west]))
+    let original = west.appendingPathComponent("Light_West_2.fit")
+    let originalBytes = try Data(contentsOf: original)
+    await model.exportCurrentImage(to: original)
+    #expect(model.errorMessage?.contains("不能覆盖项目原片") == true)
+    #expect(try Data(contentsOf: original) == originalBytes)
     let restored = try JSONDecoder().decode(PhotonStackProject.self, from: JSONEncoder().encode(model.project))
     #expect(restored.assets == model.project.assets)
     await model.runMosaicPreview()
@@ -2978,6 +2983,19 @@ import Testing
     #expect(preview.allSatisfy { $0.deletingLastPathComponent().lastPathComponent == "mosaic-panels" })
     await model.runMosaic()
     #expect(await service.snapshot().mosaicInputGroups.last == preview)
+
+    // Replaying the saved build must use the original two-frame selection after a folder grows.
+    let third = west.appendingPathComponent("Light_West_3.fit")
+    try writeMinimalFITS(to: third)
+    model.importMosaicPanels(from: [third])
+    #expect(model.mosaicAssets.last?.mosaicFolder?.frames.count == 3)
+    let jobsBeforeReplay = model.jobs.count
+    model.startReplayEditGraph()
+    try await waitForStartedProcessingCompletion(in: model, minimumJobCount: jobsBeforeReplay + 1)
+    #expect(await service.snapshot().mosaicInputGroups.last == preview)
+    #expect(model.latestJob?.status == .succeeded)
+    try FileManager.default.removeItem(at: third)
+    _ = model.importAssets(from: [west])
 
     // Changing a non-representative light invalidates only that panel master.
     try writeMinimalFITS(to: west.appendingPathComponent("Light_West_2.fit"), width: 128)

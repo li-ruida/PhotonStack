@@ -5,7 +5,11 @@ sequence from source frames to a reviewable, reproducible final image. It pairs
 a native desktop workflow with a shared C++20 processing engine and a CLI for
 automation.
 
-![PhotonStack stacking result](docs/images/m31-workflow/03-stacked-result.jpg)
+[![Finished M31 core and dust lanes](docs/page/assets/finishing/m31/color.webp)](https://astro.ruida.li/?workflow=m31&step=finish#process)
+
+Compare the same patch of sky before and after finishing:
+[M31 dust lanes](https://astro.ruida.li/?workflow=m31&step=finish#process) ·
+[two-panel nebula mosaic](https://astro.ruida.li/?workflow=mosaic&step=finish#process).
 
 ## What it does
 
@@ -40,8 +44,8 @@ automation.
 The walkthrough below was completed in the release app with 200 evenly sampled
 M31 FITS light frames. No calibration frames were added for this demonstration.
 PhotonStack analyzed all 200 files, automatically excluded 18 frames with
-elongated stars, stacked the remaining 182, applied a conservative
-luminance-preserving color-neutralization pass, and exported a 1928 × 3638 TIFF.
+elongated stars, stacked the remaining 182, and produced a 1928 × 3638 image.
+The finishing pass below starts from the developed TIFF from that run.
 
 ### 1. Import and inspect
 
@@ -68,26 +72,28 @@ exclusion record so the result can be reviewed or reprocessed.
 
 ![M31 after registration and stacking](docs/images/m31-workflow/03-stacked-result.jpg)
 
-### 4. Develop and correct color
+### 4. Bring out the dust lanes
 
-Finishing tools are integrated into the same workspace. This example uses a
-light full-image neutralization (`0.35` strength, `0.02` green allowance) while
-preserving luminance. Curves, galaxy tonal separation, star control, denoise,
-sharpen, and advanced processing remain available for further work.
+Both views show the same pixels at the same scale. Look just to the right of
+the warm core: the dark dust lanes stand out more clearly against the outer
+disk. The interactive view isolates each adjustment by comparing its input
+with its output. [Compare the M31 adjustments](https://astro.ruida.li/?workflow=m31&step=finish#process).
 
-![Luminance-preserving color adjustment](docs/images/m31-workflow/04-color-adjustment.jpg)
+![Matched M31 crops before and after finishing](docs/page/assets/finishing/m31/comparison.jpg)
 
-### 5. Export the final image
+| PhotonStack adjustment | Settings used |
+| --- | --- |
+| Prepare the developed stack | Keep the original luminance-preserving green correction (strength 0.35, green allowance 0.02), then denoise with amount 0.18, chroma 0.55, radius 1 px |
+| RGB curve (input → output, normalized) | 0 → 0, 0.015 → 0.019, 0.05 → 0.095, 0.14 → 0.26, 0.35 → 0.52, 0.70 → 0.81, 1 → 1 |
+| Local contrast | Amount 0.22, radius 18 px |
+| Color saturation | Amount +0.70 |
 
-Export is an explicit final step and reports the completed filename in the
-workflow. PhotonStack also writes processing metadata beside the image for
-traceability.
+### 5. Export the finished M31
 
-![Successful TIFF export](docs/images/m31-workflow/05-export-success.jpg)
+PhotonStack wrote the finished image as a 1928 × 3638, 16-bit sRGB TIFF.
+The JPEG below shows the full composition at web resolution.
 
-### Final image
-
-![Final M31 image from the 200-frame workflow](docs/images/m31-workflow/06-final-image.jpg)
+![Finished M31, including the core, outer disk and companion galaxies](docs/page/assets/finishing/m31/full.jpg)
 
 > This is a real end-to-end product walkthrough, not a calibrated scientific
 > benchmark. Capture conditions, calibration frames, recipe choices, hardware,
@@ -124,21 +130,28 @@ feather blending combined the fields across the overlap.
 
 ![Full mosaic and its registration report](docs/page/assets/mosaic/03-stitch.webp)
 
-### 4. Adjust the combined image
+### 4. Separate the filaments from the star field
 
-This example raises exposure by 0.35 EV across the assembled field to bring
-out the faint filaments.
+The left crop comes from the developed mosaic before finishing. Raising the
+lower midtones reveals the faint arc. Local contrast brings out the dark
+gaps between strands, and saturation separates their red and teal edges.
+The settings act on the entire stitched frame. [Compare the mosaic adjustments](https://astro.ruida.li/?workflow=mosaic&step=finish#process).
 
-![Exposure adjustment on the assembled mosaic](docs/page/assets/mosaic/04-finish.webp)
+![Matched crops of the same nebula filaments before and after finishing](docs/page/assets/finishing/mosaic/comparison.jpg)
 
-### 5. Export the image
+| PhotonStack adjustment | Settings used |
+| --- | --- |
+| Prepare the developed mosaic | Denoise with amount 0.18, chroma 0.55, radius 1 px |
+| RGB curve (input → output, normalized) | 0 → 0, 0.015 → 0.015, 0.05 → 0.089, 0.12 → 0.26, 0.30 → 0.48, 0.65 → 0.78, 1 → 1 |
+| Local contrast | Amount 0.20, radius 18 px |
+| Color saturation | Amount +0.90 |
 
-The final TIFF measures 3913 × 3905 pixels. The export confirmation shows the
-filename, and the project retains the panel groups and edit history.
+### 5. Export the finished mosaic
 
-![Completed TIFF export from the sky mosaic workflow](docs/page/assets/mosaic/05-export.webp)
+PhotonStack wrote a 3913 × 3905, 16-bit sRGB TIFF. This web-size JPEG shows
+the full field from both pointings.
 
-![Final two-panel sky mosaic](docs/page/assets/mosaic/final.jpg)
+![Finished two-panel mosaic with red and teal filaments](docs/page/assets/finishing/mosaic/full.jpg)
 
 ## Architecture
 

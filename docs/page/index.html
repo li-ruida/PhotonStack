@@ -7,8 +7,8 @@
   <meta name="description" content="PhotonStack 是开源的 macOS 深空摄影叠加工作台。通过 M31 一键成片与双天区拼接两个实拍示例，了解从 FITS 原片到成片的流程。">
   <title>PhotonStack · 深空摄影工作台</title>
   <link rel="icon" href="assets/app-icon.png" type="image/png">
-  <link rel="stylesheet" href="style.css?v=2">
-  <script src="gallery.js?v=2" defer></script>
+  <link rel="stylesheet" href="style.css?v=3">
+  <script src="gallery.js?v=3" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">跳至正文</a>
@@ -31,16 +31,16 @@
         </a>
       </div>
       <figure class="plate" data-example="m31">
-        <a href="assets/m31.jpg" aria-label="查看仙女座星系完整彩色成片">
-          <img width="1120" height="574" src="assets/m31-detail.webp" alt="黑白局部：仙女座星系明亮的核心与两侧的暗尘埃带。" fetchpriority="high">
+        <a href="assets/finishing/m31/full.jpg" aria-label="查看仙女座星系完整彩色成片">
+          <img width="1120" height="574" src="assets/finishing/m31/color.webp" alt="后期成片局部，M31 的暖色核心与旋臂中的暗尘带。" fetchpriority="high">
         </a>
-        <figcaption><span>M31 · 仙女座星系</span><span>182 帧叠加</span></figcaption>
+        <figcaption><span>M31 · 仙女座星系</span><span>182 帧叠加</span><a class="finish-link" href="?workflow=m31&amp;step=finish#process">对比后期前后</a></figcaption>
       </figure>
       <figure class="plate" data-example="mosaic">
-        <a href="assets/mosaic/final.jpg" aria-label="查看两个天区的完整彩色拼接成片">
-          <img width="1120" height="574" src="assets/mosaic/detail.webp" alt="拼接成片的黑白局部，丝状星云穿过密集的星点。" loading="lazy">
+        <a href="assets/finishing/mosaic/full.jpg" aria-label="查看两个天区的完整彩色拼接成片">
+          <img width="1120" height="574" src="assets/finishing/mosaic/color.webp" alt="后期成片局部，红色和青色的星云细丝横穿星场。" loading="lazy">
         </a>
-        <figcaption><span>T1 + T2 · 天区拼接</span><span>2 个天区 · 202 帧</span></figcaption>
+        <figcaption><span>T1 + T2 · 天区拼接</span><span>2 个天区 · 202 帧</span><a class="finish-link" href="?workflow=mosaic&amp;step=finish#process">对比后期前后</a></figcaption>
       </figure>
     </section>
     <section id="process" aria-labelledby="process-title">
@@ -60,15 +60,15 @@
           <li><a href="assets/01-import-200.webp" aria-current="step" data-caption="导入 200 张 FITS 亮场，逐张预览原片。">导入</a></li>
           <li><a href="assets/02-analysis-review.webp" data-caption="按星点形状筛选，逐帧复核自动排除的 18 张原片。">筛选</a></li>
           <li><a href="assets/03-stacked-result.webp" data-caption="对齐余下的 182 帧，以 Winsorized 模式抑制异常值。">叠加</a></li>
-          <li><a href="assets/04-color-adjustment.webp" data-caption="以 0.35 强度中和色偏，同时保留星系亮度。">调色</a></li>
-          <li><a href="assets/05-export-success.webp" data-caption="导出 1928 × 3638 像素的 TIFF，并保存处理记录。">导出</a></li>
+          <li><a href="assets/finishing/m31/comparison.jpg" data-step="finish" data-caption="拖动分界线对比，或用左右方向键微调位置。">后期</a></li>
+          <li><a href="assets/finishing/m31/full.jpg" data-step="export" data-caption="1928 × 3638 像素的 16 位 TIFF 成片。点击查看完整构图的彩色预览。">导出</a></li>
         </ol>
         <ol class="steps" data-example="mosaic" aria-label="选择拼接步骤">
           <li><a href="assets/mosaic/01-panels.webp" aria-current="step" data-caption="按天区导入原片。T1_sub 有 90 帧，T2_sub 有 112 帧。">导入</a></li>
           <li><a href="assets/mosaic/02-align.webp" data-caption="分别堆栈两组原片，在配准预览中检查重叠区域的共同星点。">配准</a></li>
           <li><a href="assets/mosaic/03-stitch.webp" data-caption="复用两张母片，以 223 个星点匹配完成对齐，再羽化融合重叠区域。">拼接</a></li>
-          <li><a href="assets/mosaic/04-finish.webp" data-caption="在整张拼接成片上将曝光提高 0.35 EV，提亮暗弱的星云。">后期</a></li>
-          <li><a href="assets/mosaic/05-export.webp" data-caption="导出 3913 × 3905 像素的 TIFF，保留两个天区的完整画幅。">导出</a></li>
+          <li><a href="assets/finishing/mosaic/comparison.jpg" data-step="finish" data-caption="拖动分界线对比，或用左右方向键微调位置。">后期</a></li>
+          <li><a href="assets/finishing/mosaic/full.jpg" data-step="export" data-caption="3913 × 3905 像素的 16 位 TIFF 成片。点击查看两个天区的完整构图。">导出</a></li>
         </ol>
       </div>
       <figure class="workspace" data-example="m31">
@@ -85,6 +85,27 @@
       </figure>
     </section>
   </main>
+  <template id="finish-comparison">
+    <div class="finish-comparison">
+      <div class="compare-image">
+        <img class="after" width="1120" height="574" alt="">
+        <img class="before" width="1120" height="574" alt="">
+        <span class="before-label">调整前</span><span class="after-label">调整后</span>
+        <span class="divider" aria-hidden="true"></span>
+        <input class="split" type="range" min="0" max="100" value="50" aria-label="前后对照分界线">
+      </div>
+      <div class="finish-stages" role="group" aria-label="选择对比的后期步骤">
+        <button type="button" data-stage="total" aria-pressed="true">整体效果</button>
+        <button type="button" data-stage="curves" aria-pressed="false">曲线</button>
+        <button type="button" data-stage="contrast" aria-pressed="false">局部对比</button>
+        <button type="button" data-stage="color" aria-pressed="false">色彩</button>
+      </div>
+      <div class="recipe-detail">
+        <img class="curve-plot" width="280" height="258" alt="RGB 曲线图，横轴为输入，纵轴为输出，灰色对角线为原值。" hidden>
+        <p class="recipe" aria-live="polite"></p>
+      </div>
+    </div>
+  </template>
   <footer aria-label="项目资源">
     <a href="https://github.com/li-ruida/PhotonStack/blob/master/docs/build.md">构建指南</a>
     <a href="https://github.com/li-ruida/PhotonStack/blob/master/docs/cli.md">命令行文档</a>

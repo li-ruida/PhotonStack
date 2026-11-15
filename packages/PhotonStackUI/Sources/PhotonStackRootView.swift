@@ -480,7 +480,7 @@ public struct PhotonStackRootView: View {
     private func navigateJourney(_ step: WorkspaceJourneyStep) {
         guard !model.hasActiveProcessing else { return }
         if model.usesMosaicWorkflow, step == .finish || step == .export,
-           model.isShowingSelectedOriginal || model.isShowingMosaicPreview {
+           !model.isWorkingOnLatestMosaic {
             model.showLatestMosaicResult()
         }
         switch step {

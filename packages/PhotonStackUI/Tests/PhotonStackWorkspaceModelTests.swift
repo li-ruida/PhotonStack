@@ -2986,6 +2986,11 @@ import Testing
     #expect(!model.mosaicJourneyProducts(for: model.mosaicAssets).result)
     await model.runMosaic()
     #expect(model.mosaicJourneyProducts(for: model.mosaicAssets).result)
+    #expect(model.isWorkingOnLatestMosaic)
+    model.showSelectedOriginal()
+    #expect(!model.isWorkingOnLatestMosaic)
+    model.showLatestMosaicResult()
+    #expect(model.isWorkingOnLatestMosaic)
     #expect(await service.snapshot().mosaicInputGroups.last == preview)
 
     // Replaying the saved build must use the original two-frame selection after a folder grows.

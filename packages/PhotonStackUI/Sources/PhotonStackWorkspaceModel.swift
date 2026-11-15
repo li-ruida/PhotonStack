@@ -1545,6 +1545,26 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         return try? JSONDecoder().decode(MosaicQualityReport.self, from: Data(json.utf8))
     }
 
+    /// Trace explicit image inputs. A panel preview recorded after the mosaic can
+    /// be adjacent in history without being an edit of the mosaic.
+    var isWorkingOnLatestMosaic: Bool {
+        guard let mosaic = latestMosaicOperation else { return false }
+        func derivesFromMosaic(_ url: URL) -> Bool {
+            var input = url.standardizedFileURL.path
+            for operation in project.editGraph.operations.reversed() where operation.isEnabled {
+                guard operation.parameters["output"] == input || operation.parameters["previewOutput"] == input else { continue }
+                if operation.id == mosaic.id { return true }
+                guard let parent = operation.parameters["input"] else { return false }
+                input = parent
+            }
+            return false
+        }
+        if canvasMode == .layerComposite {
+            return visiblePreviewLayers.compactMap(\.inputURL).contains(where: derivesFromMosaic)
+        }
+        return currentInputURL.map(derivesFromMosaic) ?? false
+    }
+
     func showLatestMosaicResult() {
         guard canModifyProcessingConfiguration, let operation = latestMosaicOperation,
               let path = operation.parameters["output"] else { return }

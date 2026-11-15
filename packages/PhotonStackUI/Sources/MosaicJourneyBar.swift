@@ -42,7 +42,7 @@ struct MosaicJourneyBar: View {
         }
         if products.preview && model.isShowingMosaicPreview { return .build }
         if products.result {
-            return finishingRequested && !model.isShowingSelectedOriginal ? .export : .finish
+            return finishingRequested && model.isWorkingOnLatestMosaic ? .export : .finish
         }
         if !model.canRunMosaic { return .importPanels }
         return products.preview ? .build : .preview

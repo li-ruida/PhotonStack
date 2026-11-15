@@ -6,6 +6,8 @@ struct WorkspaceFITSPreview: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     @ObservedObject var previews: DeepSkyReviewPreviewStore
     let input: URL
+    var isMosaic = false
+    var alignmentStars: [CGPoint] = []
     @Binding var magnification: Double
     @Binding var fitToWindow: Bool
     @State private var loadedKey: String?
@@ -19,7 +21,7 @@ struct WorkspaceFITSPreview: View {
             ZStack {
                 Color.black
                 if loadedKey == requestKey, let preview {
-                    NativeImagePreview(url: preview, magnification: $magnification, fitToWindow: $fitToWindow)
+                    NativeImagePreview(url: preview, magnification: $magnification, fitToWindow: $fitToWindow, alignmentStars: alignmentStars)
                 } else if loadedKey == requestKey, let failure {
                     Text(failure).font(.callout).multilineTextAlignment(.center)
                         .padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
@@ -28,9 +30,11 @@ struct WorkspaceFITSPreview: View {
                         .padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 }
             }
-            Text(chinese ? "单张拉伸预览 · 未对齐 · 不改原片" : "Stretched original · Unregistered · Source unchanged")
-                .font(.caption).foregroundStyle(.secondary)
-                .accessibilityIdentifier("workspace.single-frame-preview")
+            if !isMosaic {
+                Text(chinese ? "单张拉伸预览 · 未对齐 · 不改原片" : "Stretched original · Unregistered · Source unchanged")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("workspace.single-frame-preview")
+            }
         }
         .task(id: requestKey) {
             do {

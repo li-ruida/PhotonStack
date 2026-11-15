@@ -1841,6 +1841,7 @@ RegistrationResult matchTranslation(const RegistrationCatalogs& catalogs, const 
         return registrationError("RegistrationNoMatches", "No RANSAC inliers were found");
     }
 
+    std::vector<std::array<float, 2>> alignedStars;
     std::vector<Translation> inlierOffsets;
     for (const auto& movingStar : movingStars) {
         for (const auto& referenceStar : referenceStars) {
@@ -1849,6 +1850,7 @@ RegistrationResult matchTranslation(const RegistrationCatalogs& catalogs, const 
             const float dy = candidate.dy - medianOffset.dy;
             if (dx * dx + dy * dy <= tolerance * tolerance) {
                 inlierOffsets.push_back(candidate);
+                if (options.collectAlignmentStars) alignedStars.push_back({movingStar.x, movingStar.y});
             }
         }
     }
@@ -1863,6 +1865,7 @@ RegistrationResult matchTranslation(const RegistrationCatalogs& catalogs, const 
     result.transform = {.scale = 1.0F, .rotationRadians = 0.0F, .dx = refinedOffset.dx, .dy = refinedOffset.dy};
     result.affine = {.a = 1.0F, .b = 0.0F, .c = 0.0F, .d = 1.0F, .dx = refinedOffset.dx, .dy = refinedOffset.dy};
     result.matches = inliers;
+    result.alignedMovingStars = std::move(alignedStars);
     result.detectedReferenceStars = referenceStars.size();
     result.detectedMovingStars = movingStars.size();
     const auto denominator = std::max<std::size_t>(1, std::min(referenceStars.size(), movingStars.size()));
@@ -2053,6 +2056,12 @@ RegistrationResult matchSimilarity(const RegistrationCatalogs& catalogs, const R
     result.translation = {.dx = fit.transform.dx, .dy = fit.transform.dy};
     result.transform = fit.transform;
     result.affine = fit.affine;
+    if (options.collectAlignmentStars) {
+        for (const auto index : inliers) {
+            const auto& star = pairs[index].moving;
+            result.alignedMovingStars.push_back({star.x, star.y});
+        }
+    }
     result.matches = finalMatches;
     result.detectedReferenceStars = matchResult.detectedReferenceStars;
     result.detectedMovingStars = matchResult.detectedMovingStars;
@@ -2091,6 +2100,12 @@ RegistrationResult matchAffine(const RegistrationCatalogs& catalogs, const Regis
         result.ok = true;
         result.affine = descriptorFit.transform;
         populateSimilaritySummary(result, result.affine);
+        if (options.collectAlignmentStars) {
+            for (const auto index : descriptorInliers) {
+                const auto& star = descriptorPairs[index].moving;
+                result.alignedMovingStars.push_back({star.x, star.y});
+            }
+        }
         result.matches = descriptorInliers.size();
         result.detectedReferenceStars = descriptorMatchResult.detectedReferenceStars;
         result.detectedMovingStars = descriptorMatchResult.detectedMovingStars;
@@ -2175,6 +2190,12 @@ RegistrationResult matchAffine(const RegistrationCatalogs& catalogs, const Regis
     result.ok = true;
     result.affine = fit.transform;
     populateSimilaritySummary(result, result.affine);
+    if (options.collectAlignmentStars) {
+        for (const auto index : inliers) {
+            const auto& star = pairs[index].moving;
+            result.alignedMovingStars.push_back({star.x, star.y});
+        }
+    }
     result.matches = inliers.size();
     result.detectedReferenceStars = matchResult.detectedReferenceStars;
     result.detectedMovingStars = matchResult.detectedMovingStars;

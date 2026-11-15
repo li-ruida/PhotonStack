@@ -10,7 +10,7 @@ import UniformTypeIdentifiers
 
 private let curveTelemetryLogger = Logger(subsystem: "dev.photonstack.app", category: "curves")
 
-public struct MosaicPlacementReport: Identifiable, Equatable, Sendable {
+public struct MosaicPlacementReport: Codable, Identifiable, Equatable, Sendable {
     public var id: Int { index }
     public var index: Int
     public var x: Double
@@ -28,6 +28,7 @@ public struct MosaicPlacementReport: Identifiable, Equatable, Sendable {
     public var fallback: Bool
     public var reducedModel: Bool
     public var coarseAlignment: Bool
+    public var alignmentStars: [CGPoint] = []
     public var locallyRefined = false
 
     public var scale: Double {
@@ -39,7 +40,7 @@ public struct MosaicPlacementReport: Identifiable, Equatable, Sendable {
     }
 }
 
-public struct MosaicQualityReport: Equatable, Sendable {
+public struct MosaicQualityReport: Codable, Equatable, Sendable {
     public var autoAligned: Bool
     public var matches: Int
     public var fallbackPanels: Int
@@ -1480,8 +1481,68 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         assets(with: .flat)
     }
 
+    public var usesMosaicWorkflow: Bool {
+        project.mosaicWorkflow ?? (project.template == .mosaic)
+    }
+
+    public func chooseMosaicWorkflow(_ enabled: Bool) {
+        guard canModifyProcessingConfiguration, enabled != usesMosaicWorkflow else { return }
+        if enabled && mosaicAssets.isEmpty {
+            // Adopt already imported lights as panels without changing their original roles.
+            project.mosaicPanelOrder = lightAssets.map(\.id)
+        }
+        project.mosaicWorkflow = enabled
+        if enabled {
+            parameters.mosaicAlignment = .auto
+        } else if isShowingMosaicPreview || isShowingMosaicResult {
+            showSelectedOriginal()
+        }
+        project.updatedAt = Date()
+        triggerAutosave()
+    }
+
+    var latestMosaicOperation: EditOperation? {
+        project.editGraph.operations.last { operation in
+            guard operation.isEnabled, operation.kind == .mosaic,
+                  let path = operation.parameters["output"] else { return false }
+            return FileManager.default.fileExists(atPath: path)
+        }
+    }
+
+    var isShowingMosaicResult: Bool {
+        guard canvasMode == .sourcePreview, let operation = latestMosaicOperation, let path = previewURL?.path else { return false }
+        return path == operation.parameters["previewOutput"] || path == operation.parameters["output"]
+    }
+
+    var isShowingMosaicPreview: Bool {
+        canvasMode == .sourcePreview && previewURL != nil && previewURL?.standardizedFileURL == mosaicQualityReportSourceURL && !isShowingMosaicResult
+    }
+
+    var visibleMosaicReport: MosaicQualityReport? {
+        guard canvasMode == .sourcePreview else { return nil }
+        if previewURL?.standardizedFileURL == mosaicQualityReportSourceURL { return mosaicQualityReport }
+        guard isShowingMosaicResult, let json = latestMosaicOperation?.parameters["alignmentReport"] else { return nil }
+        return try? JSONDecoder().decode(MosaicQualityReport.self, from: Data(json.utf8))
+    }
+
+    func showLatestMosaicResult() {
+        guard canModifyProcessingConfiguration, let operation = latestMosaicOperation,
+              let path = operation.parameters["output"] else { return }
+        let proxy = operation.parameters["previewOutput"].flatMap {
+            FileManager.default.fileExists(atPath: $0) ? URL(fileURLWithPath: $0) : nil
+        }
+        cancelRawPreviewUpdate()
+        activeLayerID = nil
+        setPreview(proxy ?? URL(fileURLWithPath: path), operationID: operation.id)
+        errorMessage = nil
+        triggerAutosave()
+    }
+
     public var mosaicAssets: [PhotonStackAsset] {
-        let panels = assets(with: .mosaic)
+        let panelIDs = Set(project.mosaicPanelOrder)
+        let panels = project.assets.filter {
+            $0.role == .mosaic || (usesMosaicWorkflow && $0.role == .light && panelIDs.contains($0.id))
+        }
         var orderIndex: [PhotonStackAsset.ID: Int] = [:]
         for (offset, assetID) in project.mosaicPanelOrder.enumerated()
             where orderIndex[assetID] == nil {
@@ -2919,6 +2980,12 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         return importReadableAssets(from: readableURLs)
     }
 
+    private var defaultImportRole: CalibrationFrameRole {
+        if usesMosaicWorkflow { return .mosaic }
+        if project.template == .mosaic { return .light }
+        return project.template?.defaultImportedAssetRole ?? .light
+    }
+
     @discardableResult
     private func importReadableAssets(from readableURLs: [URL]) -> Bool {
         let shouldAdoptImportedSelection = project.assets.isEmpty || selectedAsset == nil
@@ -2926,7 +2993,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         let existingAssetIDs = Set(project.assets.map(\.id))
         project.addAssets(
             from: readableURLs,
-            role: project.template?.defaultImportedAssetRole ?? .light
+            role: defaultImportRole
         )
         let importedAssets = project.assets.filter { existingAssetIDs.contains($0.id) == false }
         guard importedAssets.isEmpty == false else {
@@ -5272,7 +5339,13 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 self.clearReplayTemporaryDirectories()
             }
             let input: URL?
-            if self.canReplayFullResolutionForExport {
+            if self.isShowingMosaicResult, !self.editGraphNeedsReplay,
+               let operation = self.latestMosaicOperation,
+               let display = operation.parameters["previewOutput"], display.hasSuffix("/mosaic-developed.tiff"),
+               let linear = operation.parameters["output"], FileManager.default.fileExists(atPath: display) {
+                let fits = AssetKind.detect(from: output) == .fits
+                input = URL(fileURLWithPath: fits ? linear : display)
+            } else if self.canReplayFullResolutionForExport {
                 input = try await self.replayEditGraphForExport()
             } else {
                 input = try await self.exportInputURL()
@@ -6405,6 +6478,22 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
+    private func renderMosaicPreview(input: URL, output: URL, width: Int) async throws -> ProcessingCommandResult {
+        var displayInput = input
+        let isLinear = ["fit", "fits", "fts"].contains(input.pathExtension.lowercased())
+        if isLinear {
+            displayInput = output.deletingLastPathComponent()
+                .appendingPathComponent("mosaic-display-\(UUID().uuidString).tiff")
+        }
+        defer { if isLinear { try? FileManager.default.removeItem(at: displayInput) } }
+        if isLinear {
+            _ = try await processingService.develop(input: input, output: displayInput, settings: AstroDevelopSettings())
+            try Task.checkCancellation()
+        }
+        return try await processingService.makePreview(input: displayInput, output: output, width: width,
+                                                      rawOptions: parameters.rawProcessingOptions)
+    }
+
     public func runMosaic() async {
         guard rejectMissingAsset(in: mosaicAssets) == false else {
             return
@@ -6415,7 +6504,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 throw MosaicWorkflowError.noPanels
             }
 
-            let operationParameters = [
+            var operationParameters = [
                 "panels": String(panels.count),
                 "panelIDs": panels.map(\.id.uuidString).joined(separator: ","),
                 "panelSignature": self.inputSignature(panels.map(\.originalURL)),
@@ -6428,10 +6517,12 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 "columns": String(self.parameters.mosaicColumns),
             ]
 
-            let runDirectory = self.previewDirectory.appendingPathComponent("mosaic-\(UUID().uuidString)", isDirectory: true)
+            let root = self.currentProjectDirectory?.appendingPathComponent("processing", isDirectory: true) ?? self.previewDirectory
+            let runDirectory = root.appendingPathComponent("mosaic-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: runDirectory, withIntermediateDirectories: true)
             let mosaicOutput = runDirectory.appendingPathComponent(panels.allSatisfy { $0.kind == .fits } ? "mosaic.fits" : "mosaic.tiff")
-            let previewOutput = runDirectory.appendingPathComponent("mosaic-preview.png")
+            let scientific = mosaicOutput.pathExtension == "fits"
+            let previewOutput = runDirectory.appendingPathComponent(scientific ? "mosaic-developed.tiff" : "mosaic-preview.png")
             let progressScope = ProcessingProgressContext.progressScope
             progressScope?.update(lowerBound: 0, upperBound: 1.0 / 3.0)
             defer {
@@ -6455,14 +6546,17 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 mosaicResult,
                 expectedPanelCount: panels.count
             )
+            operationParameters["alignmentReport"] = String(decoding: try JSONEncoder().encode(qualityReport), as: UTF8.self)
             self.updateProgress(1.0 / 3.0, message: "Mosaic assembled")
             progressScope?.update(lowerBound: 1.0 / 3.0, upperBound: 2.0 / 3.0)
-            let previewResult = try await self.processingService.makePreview(
-                input: mosaicOutput,
-                output: previewOutput,
-                width: self.parameters.previewWidth,
-                rawOptions: self.parameters.rawProcessingOptions
-            )
+            let previewResult: ProcessingCommandResult
+            if scientific {
+                previewResult = try await self.processingService.develop(input: mosaicOutput, output: previewOutput,
+                                                                         settings: AstroDevelopSettings())
+            } else {
+                previewResult = try await self.renderMosaicPreview(input: mosaicOutput, output: previewOutput,
+                                                                   width: self.parameters.previewWidth)
+            }
             try Task.checkCancellation()
             self.updateProgress(2.0 / 3.0, message: "Mosaic preview")
 
@@ -6483,11 +6577,13 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 operationKind: .mosaic,
                 sourceArtifactIDs: self.sourceArtifactIDs(for: panels),
                 outputDirectory: runDirectory,
-                outputURLs: [mosaicOutput],
+                outputURLs: scientific ? [mosaicOutput, previewOutput] : [mosaicOutput],
                 parameters: operationParameters,
                 metrics: artifactMetrics,
-                layerKind: .baseImage
+                layerKind: .baseImage,
+                makeActive: !self.usesMosaicWorkflow
             )
+            if self.usesMosaicWorkflow { self.activeLayerID = nil }
             self.recordOperation(
                 .mosaic,
                 parameters: operationParameters,
@@ -6515,6 +6611,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             }
 
             let previewOutput = plannedOutput
+            try FileManager.default.createDirectory(at: previewOutput.deletingLastPathComponent(), withIntermediateDirectories: true)
             if self.mosaicQualityReport != nil,
                self.mosaicQualityReportSourceURL == previewOutput.standardizedFileURL,
                let cached = self.cachedResultIfAvailable(output: previewOutput, command: "mosaic preview") {
@@ -6542,8 +6639,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             )
             try Task.checkCancellation()
             if let scientificPreview {
-                _ = try await self.processingService.makePreview(input: scientificPreview, output: previewOutput,
-                    width: self.parameters.mosaicPreviewWidth, rawOptions: self.parameters.rawProcessingOptions)
+                _ = try await self.renderMosaicPreview(input: scientificPreview, output: previewOutput,
+                    width: self.parameters.mosaicPreviewWidth)
             }
             let qualityReport = try self.parseMosaicQualityReport(
                 mosaicResult,

@@ -15,8 +15,25 @@ struct PhotonStackPreview: View {
     @State private var fitToWindow = true
     @State private var showArtifactMarkedPreview = false
 
+    @State private var showAlignmentStars = true
+
     var body: some View {
+        let stars = model.visibleMosaicReport?.placements.flatMap(\.alignmentStars) ?? []
         VStack(spacing: 0) {
+            if model.isShowingMosaicPreview || model.isShowingMosaicResult {
+                HStack {
+                    Label(model.isShowingMosaicResult ? (model.language == .simplifiedChinese ? "拼接成片" : "Mosaic result")
+                          : (model.language == .simplifiedChinese ? "拼接预览" : "Mosaic preview"), systemImage: "rectangle.3.group")
+                    Spacer()
+                    if !stars.isEmpty {
+                        Toggle(model.language == .simplifiedChinese ? "标记配准星点（\(stars.count)）" : "Alignment stars (\(stars.count))",
+                               isOn: $showAlignmentStars)
+                            .toggleStyle(.checkbox)
+                            .accessibilityIdentifier("mosaic.overlay")
+                    }
+                }
+                .font(.callout).padding(.horizontal, 12).padding(.vertical, 6)
+            }
             if model.latestDeepSkyResultURL != nil {
                 WorkspacePreviewSourceControl(model: model, imageURL: currentURL)
             }
@@ -35,10 +52,11 @@ struct PhotonStackPreview: View {
                 if let url = currentURL {
                     if ["fit", "fits", "fts"].contains(url.pathExtension.lowercased()) {
                         WorkspaceFITSPreview(model: model, previews: scientificPreviews, input: url,
+                            isMosaic: model.isShowingMosaicResult, alignmentStars: showAlignmentStars ? stars : [],
                             magnification: $magnification, fitToWindow: $fitToWindow)
                             .padding(16)
                     } else {
-                        PlatformImageView(url: url, preview: model.photoPreview, edits: model.photoDraft, input: model.currentInputURL, allowsDraft: !showArtifactMarkedPreview && model.interactiveCurveURL == nil, magnification: $magnification, fitToWindow: $fitToWindow)
+                        PlatformImageView(url: url, preview: model.photoPreview, edits: model.photoDraft, input: model.currentInputURL, allowsDraft: !showArtifactMarkedPreview && model.interactiveCurveURL == nil, alignmentStars: currentURL == model.previewURL && showAlignmentStars ? stars : [], magnification: $magnification, fitToWindow: $fitToWindow)
                             .padding(16)
                     }
                 } else {
@@ -179,6 +197,7 @@ private struct PlatformImageView: View {
     @ObservedObject var edits: PhotoAdjustmentDraft
     let input: URL?
     let allowsDraft: Bool
+    let alignmentStars: [CGPoint]
     private var draft: PhotoAdjustmentPreview.Frame? {
         guard allowsDraft, let frame = preview.frame, frame.input == input else { return nil }
         return frame
@@ -193,7 +212,7 @@ private struct PlatformImageView: View {
 
     var body: some View {
         #if os(macOS)
-        NativeImagePreview(url: url, magnification: $magnification, fitToWindow: $fitToWindow, decodedImage: draft?.image, decodedSize: draft?.sourceSize, samplePoint: samplePoint)
+        NativeImagePreview(url: url, magnification: $magnification, fitToWindow: $fitToWindow, decodedImage: draft?.image, decodedSize: draft?.sourceSize, samplePoint: samplePoint, alignmentStars: alignmentStars)
         #else
         if let draft {
             Image(decorative: draft.image, scale: 1).resizable().scaledToFit()

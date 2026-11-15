@@ -38,6 +38,7 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
     public var editGraph: EditGraph
     public var artifacts: [ProcessingArtifact]
     public var layers: [ProcessingLayer]
+    public var mosaicWorkflow: Bool?
     public var mosaicPanelOrder: [UUID]
     public var batchQueue: [BatchQueueItem]
     public var batchOutputDirectory: URL?
@@ -90,6 +91,7 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
         case editGraph
         case artifacts
         case layers
+        case mosaicWorkflow
         case mosaicPanelOrder
         case batchQueue
         case batchOutputDirectory
@@ -110,6 +112,7 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
         editGraph = try container.decodeIfPresent(EditGraph.self, forKey: .editGraph) ?? EditGraph()
         artifacts = try container.decodeIfPresent([ProcessingArtifact].self, forKey: .artifacts) ?? []
         layers = try container.decodeIfPresent([ProcessingLayer].self, forKey: .layers) ?? []
+        mosaicWorkflow = try container.decodeIfPresent(Bool.self, forKey: .mosaicWorkflow)
         mosaicPanelOrder = try container.decodeIfPresent([UUID].self, forKey: .mosaicPanelOrder) ?? []
         batchQueue = try container.decodeIfPresent([BatchQueueItem].self, forKey: .batchQueue) ?? []
         batchOutputDirectory = try container.decodeIfPresent(URL.self, forKey: .batchOutputDirectory)

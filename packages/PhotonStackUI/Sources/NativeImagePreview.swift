@@ -158,6 +158,10 @@ final class NativePreviewImageView: NSImageView {
         samplePoint(CGPoint(x: (point.x - bounds.minX) / bounds.width, y: isFlipped ? y : 1 - y))
     }
 
+    var alignmentStars: [CGPoint] = [] {
+        didSet { if alignmentStars != oldValue { needsDisplay = true } }
+    }
+
     var usesNearestNeighbor = false {
         didSet {
             guard usesNearestNeighbor != oldValue else { return }
@@ -175,6 +179,21 @@ final class NativePreviewImageView: NSImageView {
             if let previousInterpolation { context?.imageInterpolation = previousInterpolation }
         }
         super.draw(dirtyRect)
+        guard image != nil, !alignmentStars.isEmpty else { return }
+        let zoom = max(0.1, enclosingScrollView?.magnification ?? 1)
+        let radius = 4.5 / zoom
+        let path = NSBezierPath()
+        for star in alignmentStars {
+            let center = CGPoint(x: star.x * bounds.width, y: (isFlipped ? star.y : 1 - star.y) * bounds.height)
+            let ring = CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius)
+            if dirtyRect.intersects(ring) { path.appendOval(in: ring) }
+        }
+        path.lineWidth = 2 / zoom
+        NSColor.black.withAlphaComponent(0.8).setStroke()
+        path.stroke()
+        path.lineWidth = 1 / zoom
+        NSColor.systemMint.setStroke()
+        path.stroke()
     }
 }
 
@@ -186,6 +205,7 @@ struct NativeImagePreview: NSViewRepresentable {
     var decodedSize: CGSize? = nil
     var samplePoint: ((CGPoint) -> Void)? = nil
     var centerFirstImage = false
+    var alignmentStars: [CGPoint] = []
 
     func makeNSView(context: Context) -> NSScrollView {
         let imageView = NativePreviewImageView()
@@ -214,6 +234,7 @@ struct NativeImagePreview: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         (context.coordinator.imageView as? NativePreviewImageView)?.samplePoint = samplePoint
+        (context.coordinator.imageView as? NativePreviewImageView)?.alignmentStars = alignmentStars
         context.coordinator.centerFirstImage = centerFirstImage
         if let nativeScrollView = scrollView as? NativePreviewScrollView {
             nativeScrollView.viewportLaidOut = { [weak coordinator = context.coordinator] in

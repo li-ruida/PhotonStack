@@ -7455,6 +7455,14 @@ void testMosaicCorrectsCurvedOverlap() {
     const auto result = photonstack::MosaicBuilder().stitchHorizontal({reference, moving}, options);
     assert(result.ok);
     assert(!result.placements[1].residuals.empty());
+    const auto& markers = result.placements[1].alignmentStars;
+    assert(markers.size() >= 32);
+    for (const auto& marker : markers) {
+        const float x = marker[0] * result.image.width - 0.5F;
+        const float y = marker[1] * result.image.height - 0.5F;
+        const auto fit = photonstack::fitStarCentroid(result.image, x, y);
+        assert(fit.ok && std::hypot(fit.x - x, fit.y - y) < 0.5F);
+    }
     std::vector<float> errors;
     for (const auto& [x, y] : expectedCenters) {
         const float outputX = result.placements.front().x + x;

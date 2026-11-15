@@ -71,6 +71,8 @@ struct MosaicPlacement {
     // Piecewise-linear residual in canvas pixels along the common sky strip.
     std::vector<MosaicResidualKnot> residuals;
     bool residualAlongY = true;
+    // Normalized output coordinates, measured from the top left at pixel centers.
+    std::vector<std::array<float, 2>> alignmentStars;
     float x = 0.0F;
     float y = 0.0F;
     float a = 1.0F;

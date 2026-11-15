@@ -516,6 +516,9 @@ double overlapCorrelation(const ImageBuffer& reference, const ImageBuffer& movin
 
 struct MosaicAlignmentCandidate {
     MosaicPlacement placement;
+    // Multi-neighbor consensus retains the global affine and discards the local warp.
+    std::vector<std::array<float, 2>> affineStars;
+    std::size_t affineMatchCount = 0;
     MosaicTransformModel transformModel = MosaicTransformModel::Manual;
     std::size_t matches = 0;
     float score = 0.0F;
@@ -592,7 +595,7 @@ MosaicPlacement fuseAlignmentCandidates(
         d += candidate->placement.d * weight;
         x += candidate->placement.x * weight;
         y += candidate->placement.y * weight;
-        acceptedMatches += candidate->matches;
+        acceptedMatches += consensus.size() > 1 ? candidate->affineMatchCount : candidate->matches;
         placement.transformModel = moreExpressiveModel(placement.transformModel, candidate->transformModel);
         placement.usedReducedModel = placement.usedReducedModel || candidate->usedReducedModel;
     }
@@ -604,7 +607,14 @@ MosaicPlacement fuseAlignmentCandidates(
         placement.x = x / totalWeight;
         placement.y = y / totalWeight;
     }
-    if (consensus.size() != 1) placement.residuals.clear();
+    if (consensus.size() > 1) {
+        placement.residuals.clear();
+        placement.alignmentStars.clear();
+        for (const auto* candidate : consensus) {
+            const auto& stars = candidate->affineStars;
+            placement.alignmentStars.insert(placement.alignmentStars.end(), stars.begin(), stars.end());
+        }
+    }
     placement.matches = acceptedMatches;
     placement.referenceCount = consensus.size();
     placement.autoAligned = true;
@@ -656,6 +666,11 @@ std::size_t refineCommonSky(const ImageBuffer& reference, const ImageBuffer& mov
         placement.residuals.clear();
         return 0;
     }
+    placement.alignmentStars.clear();
+    // Index 0 of each four-star group was reserved for validation.
+    for (std::size_t i = 0; i < pairs.size(); ++i) {
+        if (i % 4 != 0) placement.alignmentStars.push_back({pairs[i][2], pairs[i][3]});
+    }
     return pairs.size();
 }
 
@@ -672,6 +687,8 @@ std::vector<MosaicPlacement> automaticPlacements(
     matchedPairs = 0;
     const auto columns = clampedColumns(options, images.size());
     const Registration registration;
+    auto registrationOptions = options.registration;
+    registrationOptions.collectAlignmentStars = true;
     bool usedCoarseAlignment = false;
     const auto registrationImages = alignmentImages(images, options.alignmentWidth, usedCoarseAlignment);
     if (usedCoarseAlignment && registrationImages.size() != images.size()) {
@@ -722,7 +739,7 @@ std::vector<MosaicPlacement> automaticPlacements(
                     horizontal,
                     !forward);
                 const auto registrationResult = registration.estimateAffine(
-                    registrationReference.image, registrationMoving.image, options.registration);
+                    registrationReference.image, registrationMoving.image, registrationOptions);
                 if (!registrationResult.ok) {
                     continue;
                 }
@@ -761,9 +778,17 @@ std::vector<MosaicPlacement> automaticPlacements(
                     .referenceTrusted = referenceTrusted,
                     .usedReducedModel = registrationResult.usedFallback,
                 };
+                for (const auto& star : registrationResult.alignedMovingStars) {
+                    const float sx = usedCoarseAlignment ? registrationImages[index].scaleX : 1.0F;
+                    const float sy = usedCoarseAlignment ? registrationImages[index].scaleY : 1.0F;
+                    best->placement.alignmentStars.push_back({(star[0] + registrationMoving.originX) / sx,
+                                                             (star[1] + registrationMoving.originY) / sy});
+                }
                 if (small || correlation >= 0.85) break;
             }
             if (best) {
+                best->affineMatchCount = best->matches;
+                best->affineStars = best->placement.alignmentStars;
                 if (options.projection == MosaicProjection::Planar && images[index].pixelCount() >= 65536) {
                     const auto& parent = placements[neighbor.index];
                     const bool horizontal = std::abs(bestRelative.dx) / images[index].width >=
@@ -1490,6 +1515,10 @@ MosaicResult composeMosaic(
     for (auto& placement : placements) {
         placement.x += shiftX;
         placement.y += shiftY;
+        for (auto& star : placement.alignmentStars) {
+            const auto point = transformPoint(placement, star[0], star[1]);
+            star = {(point.x + 0.5F) / width, (point.y + 0.5F) / height};
+        }
     }
 
     if (options.blendMode == MosaicBlendMode::Multiband) {

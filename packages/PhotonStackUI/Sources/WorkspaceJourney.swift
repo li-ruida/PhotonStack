@@ -124,6 +124,10 @@ struct WorkspaceJourneyBar: View {
                         Button(chinese ? "取消" : "Cancel") { model.cancelCurrentTask() }
                             .disabled(!model.canCancel)
                     } else {
+                        if state.lightCount >= 3, !state.resultCurrent, !finishingRequested {
+                            Button(chinese ? "一键成片" : "Stack & finish") { model.startDeepSkyWorkflow(analyzeOnly: false) }
+                                .accessibilityIdentifier("journey.stack-and-finish")
+                        }
                         if state.step != .finish, model.canProcessCurrentInput {
                             Button(chinese ? "直接后期" : "Edit current image") { onSelect(.finish) }
                                 .help(chinese ? "跳过筛片与堆栈，调整当前图像；适合已堆好的成片。" : "Skip stacking and edit the current image, for existing masters or single photos.")

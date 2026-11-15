@@ -15,8 +15,27 @@ struct AssetSidebar: View {
     @State private var hoveredAssetID: PhotonStackAsset.ID?
 
     var body: some View {
-        let showingResult = model.isShowingLatestDeepSkyResult
+        let showingResult = model.isShowingLatestDeepSkyResult || model.isShowingMosaicResult || model.isShowingMosaicPreview
         VStack(spacing: 0) {
+            if model.latestMosaicOperation != nil {
+                Button { model.showLatestMosaicResult() } label: {
+                    HStack {
+                        Label(model.language == .simplifiedChinese ? "拼接成片" : "Mosaic result", systemImage: "rectangle.3.group")
+                        Spacer()
+                        if model.isShowingMosaicResult { Image(systemName: "checkmark") }
+                    }
+                    .padding(8)
+                    .background(model.isShowingMosaicResult ? Color.accentColor.opacity(0.16) : .clear,
+                                in: RoundedRectangle(cornerRadius: 6))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 8)
+                .disabled(!model.canModifyProcessingConfiguration)
+                .accessibilityAddTraits(model.isShowingMosaicResult ? .isSelected : [])
+                .accessibilityIdentifier("sidebar.mosaic-result")
+                Divider()
+            }
             if model.latestDeepSkyResultURL != nil {
                 Button {
                     model.showLatestDeepSkyResult()
@@ -25,19 +44,19 @@ struct AssetSidebar: View {
                         Image(systemName: "photo.stack")
                         Text(model.language == .simplifiedChinese ? "堆栈成片" : "Stack result")
                         Spacer()
-                        if showingResult {
+                        if model.isShowingLatestDeepSkyResult {
                             Image(systemName: "checkmark").accessibilityHidden(true)
                         }
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
-                    .background(showingResult ? Color.accentColor.opacity(0.16) : .clear,
+                    .background(model.isShowingLatestDeepSkyResult ? Color.accentColor.opacity(0.16) : .clear,
                                 in: RoundedRectangle(cornerRadius: 6))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!model.canModifyProcessingConfiguration)
-                .accessibilityAddTraits(showingResult ? .isSelected : [])
+                .accessibilityAddTraits(model.isShowingLatestDeepSkyResult ? .isSelected : [])
                 .accessibilityIdentifier("sidebar.stack-result")
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
@@ -146,8 +165,9 @@ struct AssetSidebar: View {
     }
 
     private var assetGroups: [SidebarAssetGroup] {
-        CalibrationFrameRole.allCases.compactMap { role in
-            let assets = model.project.assets.filter { $0.role == role }
+        let panelIDs = model.usesMosaicWorkflow ? Set(model.mosaicAssets.map(\.id)) : []
+        return CalibrationFrameRole.allCases.compactMap { role in
+            let assets = model.project.assets.filter { (panelIDs.contains($0.id) ? .mosaic : $0.role) == role }
             return assets.isEmpty ? nil : SidebarAssetGroup(role: role, assets: assets)
         }
     }

@@ -2920,6 +2920,22 @@ import Testing
     #expect(model.previewOperationID == operation.id)
 }
 
+@Test @MainActor func mosaicJourneyReusesImportedLightsAndPersistsPanelChoice() throws {
+    var project = PhotonStackProject()
+    project.addAssets(from: [URL(fileURLWithPath: "/tmp/T1.fit"), URL(fileURLWithPath: "/tmp/T2.fit")])
+    project.addAssets(from: [URL(fileURLWithPath: "/tmp/dark.fit")], role: .dark)
+    let model = PhotonStackWorkspaceModel(project: project, processingService: RecordingProcessingService())
+    model.chooseMosaicWorkflow(true)
+    #expect(model.mosaicAssets.map(\.id) == model.lightAssets.map(\.id))
+    let restored = try JSONDecoder().decode(PhotonStackProject.self, from: JSONEncoder().encode(model.project))
+    #expect(restored.mosaicWorkflow == true)
+    #expect(restored.mosaicPanelOrder.count == 2)
+    model.chooseMosaicWorkflow(false)
+    #expect(model.lightAssets.count == 2)
+    #expect(model.darkAssets.count == 1)
+    #expect(model.mosaicAssets.isEmpty)
+}
+
 @Test @MainActor func mosaicCreatesSmartObjectAndBaseLayer() async throws {
     let service = RecordingProcessingService()
     var project = PhotonStackProject(name: "Mosaic Product Test")

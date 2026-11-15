@@ -237,6 +237,10 @@ enum WorkspaceReportDecoder {
                 fallback: fallback,
                 reducedModel: reducedModel,
                 coarseAlignment: coarseAlignment,
+                alignmentStars: (placement["alignmentStars"] as? [[Double]] ?? []).compactMap { pair in
+                    guard pair.count == 2, pair.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else { return nil }
+                    return CGPoint(x: pair[0], y: pair[1])
+                },
                 locallyRefined: (placement["residuals"] as? [[Double]])?.isEmpty == false
             )
         }

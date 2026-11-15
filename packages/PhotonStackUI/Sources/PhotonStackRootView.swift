@@ -138,9 +138,40 @@ public struct PhotonStackRootView: View {
             )
         } detail: {
             VStack(spacing: 0) {
-                WorkspaceJourneyBar(model: model, finishingRequested: finishingRequested, onSelect: navigateJourney)
+                Picker(model.language == .simplifiedChinese ? "工作流" : "Workflow", selection: Binding(
+                    get: { model.usesMosaicWorkflow },
+                    set: { value in
+                        finishingRequested = false
+                        inspectorPage = .processing
+                        model.chooseMosaicWorkflow(value)
+                    }
+                )) {
+                    Text(model.language == .simplifiedChinese ? "一键成片" : "Stack & finish").tag(false)
+                    Text(model.language == .simplifiedChinese ? "天区拼接" : "Sky mosaic").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 340)
+                .padding(.vertical, 6)
+                .disabled(model.hasActiveProcessing)
+                .accessibilityIdentifier("journey.workflow")
+                if model.usesMosaicWorkflow {
+                    MosaicJourneyBar(model: model, onImport: startImportFiles, onFinish: { navigateJourney(.finish) },
+                        onExport: { navigateJourney(.export) })
+                } else {
+                    WorkspaceJourneyBar(model: model, finishingRequested: finishingRequested, onSelect: navigateJourney)
+                }
                 Divider()
-                if model.project.assets.isEmpty {
+                if model.project.assets.isEmpty && model.usesMosaicWorkflow {
+                    ContentUnavailableView {
+                        Label(model.language == .simplifiedChinese ? "拼接相邻天区" : "Stitch adjacent sky panels",
+                              systemImage: "rectangle.3.group")
+                    } description: {
+                        Text(model.language == .simplifiedChinese ? "选择至少两张已堆好的面板，重叠区需要有共同星点。"
+                             : "Choose at least two stacked panels with stars in their overlap.")
+                    } actions: {
+                        Button(model.language == .simplifiedChinese ? "选择面板…" : "Choose panels…", action: startImportFiles)
+                    }
+                } else if model.project.assets.isEmpty {
                     WorkspaceWelcomeView(chinese: model.language == .simplifiedChinese,
                         onImport: startImportFiles, onImportFolder: startImportFolder,
                         onEditMaster: startImportMaster, onOpenProject: openProject)
@@ -153,13 +184,21 @@ public struct PhotonStackRootView: View {
                         }
                         Divider()
                         InspectorPanel(model: model, page: $inspectorPage,
-                            isFinishing: finishingRequested || model.journeyResultIsCurrent)
+                            isFinishing: finishingRequested || (!model.usesMosaicWorkflow && model.journeyResultIsCurrent))
                             .frame(width: 320)
                     }
                 }
             }
             .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
             .navigationTitle(model.project.name)
+            .onChange(of: model.usesMosaicWorkflow ? model.mosaicAssets.map(\.id) : []) { _, panels in
+                guard panels.count >= 2, model.canRunMosaic, !model.hasActiveProcessing else { return }
+                if model.latestMosaicOperation?.parameters["panelIDs"] == panels.map(\.uuidString).joined(separator: ",") {
+                    model.showLatestMosaicResult()
+                } else {
+                    model.startRunMosaicPreview()
+                }
+            }
         }
         .toolbar {
             WorkspaceToolbar(
@@ -442,7 +481,7 @@ public struct PhotonStackRootView: View {
             isDeepSkyPresented = true
         case .finish:
             // Returning to the editor must not reset a user's later adjustments.
-            if model.isShowingSelectedOriginal, model.journeyResultIsCurrent {
+            if !model.usesMosaicWorkflow, model.isShowingSelectedOriginal, model.journeyResultIsCurrent {
                 model.showLatestDeepSkyResult()
             }
             finishingRequested = true

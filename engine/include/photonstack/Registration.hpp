@@ -77,6 +77,7 @@ struct RegistrationOptions {
     // Refine coarse similarity matches with native-pixel PSF centers. With
     // estimateAffine, adopt affine geometry only after cross-validation.
     bool refineSimilarityCentroids = false;
+    bool collectAlignmentStars = false;
 };
 
 struct RegistrationResult {
@@ -89,6 +90,7 @@ struct RegistrationResult {
     std::size_t detectedMovingStars = 0;
     float inlierRatio = 0.0F;
     bool usedFallback = false;
+    std::vector<std::array<float, 2>> alignedMovingStars;
     bool usedCentroidRefinement = false;
     float centroidRefinementRms = 0.0F;
     bool usedCentroidAffine = false;

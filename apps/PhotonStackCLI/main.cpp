@@ -3055,6 +3055,12 @@ int buildMosaic(const std::vector<std::string>& args) {
             if (j > 0) std::cout << ",";
             std::cout << "[" << knot.position << "," << knot.x << "," << knot.y << "]";
         }
+        std::cout << "],\"alignmentStars\":[";
+        for (std::size_t j = 0; j < placement.alignmentStars.size(); ++j) {
+            if (j > 0) std::cout << ",";
+            const auto& star = placement.alignmentStars[j];
+            std::cout << "[" << star[0] << "," << star[1] << "]";
+        }
         std::cout << "]}";
     }
     std::cout << "],\n"

@@ -55,6 +55,8 @@ struct InspectorPanel: View {
                             Text(model.language == .simplifiedChinese ? "后期调整" : "Finish your image")
                                 .font(.headline)
                             AdjustmentsInspectorSection(model: model, parameters: processingParametersBinding)
+                        } else if model.usesMosaicWorkflow {
+                            MosaicSection(model: model, parameters: processingParametersBinding)
                         } else {
                             InspectorToolGroupView(
                                 model: model,

@@ -9,7 +9,7 @@ automation.
 
 Compare the same patch of sky before and after finishing:
 [M31 dust lanes](https://astro.ruida.li/?workflow=m31&step=finish#process) ·
-[two-panel nebula mosaic](https://astro.ruida.li/?workflow=mosaic&step=finish#process).
+[Veil Nebula mosaic](https://astro.ruida.li/?workflow=mosaic&step=finish#process).
 
 ## What it does
 
@@ -35,7 +35,7 @@ Compare the same patch of sky before and after finishing:
 | Workflow | Capture | Output |
 | --- | --- | --- |
 | [Stack & finish](#real-m31-workflow-200-source-frames) | 200 exposures of M31 | 182 selected frames, 1928 × 3638 TIFF |
-| [Sky mosaic](#two-panel-sky-mosaic) | Two overlapping pointings, 90 + 112 exposures | 3913 × 3905 TIFF |
+| [Veil Nebula mosaic](#veil-nebula-mosaic) | Eastern Veil (90 exposures) and Western Veil (112 exposures) | 3913 × 3905 TIFF |
 
 [Explore both workflows on the project site](https://astro.ruida.li/#process).
 
@@ -99,20 +99,23 @@ The JPEG below shows the full composition at web resolution.
 > benchmark. Capture conditions, calibration frames, recipe choices, hardware,
 > and output resolution all affect quality and processing time.
 
-## Two-panel sky mosaic
+<a id="two-panel-sky-mosaic"></a>
 
-T1 and T2 cover adjacent patches of sky. This walkthrough follows the same 202
-FITS exposures from folder import through registration, blending and export.
+## Veil Nebula mosaic
+
+Two overlapping pointings capture the Eastern Veil (NGC 6992 and NGC 6995)
+and the Western Veil (NGC 6960). This walkthrough follows 202 FITS exposures
+from folder import through registration, blending and export.
 [Open the interactive mosaic walkthrough](https://astro.ruida.li/?workflow=mosaic#process).
 
 ### 1. Import the pointings
 
 Choose **Sky mosaic** and select the parent directory or the individual panel
-folders. The sidebar groups the 90 exposures in `T1_sub` and the 112 in
-`T2_sub` as two panels. If each pointing already has a stacked master, import
-the two masters directly.
+folders. The sidebar groups the 90 Eastern Veil exposures and the 112 Western
+Veil exposures into separate panels. If each pointing already has a stacked
+master, import the two masters directly.
 
-![T1 and T2 listed as separate panels with their exposure counts](docs/page/assets/mosaic/01-panels.webp)
+![Eastern and Western Veil pointings listed with their exposure counts](docs/page/assets/mosaic/01-panels.webp)
 
 ### 2. Preview the star alignment
 
@@ -151,7 +154,7 @@ The settings act on the entire stitched frame. [Compare the mosaic adjustments](
 PhotonStack wrote a 3913 × 3905, 16-bit sRGB TIFF. This web-size JPEG shows
 the full field from both pointings.
 
-![Finished two-panel mosaic with red and teal filaments](docs/page/assets/finishing/mosaic/full.jpg)
+![Finished Veil Nebula mosaic with red and teal filaments](docs/page/assets/finishing/mosaic/full.jpg)
 
 ## Architecture
 

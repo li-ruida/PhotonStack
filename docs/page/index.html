@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#ffffff">
-  <meta name="description" content="PhotonStack 是开源的 macOS 深空摄影叠加工作台。通过 M31 一键成片与双天区拼接两个实拍示例，了解从 FITS 原片到成片的流程。">
+  <meta name="description" content="PhotonStack 是开源的 macOS 深空摄影叠加工作台。通过 M31 一键成片与面纱星云拼接两个实拍示例，了解从 FITS 原片到成片的流程。">
   <title>PhotonStack · 深空摄影工作台</title>
   <link rel="icon" href="assets/app-icon.png" type="image/png">
   <link rel="stylesheet" href="style.css?v=3">
@@ -37,10 +37,10 @@
         <figcaption><span>M31 · 仙女座星系</span><span>182 帧叠加</span><a class="finish-link" href="?workflow=m31&amp;step=finish#process">对比后期前后</a></figcaption>
       </figure>
       <figure class="plate" data-example="mosaic">
-        <a href="assets/finishing/mosaic/full.jpg" aria-label="查看两个天区的完整彩色拼接成片">
-          <img width="1120" height="574" src="assets/finishing/mosaic/color.webp" alt="后期成片局部，红色和青色的星云细丝横穿星场。" loading="lazy">
+        <a href="assets/finishing/mosaic/full.jpg" aria-label="查看面纱星云的彩色拼接成片">
+          <img width="1120" height="574" src="assets/finishing/mosaic/color.webp" alt="面纱星云成片局部，红色和青色的细丝横穿星场。" loading="lazy">
         </a>
-        <figcaption><span>T1 + T2 · 天区拼接</span><span>2 个天区 · 202 帧</span><a class="finish-link" href="?workflow=mosaic&amp;step=finish#process">对比后期前后</a></figcaption>
+        <figcaption><span>面纱星云 · 双天区拼接</span><span>2 个天区 · 202 帧</span><a class="finish-link" href="?workflow=mosaic&amp;step=finish#process">对比后期前后</a></figcaption>
       </figure>
     </section>
     <section id="process" aria-labelledby="process-title">
@@ -54,7 +54,7 @@
             </fieldset>
           </div>
           <p data-example="m31">从 200 张 FITS 亮场，到一张仙女座星系成片。</p>
-          <p data-example="mosaic">T1 的 90 帧与 T2 的 112 帧分别堆栈，再用共同星点拼接。</p>
+          <p data-example="mosaic">东面纱星云（NGC 6992、NGC 6995）与西面纱星云（NGC 6960）分别堆栈，再用共同星点拼接。</p>
         </div>
         <ol class="steps" data-example="m31" aria-label="选择处理步骤">
           <li><a href="assets/01-import-200.webp" aria-current="step" data-caption="导入 200 张 FITS 亮场，逐张预览原片。">导入</a></li>
@@ -64,11 +64,11 @@
           <li><a href="assets/finishing/m31/full.jpg" data-step="export" data-caption="1928 × 3638 像素的 16 位 TIFF 成片。点击查看完整构图的彩色预览。">导出</a></li>
         </ol>
         <ol class="steps" data-example="mosaic" aria-label="选择拼接步骤">
-          <li><a href="assets/mosaic/01-panels.webp" aria-current="step" data-caption="按天区导入原片。T1_sub 有 90 帧，T2_sub 有 112 帧。">导入</a></li>
+          <li><a href="assets/mosaic/01-panels.webp" aria-current="step" data-caption="按天区导入原片。东面纱星云 90 帧，西面纱星云 112 帧。">导入</a></li>
           <li><a href="assets/mosaic/02-align.webp" data-caption="分别堆栈两组原片，在配准预览中检查重叠区域的共同星点。">配准</a></li>
           <li><a href="assets/mosaic/03-stitch.webp" data-caption="复用两张母片，以 223 个星点匹配完成对齐，再羽化融合重叠区域。">拼接</a></li>
           <li><a href="assets/finishing/mosaic/comparison.jpg" data-step="finish" data-caption="拖动分界线对比，或用左右方向键微调位置。">后期</a></li>
-          <li><a href="assets/finishing/mosaic/full.jpg" data-step="export" data-caption="3913 × 3905 像素的 16 位 TIFF 成片。点击查看两个天区的完整构图。">导出</a></li>
+          <li><a href="assets/finishing/mosaic/full.jpg" data-step="export" data-caption="3913 × 3905 像素的 16 位 TIFF 成片。点击查看面纱星云拼接成片。">导出</a></li>
         </ol>
       </div>
       <figure class="workspace" data-example="m31">
@@ -81,7 +81,7 @@
         <a href="assets/mosaic/01-panels.webp" aria-label="放大查看当前步骤截图">
           <img width="1600" height="1004" src="assets/mosaic/01-panels.webp" alt="两个天区文件夹分别列出 90 帧和 112 帧，中央显示单帧预览。" loading="lazy">
         </a>
-        <figcaption aria-live="polite">按天区导入原片。T1_sub 有 90 帧，T2_sub 有 112 帧。</figcaption>
+        <figcaption aria-live="polite">按天区导入原片。东面纱星云 90 帧，西面纱星云 112 帧。</figcaption>
       </figure>
     </section>
   </main>

@@ -2920,6 +2920,44 @@ import Testing
     #expect(model.previewOperationID == operation.id)
 }
 
+@Test @MainActor func mosaicFoldersStaySeparateThroughImportPreviewBuildAndReopen() async throws {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: base) }
+    let root = base.appendingPathComponent("pointings", isDirectory: true)
+    let cache = base.appendingPathComponent("previews", isDirectory: true)
+    let west = root.appendingPathComponent("West_sub", isDirectory: true)
+    let east = root.appendingPathComponent("East", isDirectory: true)
+    for name in ["West_sub/Light_West_1.fit", "West_sub/Light_West_2.fit", "West/Stacked_2_West_1.fit",
+                 "East/lights/1.fit", "East/lights/2.fit", "East/darks/dark.fit"] {
+        try writeMinimalFITS(to: root.appendingPathComponent(name))
+    }
+    try Data().write(to: west.appendingPathComponent("Light_West_1.jpg"))
+    let service = RecordingProcessingService()
+    let model = PhotonStackWorkspaceModel(autosaveEnabled: false, processingService: service, previewDirectory: cache)
+    model.chooseMosaicWorkflow(true)
+    #expect(model.importAssets(from: [root, west]))
+    #expect(model.mosaicAssets.map(\.displayName) == ["East", "West_sub"])
+    #expect(model.mosaicAssets.compactMap { $0.mosaicFolder?.frames.count } == [2, 2])
+    #expect(!model.importAssets(from: [east, west]))
+    let restored = try JSONDecoder().decode(PhotonStackProject.self, from: JSONEncoder().encode(model.project))
+    #expect(restored.assets == model.project.assets)
+    await model.runMosaicPreview()
+    let preview = try #require(await service.snapshot().mosaicInputGroups.last)
+    #expect(preview.count == 2 && Set(preview).count == 2)
+    #expect(preview.allSatisfy { $0.deletingLastPathComponent().lastPathComponent == "mosaic-panels" })
+    await model.runMosaic()
+    #expect(await service.snapshot().mosaicInputGroups.last == preview)
+
+    // Changing a non-representative light invalidates only that panel master.
+    try writeMinimalFITS(to: west.appendingPathComponent("Light_West_2.fit"), width: 128)
+    await model.runMosaicPreview()
+    let updated = try #require(await service.snapshot().mosaicInputGroups.last)
+    #expect(updated.first == preview.first && updated.last != preview.last)
+    try FileManager.default.removeItem(at: west.appendingPathComponent("Light_West_2.fit"))
+    await model.runMosaic()
+    #expect(model.errorMessage?.contains("Light_West_2.fit") == true)
+}
+
 @Test @MainActor func mosaicJourneyReusesImportedLightsAndPersistsPanelChoice() throws {
     var project = PhotonStackProject()
     project.addAssets(from: [URL(fileURLWithPath: "/tmp/T1.fit"), URL(fileURLWithPath: "/tmp/T2.fit")])

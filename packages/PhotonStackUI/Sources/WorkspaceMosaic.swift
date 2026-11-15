@@ -29,12 +29,22 @@ struct MosaicSection: View {
             }
 
             Button {
+                if let urls = NativeFilePanels.mosaicFolders(chinese: model.language == .simplifiedChinese) {
+                    model.chooseMosaicWorkflow(true, adoptExistingLights: false)
+                    model.importAssets(from: urls)
+                }
+            } label: {
+                Label(model.language == .simplifiedChinese ? "导入天区文件夹…" : "Add panel folders…", systemImage: "folder.badge.plus")
+            }
+            .disabled(!model.canImportAssetsImmediately || !model.canModifyProcessingConfiguration)
+
+            Button {
                 if let urls = NativeFilePanels.importAssetURLs(message: model.language == .simplifiedChinese
                     ? "选择每个天区已堆叠的面板图像" : "Select the stacked image for each sky panel") {
                     model.importMosaicPanels(from: urls)
                 }
             } label: {
-                Label(model.language == .simplifiedChinese ? "添加拼接面板…" : "Add mosaic panels…", systemImage: "plus")
+                Label(model.language == .simplifiedChinese ? "导入已堆栈母片…" : "Add stacked masters…", systemImage: "plus")
             }
             .disabled(!model.canImportAssetsImmediately || !model.canModifyProcessingConfiguration)
 
@@ -155,6 +165,10 @@ struct MosaicSection: View {
                             Text(asset.displayName)
                                 .font(.caption)
                                 .lineLimit(1)
+                            if let folder = asset.mosaicFolder {
+                                Text(model.language == .simplifiedChinese ? "\(folder.frames.count) 帧" : "\(folder.frames.count) frames")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
                             if let width = asset.metadata?.width, let height = asset.metadata?.height {
                                 Text("\(width) x \(height)")
                                     .font(.caption2.monospacedDigit())

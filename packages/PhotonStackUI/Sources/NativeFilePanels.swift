@@ -61,6 +61,12 @@ enum NativeFilePanels {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
+    static func mosaicFolders(chinese: Bool) -> [URL]? {
+        workflowTargetFolders(message: chinese
+            ? "选择多个天区文件夹，或选择包含这些子文件夹的总目录。每个天区将单独堆栈。"
+            : "Select several panel folders or their parent. Each panel is stacked separately.")
+    }
+
     static func workflowTargetFolders(message: String) -> [URL]? {
         let panel = makeImportFolderPanel(message: message)
         panel.allowsMultipleSelection = true

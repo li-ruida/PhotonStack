@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MosaicJourneyBar: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
+    let onImportFolders: () -> Void
     let onImport: () -> Void
     let onFinish: () -> Void
     let onExport: () -> Void
@@ -12,7 +13,9 @@ struct MosaicJourneyBar: View {
             HStack {
                 Text(chinese ? "面板 \(model.mosaicAssets.count) 张" : "\(model.mosaicAssets.count) panels")
                     .font(.callout.weight(.medium))
-                Button(chinese ? "添加面板…" : "Add panels…", action: onImport)
+                Button(chinese ? "导入天区文件夹…" : "Add panel folders…", action: onImportFolders)
+                    .accessibilityIdentifier("journey.mosaic-folders")
+                Button(chinese ? "导入母片…" : "Add masters…", action: onImport)
                 Button(chinese ? "预览拼接" : "Preview mosaic") { model.startRunMosaicPreview() }
                     .accessibilityIdentifier("journey.mosaic-preview")
                     .disabled(!model.canRunMosaic)
@@ -31,6 +34,7 @@ struct MosaicJourneyBar: View {
             if model.hasActiveProcessing {
                 HStack {
                     ProgressView().controlSize(.small)
+                    if let panel = model.stackingMosaicPanel { Text(panel) }
                     Text(model.progressMessage ?? (chinese ? "正在拼接…" : "Stitching…"))
                     Button(chinese ? "取消" : "Cancel") { model.cancelCurrentTask() }.disabled(!model.canCancel)
                 }.font(.caption)

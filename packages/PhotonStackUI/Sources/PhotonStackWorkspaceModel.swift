@@ -433,6 +433,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     @Published public private(set) var commandOutput: String = ""
     @Published public private(set) var isProcessing = false
     @Published public private(set) var progressFraction: Double?
+    @Published private(set) var stackingMosaicPanel: String?
     @Published public private(set) var progressMessage: String?
     @Published public private(set) var errorMessage: String?
     @Published public private(set) var canCancel = false
@@ -1485,9 +1486,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         project.mosaicWorkflow ?? (project.template == .mosaic)
     }
 
-    public func chooseMosaicWorkflow(_ enabled: Bool) {
+    public func chooseMosaicWorkflow(_ enabled: Bool, adoptExistingLights: Bool = true) {
         guard canModifyProcessingConfiguration, enabled != usesMosaicWorkflow else { return }
-        if enabled && mosaicAssets.isEmpty {
+        if enabled && adoptExistingLights && mosaicAssets.isEmpty {
             // Adopt already imported lights as panels without changing their original roles.
             project.mosaicPanelOrder = lightAssets.map(\.id)
         }
@@ -2953,6 +2954,29 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
     @discardableResult
     public func importAssets(from urls: [URL]) -> Bool {
+        if usesMosaicWorkflow {
+            let folders = urls.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            if !folders.isEmpty {
+                guard canImportAssetsImmediately else {
+                    pendingAssetImportURLs.append(contentsOf: urls.filter { !pendingAssetImportURLs.contains($0) })
+                    pendingAssetImportCount = pendingAssetImportURLs.count
+                    commandOutput = String(format: localized(.assetImportQueued), pendingAssetImportCount)
+                    return false
+                }
+                do {
+                    for folder in folders { _ = folder.startAccessingSecurityScopedResource() }
+                    let groups = try MosaicPanelFolder.discover(in: folders)
+                    let imported = adoptMosaicFolders(groups)
+                    let members = Set(groups.flatMap(\.frames).map(PhotonStackProject.assetIdentityPath(for:)))
+                    let files = urls.filter { !folders.contains($0) && !members.contains(PhotonStackProject.assetIdentityPath(for: $0)) }
+                    let addedFiles = !files.isEmpty && importAssets(from: files)
+                    return imported || addedFiles
+                } catch {
+                    errorMessage = error.localizedDescription
+                    return false
+                }
+            }
+        }
         var seenPaths = Set(project.assets.map {
             PhotonStackProject.assetIdentityPath(for: $0.originalURL)
         })
@@ -2978,6 +3002,43 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
         cancelRawPreviewUpdate()
         return importReadableAssets(from: readableURLs)
+    }
+
+    private func adoptMosaicFolders(_ groups: [MosaicPanelFolder]) -> Bool {
+        cancelRawPreviewUpdate()
+        var changed = false
+        for group in groups {
+            guard let first = group.frames.first else { continue }
+            let previous = project.assets.first { $0.mosaicFolder?.directory == group.directory }
+            let representative = previous.flatMap { group.frames.contains($0.originalURL) ? $0.originalURL : nil } ?? first
+            if let previous, previous.originalURL != representative {
+                guard project.relinkAsset(previous.id, to: representative) else { continue }
+            }
+            if !project.assets.contains(where: { $0.originalURL.standardizedFileURL == representative.standardizedFileURL }) {
+                _ = importReadableAssets(from: [representative])
+            }
+            guard let index = project.assets.firstIndex(where: { $0.originalURL.standardizedFileURL == representative.standardizedFileURL }) else { continue }
+            let asset = project.assets[index]
+            if asset.role != .mosaic { setRole(.mosaic, for: asset) }
+            if asset.mosaicFolder != group || asset.role != .mosaic {
+                project.assets[index].mosaicFolder = group
+                changed = true
+            }
+            // A folder may have previously been imported as individual panel images.
+            let members = Set(group.frames)
+            let duplicates = mosaicAssets.filter { $0.id != asset.id && members.contains($0.originalURL) }
+            for duplicate in duplicates {
+                if duplicate.role == .mosaic { setRole(.light, for: duplicate) }
+                project.mosaicPanelOrder.removeAll { $0 == duplicate.id }
+                changed = true
+            }
+        }
+        if changed {
+            errorMessage = nil
+            project.updatedAt = Date()
+            triggerAutosave()
+        }
+        return changed
     }
 
     private var defaultImportRole: CalibrationFrameRole {
@@ -3031,7 +3092,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         let urls = pendingAssetImportURLs
         clearPendingAssetImports()
         cancelRawPreviewUpdate()
-        _ = importReadableAssets(from: urls)
+        _ = importAssets(from: urls)
     }
 
     private func clearPendingAssetImports() {
@@ -6494,6 +6555,84 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                                                       rawOptions: parameters.rawProcessingOptions)
     }
 
+    private func mosaicInputSignature(_ panels: [PhotonStackAsset]) -> String {
+        panels.map { panel in
+            let frames = panel.mosaicFolder?.frames ?? [panel.originalURL]
+            return stableDigest(frames.map { "\($0.path)|\(fileSignature($0))" }.joined(separator: "\n"))
+        }.joined(separator: ",")
+    }
+
+    private func preparedMosaicInputs(_ panels: [PhotonStackAsset], progressEnd: Double = 0) async throws -> [URL] {
+        var inputs: [URL] = []
+        for (index, panel) in panels.enumerated() {
+            try Task.checkCancellation()
+            guard let group = panel.mosaicFolder, group.frames.count > 1 else {
+                inputs.append(panel.originalURL)
+                continue
+            }
+            do {
+                let span = progressEnd / Double(panels.count)
+                let parent = ProcessingProgressContext.progressScope
+                let lower = Double(index) * span
+                let upper = Double(index + 1) * span
+                let scope = ProcessingProgressScope(lowerBound: parent?.map(lower) ?? lower, upperBound: parent?.map(upper) ?? upper)
+                let master = try await ProcessingProgressContext.$progressScope.withValue(scope) {
+                    try await preparedPanelMaster(group, panel: panel, index: index, count: panels.count)
+                }
+                inputs.append(master)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                try Task.checkCancellation()
+                throw PhotonStackAppCore.WorkflowError("\(panel.displayName) · \(error.localizedDescription)")
+            }
+        }
+        return inputs
+    }
+
+    private func preparedPanelMaster(_ group: MosaicPanelFolder, panel: PhotonStackAsset, index: Int, count: Int) async throws -> URL {
+        let fm = FileManager.default
+        if let missing = group.frames.first(where: { !fm.isReadableFile(atPath: $0.path) }) {
+            throw PhotonStackAppCore.WorkflowError("找不到原片 / Missing frame: \(missing.path)")
+        }
+        let scientific = group.frames.allSatisfy { [.fits, .raw].contains(AssetKind.detect(from: $0)) }
+        let fingerprint = mosaicInputSignature([panel])
+        let key = stableDigest([cacheBuildIdentity, computeBackend.rawValue, fingerprint].joined(separator: "|"))
+        let root = (currentProjectDirectory?.appendingPathComponent("processing") ?? previewDirectory)
+            .appendingPathComponent("mosaic-panels", isDirectory: true)
+        let output = root.appendingPathComponent(key).appendingPathExtension(scientific ? "fits" : "tiff")
+        if Self.isUsableCachedOutput(output) { return output }
+
+        let status = language == .simplifiedChinese ? "正在堆栈天区" : "Stacking panel"
+        stackingMosaicPanel = "\(status) \(index + 1)/\(count) · \(panel.displayName) (\(group.frames.count))"
+        defer { stackingMosaicPanel = nil }
+        let staging = root.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: staging) }
+        let master: URL
+        if scientific && group.frames.count >= 3 {
+            if deepSkySchema == nil { deepSkySchema = try await processingService.deepSkySchema() }
+            guard let schema = deepSkySchema else { throw DeepSkyRecipeError.unsupportedVersion }
+            let recipe = try DeepSkySettings().recipe(schema: schema, inputs: group.frames)
+            let recipeURL = staging.appendingPathComponent("recipe.txt")
+            try recipe.write(to: recipeURL, atomically: true, encoding: .utf8)
+            let report = try await processingService.deepSky(recipe: recipeURL, outputDirectory: staging.appendingPathComponent("run"),
+                analyzeOnly: false, analysisWorkers: analysisWorkerCount, stackWorkers: stackWorkerCount, computeBackend: computeBackend)
+            master = URL(fileURLWithPath: report.master)
+        } else {
+            master = staging.appendingPathComponent(output.lastPathComponent)
+            _ = try await processingService.stack(inputs: group.frames, output: master, method: .average, alignment: .similarity)
+        }
+        try Task.checkCancellation()
+        guard Self.isUsableCachedOutput(master) else { throw DeepSkyRecipeError.invalidReport }
+        guard fingerprint == mosaicInputSignature([panel]) else { throw DeepSkyRecipeError.inputsChanged }
+        // Same-volume rename publishes only complete masters, including on concurrent runs.
+        guard rename(master.path, output.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return output
+    }
+
     public func runMosaic() async {
         guard rejectMissingAsset(in: mosaicAssets) == false else {
             return
@@ -6507,7 +6646,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             var operationParameters = [
                 "panels": String(panels.count),
                 "panelIDs": panels.map(\.id.uuidString).joined(separator: ","),
-                "panelSignature": self.inputSignature(panels.map(\.originalURL)),
+                "panelSignature": self.mosaicInputSignature(panels),
                 "overlapPixels": String(self.parameters.mosaicOverlapPixels),
                 "projection": self.parameters.mosaicProjection.rawValue,
                 "layout": self.parameters.mosaicLayout.rawValue,
@@ -6520,17 +6659,19 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             let root = self.currentProjectDirectory?.appendingPathComponent("processing", isDirectory: true) ?? self.previewDirectory
             let runDirectory = root.appendingPathComponent("mosaic-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: runDirectory, withIntermediateDirectories: true)
-            let mosaicOutput = runDirectory.appendingPathComponent(panels.allSatisfy { $0.kind == .fits } ? "mosaic.fits" : "mosaic.tiff")
+            let panelProgress = panels.contains { ($0.mosaicFolder?.frames.count ?? 0) > 1 } ? 0.2 : 0
+            let inputs = try await self.preparedMosaicInputs(panels, progressEnd: panelProgress)
+            let mosaicOutput = runDirectory.appendingPathComponent(inputs.allSatisfy { AssetKind.detect(from: $0) == .fits } ? "mosaic.fits" : "mosaic.tiff")
             let scientific = mosaicOutput.pathExtension == "fits"
             let previewOutput = runDirectory.appendingPathComponent(scientific ? "mosaic-developed.tiff" : "mosaic-preview.png")
             let progressScope = ProcessingProgressContext.progressScope
-            progressScope?.update(lowerBound: 0, upperBound: 1.0 / 3.0)
+            progressScope?.update(lowerBound: panelProgress, upperBound: 1.0 / 3.0)
             defer {
                 progressScope?.update(lowerBound: 0, upperBound: 1)
             }
 
             let mosaicResult = try await self.processingService.mosaic(
-                inputs: panels.map(\.originalURL),
+                inputs: inputs,
                 output: mosaicOutput,
                 overlapPixels: self.parameters.mosaicOverlapPixels,
                 projection: self.parameters.mosaicProjection,
@@ -6620,13 +6761,15 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 return self.message(for: cached)
             }
 
-            progressScope?.update(lowerBound: 0, upperBound: 0.85)
+            let panelProgress = panels.contains { ($0.mosaicFolder?.frames.count ?? 0) > 1 } ? 0.55 : 0
+            let inputs = try await self.preparedMosaicInputs(panels, progressEnd: panelProgress)
+            progressScope?.update(lowerBound: panelProgress, upperBound: 0.85)
             // Keep scientific samples linear until the display proxy is rendered.
-            let scientificPreview = panels.allSatisfy { $0.kind == .fits }
+            let scientificPreview = inputs.allSatisfy { AssetKind.detect(from: $0) == .fits }
                 ? self.previewDirectory.appendingPathComponent("mosaic-proxy-\(UUID().uuidString).fits") : nil
             defer { if let scientificPreview { try? FileManager.default.removeItem(at: scientificPreview) } }
             let mosaicResult = try await self.processingService.mosaic(
-                inputs: panels.map(\.originalURL),
+                inputs: inputs,
                 output: scientificPreview ?? previewOutput,
                 overlapPixels: self.parameters.mosaicOverlapPixels,
                 projection: self.parameters.mosaicProjection,
@@ -10523,13 +10666,14 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 "blend": blendMode.rawValue,
                 "exposureMatching": String(exposureMatching),
                 "columns": String(columns),
-                "panels": inputSignature(panels.map(\.originalURL)),
+                "panels": mosaicInputSignature(panels),
                 "width": mode == .preview ? String(parameters.previewWidth) : "full",
                 "replayMode": mode.cacheKey,
             ],
             extension: mode.scientificOutputExtension
         )
         _ = try await runValidatedCachedStep(output: output, command: "mosaic") {
+            let inputs = try await preparedMosaicInputs(panels)
             let mosaicOutput: URL
             if mode == .fullResolutionExport {
                 mosaicOutput = output
@@ -10538,10 +10682,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                     previewDirectory.appendingPathComponent("replay-mosaic-\(UUID().uuidString)", isDirectory: true)
                 )
                 try FileManager.default.createDirectory(at: runDirectory, withIntermediateDirectories: true)
-                mosaicOutput = runDirectory.appendingPathComponent(panels.allSatisfy { $0.kind == .fits } ? "mosaic.fits" : "mosaic.tiff")
+                mosaicOutput = runDirectory.appendingPathComponent(inputs.allSatisfy { AssetKind.detect(from: $0) == .fits } ? "mosaic.fits" : "mosaic.tiff")
             }
             let result = try await processingService.mosaic(
-                inputs: panels.map(\.originalURL),
+                inputs: inputs,
                 output: mosaicOutput,
                 overlapPixels: overlapPixels,
                 projection: projection,
@@ -12793,7 +12937,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             prefix: "mosaic-preview",
             input: cacheInput,
             parameters: [
-                "panels": inputSignature(panels.map(\.originalURL)),
+                "panels": mosaicInputSignature(panels),
                 "overlapPixels": String(parameters.mosaicOverlapPixels),
                 "projection": parameters.mosaicProjection.rawValue,
                 "layout": parameters.mosaicLayout.rawValue,

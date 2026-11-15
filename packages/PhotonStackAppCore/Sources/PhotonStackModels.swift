@@ -503,6 +503,10 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
         let oldName = oldURL.lastPathComponent
         let replacementName = replacementURL.lastPathComponent
 
+        if var folder = assets[assetIndex].mosaicFolder {
+            folder.frames = folder.frames.map { Self.urlsReferenceSameFile($0, oldURL) ? replacementURL : $0 }
+            assets[assetIndex].mosaicFolder = folder
+        }
         assets[assetIndex].originalURL = replacementURL
         assets[assetIndex].kind = AssetKind.detect(from: replacementURL)
         assets[assetIndex].metadata = nil
@@ -1276,6 +1280,7 @@ public struct PhotonStackAsset: Identifiable, Codable, Equatable, Sendable {
     public var kind: AssetKind
     public var role: CalibrationFrameRole
     public var metadata: AssetMetadata?
+    public var mosaicFolder: MosaicPanelFolder?
     public var importedAt: Date
 
     public init(
@@ -1300,6 +1305,7 @@ public struct PhotonStackAsset: Identifiable, Codable, Equatable, Sendable {
         case kind
         case role
         case metadata
+        case mosaicFolder
         case importedAt
     }
 
@@ -1310,11 +1316,12 @@ public struct PhotonStackAsset: Identifiable, Codable, Equatable, Sendable {
         kind = try container.decode(AssetKind.self, forKey: .kind)
         role = try container.decodeIfPresent(CalibrationFrameRole.self, forKey: .role) ?? .light
         metadata = try container.decodeIfPresent(AssetMetadata.self, forKey: .metadata)
+        mosaicFolder = try container.decodeIfPresent(MosaicPanelFolder.self, forKey: .mosaicFolder)
         importedAt = try container.decode(Date.self, forKey: .importedAt)
     }
 
     public var displayName: String {
-        originalURL.lastPathComponent
+        mosaicFolder?.directory.lastPathComponent ?? originalURL.lastPathComponent
     }
 }
 

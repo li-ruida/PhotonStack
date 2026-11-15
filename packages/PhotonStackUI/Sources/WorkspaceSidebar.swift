@@ -264,6 +264,10 @@ private struct SidebarAssetRow: View {
         if model.isAssetMissing(asset) {
             return model.localized(.missingAssetStatus)
         }
+        if let group = asset.mosaicFolder {
+            return model.language == .simplifiedChinese ? "\(group.frames.count) 帧 · \(asset.kind.rawValue.uppercased())"
+                : "\(group.frames.count) frames · \(asset.kind.rawValue.uppercased())"
+        }
         var parts = [asset.kind.rawValue.uppercased()]
         if let width = asset.metadata?.width, let height = asset.metadata?.height {
             parts.append("\(width) x \(height)")

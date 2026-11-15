@@ -155,7 +155,7 @@ public struct PhotonStackRootView: View {
                 .disabled(model.hasActiveProcessing)
                 .accessibilityIdentifier("journey.workflow")
                 if model.usesMosaicWorkflow {
-                    MosaicJourneyBar(model: model, onImport: startImportFiles, onFinish: { navigateJourney(.finish) },
+                    MosaicJourneyBar(model: model, onImportFolders: startImportFolder, onImport: startImportFiles, onFinish: { navigateJourney(.finish) },
                         onExport: { navigateJourney(.export) })
                 } else {
                     WorkspaceJourneyBar(model: model, finishingRequested: finishingRequested, onSelect: navigateJourney)
@@ -166,10 +166,10 @@ public struct PhotonStackRootView: View {
                         Label(model.language == .simplifiedChinese ? "拼接相邻天区" : "Stitch adjacent sky panels",
                               systemImage: "rectangle.3.group")
                     } description: {
-                        Text(model.language == .simplifiedChinese ? "选择至少两张已堆好的面板，重叠区需要有共同星点。"
-                             : "Choose at least two stacked panels with stars in their overlap.")
+                        Text(model.language == .simplifiedChinese ? "每个天区的原片放在一个子文件夹。选择总目录或多选天区文件夹，先分别堆栈，再用重叠区的星点拼接。"
+                             : "Put each panel’s exposures in its own folder. Select their parent or several panel folders to stack each group and stitch the overlapping stars.")
                     } actions: {
-                        Button(model.language == .simplifiedChinese ? "选择面板…" : "Choose panels…", action: startImportFiles)
+                        Button(model.language == .simplifiedChinese ? "选择天区文件夹…" : "Choose panel folders…", action: startImportFolder)
                     }
                 } else if model.project.assets.isEmpty {
                     WorkspaceWelcomeView(chinese: model.language == .simplifiedChinese,
@@ -193,6 +193,8 @@ public struct PhotonStackRootView: View {
             .navigationTitle(model.project.name)
             .onChange(of: model.usesMosaicWorkflow ? model.mosaicAssets.map(\.id) : []) { _, panels in
                 guard panels.count >= 2, model.canRunMosaic, !model.hasActiveProcessing else { return }
+                // Folder stacks can take minutes. Let the user finish adding pointings before starting.
+                if model.mosaicAssets.contains(where: { $0.mosaicFolder != nil }) { return }
                 if model.latestMosaicOperation?.parameters["panelIDs"] == panels.map(\.uuidString).joined(separator: ",") {
                     model.showLatestMosaicResult()
                 } else {
@@ -560,6 +562,12 @@ public struct PhotonStackRootView: View {
 
     private func startImportFolder() {
         #if os(macOS)
+        if model.usesMosaicWorkflow {
+            if let urls = NativeFilePanels.mosaicFolders(chinese: model.language == .simplifiedChinese) {
+                model.importAssets(from: urls)
+            }
+            return
+        }
         if let url = NativeFilePanels.importAssetFolderURL(message: model.localized(.importFolderMessage)) {
             model.importAssets(from: [url])
         }

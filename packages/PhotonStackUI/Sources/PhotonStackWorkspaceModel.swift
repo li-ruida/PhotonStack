@@ -1514,7 +1514,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         if enabled {
             project.regroupMosaicLightSequences()
             parameters.mosaicAlignment = .auto
-        } else if isShowingMosaicPreview || isShowingMosaicResult {
+        } else if isShowingMosaicPreview || isShowingMosaicResult ||
+                    (canvasMode == .sourcePreview && previewURL.map { selectedAsset?.mosaicFolder?.frames.contains($0) == true } == true) {
             showSelectedOriginal()
         }
         project.updatedAt = Date()
@@ -3225,13 +3226,27 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         else {
             return
         }
+        selectSource(asset.originalURL, owner: asset)
+    }
+
+    func previewMosaicFrame(_ url: URL, in panelID: PhotonStackAsset.ID) -> Bool {
+        guard canModifyProcessingConfiguration, usesMosaicWorkflow,
+              let panel = mosaicAssets.first(where: { $0.id == panelID }),
+              panel.mosaicFolder?.frames.contains(url) == true,
+              !rejectUnavailableWorkspaceURL(url, name: url.lastPathComponent) else { return false }
+        selectSource(url, owner: panel)
+        return true
+    }
+
+    private func selectSource(_ url: URL, owner asset: PhotonStackAsset) {
         cancelCurvePreview()
         cancelMetadataRefresh()
         cancelRawPreviewUpdate()
         activeLayerID = nil
         selectedAssetID = asset.id
         restorePersistedRawOptions(for: asset)
-        previewURL = asset.originalURL
+        cancelHistogramRefresh()
+        previewURL = url
         previewOperationID = nil
         editGraphNeedsReplay = false
         canvasMode = .sourcePreview
@@ -3244,7 +3259,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         clearPreviewHistory()
         commandOutput = ""
         errorMessage = nil
-        refreshMetadataIfNeeded(for: asset)
+        if url == asset.originalURL { refreshMetadataIfNeeded(for: asset) }
         triggerAutosave()
     }
 
@@ -3300,7 +3315,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             })
         }
         let removedWasPreviewed = previewURL.map {
-            invalidatedPaths.contains(PhotonStackProject.assetIdentityPath(for: $0))
+            invalidatedPaths.contains(PhotonStackProject.assetIdentityPath(for: $0)) ||
+                (removedWasSelected && asset.mosaicFolder?.frames.contains($0) == true)
         } == true
             || activeLayerID.map(removedLayerIDs.contains) == true
             || previewOperationID.map(removedOperationIDs.contains) == true

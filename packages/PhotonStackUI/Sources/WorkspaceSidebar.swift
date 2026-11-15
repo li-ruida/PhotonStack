@@ -14,8 +14,12 @@ struct AssetSidebar: View {
     let onImportFolder: () -> Void
     @State private var hoveredAssetID: PhotonStackAsset.ID?
 
+    @State private var expandedPanels: Set<PhotonStackAsset.ID> = []
+    @State private var selectedFrame: SidebarSelection?
+
     var body: some View {
         let showingResult = model.isShowingLatestDeepSkyResult || model.isShowingMosaicResult || model.isShowingMosaicPreview
+        let selection = sidebarSelection(showingResult: showingResult)
         VStack(spacing: 0) {
             if model.latestMosaicOperation != nil {
                 Button { model.showLatestMosaicResult() } label: {
@@ -97,43 +101,43 @@ struct AssetSidebar: View {
 
                 Spacer(minLength: 20)
             } else {
-                List(selection: assetSelection(showingResult: showingResult)) {
+                List(selection: Binding(get: { selection }, set: select)) {
                     ForEach(assetGroups) { group in
                         Section {
                             ForEach(group.assets) { asset in
-                                SidebarAssetRow(
-                                    model: model,
-                                    asset: asset,
-                                    isSelected: !showingResult && asset.id == model.selectedAsset?.id,
-                                    showsRemoveButton: hoveredAssetID == asset.id || (!showingResult && asset.id == model.selectedAssetID)
-                                )
-                                .tag(asset.id)
+                                let folder = group.role == .mosaic ? asset.mosaicFolder : nil
+                                let expanded = expandedPanels.contains(asset.id)
+                                let row = SidebarSelection.asset(asset.id)
+                                HStack(spacing: 4) {
+                                    if folder != nil {
+                                        Button { togglePanel(asset.id) } label: {
+                                            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                                                .font(.caption.bold())
+                                                .frame(width: 18, height: 24)
+                                                .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel(disclosureLabel(expanded: expanded) + " " + asset.displayName)
+                                    }
+                                    SidebarAssetRow(model: model, asset: asset,
+                                                    isSelected: selection == row,
+                                                    showsRemoveButton: hoveredAssetID == asset.id || selection == row)
+                                }
+                                .tag(row)
                                 .contentShape(Rectangle())
-                                .onHover { isHovering in
-                                    hoveredAssetID = isHovering ? asset.id : nil
-                                }
-                                .contextMenu {
-                                    Button {
-                                        presentRelinkPanel(for: asset, model: model)
-                                    } label: {
-                                        Label(model.localized(.relinkAssetAction), systemImage: "link")
-                                    }
-                                    .disabled(model.isProcessing)
+                                .onHover { hoveredAssetID = $0 ? asset.id : nil }
 
-                                    Divider()
-
-                                    Button(role: .destructive) {
-                                        model.requestAssetRemoval(asset)
-                                    } label: {
-                                        Label(model.localized(.removeAssetAction), systemImage: "trash")
+                                if expanded, let folder {
+                                    ForEach(folder.frames, id: \.self) { frame in
+                                        Label(frame.lastPathComponent, systemImage: "photo")
+                                            .font(.callout)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                            .padding(.leading, 22)
+                                            .help(frame.path)
+                                            .tag(SidebarSelection.frame(asset.id, frame))
                                     }
-                                    .disabled(model.isProcessing)
                                 }
-                            }
-                            .onDelete { offsets in
-                                model.requestAssetRemoval(
-                                    offsets.sorted().map { group.assets[$0] }
-                                )
                             }
                         } header: {
                             HStack(spacing: 6) {
@@ -147,8 +151,27 @@ struct AssetSidebar: View {
                     }
                 }
                 .listStyle(.sidebar)
+                .contextMenu(forSelectionType: SidebarSelection.self) { rows in
+                    if case let .asset(id) = rows.first, let asset = model.project.assets.first(where: { $0.id == id }) {
+                        Button { presentRelinkPanel(for: asset, model: model) } label: {
+                            Label(model.localized(.relinkAssetAction), systemImage: "link")
+                        }
+                        .disabled(model.isProcessing)
+                        Divider()
+                        Button(role: .destructive) { model.requestAssetRemoval(asset) } label: {
+                            Label(model.localized(.removeAssetAction), systemImage: "trash")
+                        }
+                        .disabled(model.isProcessing)
+                    }
+                } primaryAction: { rows in
+                    if case let .asset(id) = rows.first, model.usesMosaicWorkflow,
+                       model.mosaicAssets.contains(where: { $0.id == id && $0.mosaicFolder != nil }) {
+                        togglePanel(id)
+                    }
+                }
                 .onDeleteCommand {
-                    if !showingResult, let asset = model.selectedAsset, model.isProcessing == false {
+                    if case let .asset(id) = selection, let asset = model.project.assets.first(where: { $0.id == id }),
+                       !model.isProcessing {
                         model.requestAssetRemoval(asset)
                     }
                 }
@@ -159,6 +182,10 @@ struct AssetSidebar: View {
             BuildIdentityBadge()
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
+        }
+        .onChange(of: model.project.id) {
+            expandedPanels.removeAll()
+            selectedFrame = nil
         }
         .navigationTitle(model.project.name)
         .navigationSplitViewColumnWidth(min: 220, ideal: 280, max: 360)
@@ -177,20 +204,42 @@ struct AssetSidebar: View {
         }
     }
 
-    private func assetSelection(showingResult: Bool) -> Binding<PhotonStackAsset.ID?> {
-        Binding(
-            get: { showingResult ? nil : model.selectedAssetID },
-            set: { assetID in
-                guard model.isProcessing == false,
-                      let assetID,
-                      let asset = model.project.assets.first(where: { $0.id == assetID })
-                else {
-                    return
-                }
-                model.select(asset)
-            }
-        )
+    private func sidebarSelection(showingResult: Bool) -> SidebarSelection? {
+        guard !showingResult, let id = model.selectedAssetID else { return nil }
+        if model.usesMosaicWorkflow, model.canvasMode == .sourcePreview,
+           let url = model.previewURL, let asset = model.selectedAsset,
+           url != asset.originalURL || selectedFrame == .frame(id, url),
+           asset.mosaicFolder?.frames.contains(url) == true {
+            return expandedPanels.contains(id) ? .frame(id, url) : nil
+        }
+        return .asset(id)
     }
+
+    private func select(_ row: SidebarSelection?) {
+        guard model.canModifyProcessingConfiguration, let row else { return }
+        switch row {
+        case let .asset(id):
+            guard let asset = model.project.assets.first(where: { $0.id == id }) else { return }
+            selectedFrame = nil
+            model.select(asset)
+        case let .frame(id, url):
+            if model.previewMosaicFrame(url, in: id) { selectedFrame = row }
+        }
+    }
+
+    private func togglePanel(_ id: PhotonStackAsset.ID) {
+        if !expandedPanels.insert(id).inserted { expandedPanels.remove(id) }
+    }
+
+    private func disclosureLabel(expanded: Bool) -> String {
+        if model.language == .simplifiedChinese { return expanded ? "收起原片" : "展开原片" }
+        return expanded ? "Collapse frames" : "Expand frames"
+    }
+}
+
+private enum SidebarSelection: Hashable {
+    case asset(PhotonStackAsset.ID)
+    case frame(PhotonStackAsset.ID, URL)
 }
 
 private struct SidebarAssetGroup: Identifiable {

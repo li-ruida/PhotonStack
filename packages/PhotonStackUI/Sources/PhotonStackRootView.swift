@@ -155,7 +155,10 @@ public struct PhotonStackRootView: View {
                 .disabled(model.hasActiveProcessing)
                 .accessibilityIdentifier("journey.workflow")
                 if model.usesMosaicWorkflow {
-                    MosaicJourneyBar(model: model, onImportFolders: startImportFolder, onImport: startImportFiles, onFinish: { navigateJourney(.finish) },
+                    MosaicJourneyBar(model: model, finishingRequested: finishingRequested,
+                        onImport: startImportMosaicInputs,
+                        onInspect: { finishingRequested = false; inspectorPage = .processing },
+                        onFinish: { navigateJourney(.finish) },
                         onExport: { navigateJourney(.export) })
                 } else {
                     WorkspaceJourneyBar(model: model, finishingRequested: finishingRequested, onSelect: navigateJourney)
@@ -169,7 +172,9 @@ public struct PhotonStackRootView: View {
                         Text(model.language == .simplifiedChinese ? "每个天区的原片放在一个子文件夹。选择总目录或多选天区文件夹，先分别堆栈，再用重叠区的星点拼接。"
                              : "Put each panel’s exposures in its own folder. Select their parent or several panel folders to stack each group and stitch the overlapping stars.")
                     } actions: {
-                        Button(model.language == .simplifiedChinese ? "选择天区文件夹…" : "Choose panel folders…", action: startImportFolder)
+                        Button(model.language == .simplifiedChinese ? "导入天区文件夹…" : "Add panel folders…", action: startImportFolder)
+                            .accessibilityIdentifier("journey.mosaic-folders")
+                        Button(model.language == .simplifiedChinese ? "导入母片…" : "Add masters…", action: startImportFiles)
                     }
                 } else if model.project.assets.isEmpty {
                     WorkspaceWelcomeView(chinese: model.language == .simplifiedChinese,
@@ -474,6 +479,10 @@ public struct PhotonStackRootView: View {
 
     private func navigateJourney(_ step: WorkspaceJourneyStep) {
         guard !model.hasActiveProcessing else { return }
+        if model.usesMosaicWorkflow, step == .finish || step == .export,
+           model.isShowingSelectedOriginal || model.isShowingMosaicPreview {
+            model.showLatestMosaicResult()
+        }
         switch step {
         case .importPhotos:
             startImportFiles()
@@ -492,6 +501,10 @@ public struct PhotonStackRootView: View {
             #if os(macOS)
             if model.canExportCurrentImage,
                let output = NativeFilePanels.exportImageURL(message: model.localized(.exportImageMessage)) {
+                if model.usesMosaicWorkflow {
+                    finishingRequested = true
+                    inspectorPage = .processing
+                }
                 model.startExportCurrentImage(to: output)
             }
             #endif
@@ -534,6 +547,16 @@ public struct PhotonStackRootView: View {
             name: draft.name,
             reuseCurrentAssets: draft.reuseCurrentAssets
         )
+    }
+
+    private func startImportMosaicInputs() {
+        #if os(macOS)
+        if let urls = NativeFilePanels.mosaicInputs(chinese: model.language == .simplifiedChinese) {
+            model.importAssets(from: urls)
+        }
+        #else
+        isImporting = true
+        #endif
     }
 
     private func startImportFiles() {

@@ -63,6 +63,52 @@ extension PhotonStackWorkspaceModel {
     }
 }
 
+/// Both workflows use the same navigation, completion markers and keyboard-accessible actions.
+struct JourneyStepStrip<Step: CaseIterable & Hashable & RawRepresentable>: View where Step.RawValue == Int {
+    let current: Step
+    let chinese: Bool
+    let identifier: String
+    let title: (Step) -> String
+    let completed: (Step) -> Bool
+    let unavailable: (Step) -> Bool
+    let onSelect: (Step) -> Void
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            steps
+            ScrollView(.horizontal) { steps }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var steps: some View {
+        HStack(spacing: 8) {
+            ForEach(Array(Step.allCases), id: \.self) { step in
+                if step.rawValue > 0 {
+                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+                Button { onSelect(step) } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: completed(step) ? "checkmark.circle.fill" : "\(step.rawValue + 1).circle")
+                        Text(title(step)).fontWeight(current == step ? .semibold : .regular)
+                    }
+                    .padding(.vertical, 5).padding(.horizontal, 7)
+                    .foregroundStyle(current == step ? Color.accentColor : Color.secondary)
+                    .background(current == step ? Color.accentColor.opacity(0.1) : .clear, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("\(identifier).\(step.rawValue)")
+                .accessibilityLabel(title(step))
+                .accessibilityValue(current == step ? (chinese ? "当前阶段" : "Current step")
+                    : completed(step) ? (chinese ? "已完成" : "Completed") : "")
+                .disabled(unavailable(step))
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
 struct WorkspaceJourneyBar: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     let finishingRequested: Bool
@@ -73,27 +119,9 @@ struct WorkspaceJourneyBar: View {
             analysisCurrent: model.journeyAnalysisIsCurrent, resultCurrent: model.journeyResultIsCurrent,
             finishingRequested: finishingRequested)
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                ForEach(WorkspaceJourneyStep.allCases, id: \.self) { step in
-                    if step != .importPhotos {
-                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
-                    }
-                    Button { onSelect(step) } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: state.completed(step) ? "checkmark.circle.fill" : "\(step.rawValue + 1).circle")
-                            Text(step.title(chinese: chinese)).fontWeight(state.step == step ? .semibold : .regular)
-                        }
-                        .padding(.vertical, 5).padding(.horizontal, 7)
-                        .foregroundStyle(state.step == step ? Color.accentColor : Color.secondary)
-                        .background(state.step == step ? Color.accentColor.opacity(0.1) : .clear, in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("journey.step.\(step.rawValue)")
-                    .accessibilityValue(state.step == step ? (chinese ? "当前阶段" : "Current step") : "")
-                    .disabled(unavailable(step, lightCount: state.lightCount))
-                }
-                Spacer(minLength: 0)
-            }
+            JourneyStepStrip(current: state.step, chinese: chinese, identifier: "journey.step",
+                title: { $0.title(chinese: chinese) }, completed: state.completed,
+                unavailable: { unavailable($0, lightCount: state.lightCount) }, onSelect: onSelect)
             if !model.project.assets.isEmpty {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {

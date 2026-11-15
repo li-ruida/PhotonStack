@@ -498,7 +498,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     private var replayRegisteredSequence: ReplayRegisteredSequence?
     private var replayNeedsMeteorSequenceSources = false
     private var replayTemporaryDirectories: Set<URL> = []
-    private var mosaicQualityReportSourceURL: URL?
+    private(set) var mosaicQualityReportSourceURL: URL?
     let photoPreview = PhotoAdjustmentPreview()
     let photoDraft = PhotoAdjustmentDraft()
 
@@ -6674,19 +6674,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 throw MosaicWorkflowError.noPanels
             }
 
-            var operationParameters = [
-                "panels": String(panels.count),
-                "panelIDs": panels.map(\.id.uuidString).joined(separator: ","),
-                "panelSignature": self.mosaicInputSignature(panels),
-                "panelSources": try MosaicPanelFolder.encodeSelection(panels),
-                "overlapPixels": String(self.parameters.mosaicOverlapPixels),
-                "projection": self.parameters.mosaicProjection.rawValue,
-                "layout": self.parameters.mosaicLayout.rawValue,
-                "alignment": self.parameters.mosaicAlignment.rawValue,
-                "blend": self.parameters.mosaicBlendMode.rawValue,
-                "exposureMatching": String(self.parameters.mosaicExposureMatching),
-                "columns": String(self.parameters.mosaicColumns),
-            ]
+            var operationParameters = self.mosaicStitchParameters
+            operationParameters["panels"] = String(panels.count)
+            operationParameters["panelIDs"] = panels.map(\.id.uuidString).joined(separator: ",")
+            operationParameters["panelSignature"] = self.mosaicInputSignature(panels)
+            operationParameters["panelSources"] = try MosaicPanelFolder.encodeSelection(panels)
 
             let root = self.currentProjectDirectory?.appendingPathComponent("processing", isDirectory: true) ?? self.previewDirectory
             let runDirectory = root.appendingPathComponent("mosaic-\(UUID().uuidString)", isDirectory: true)
@@ -12962,23 +12954,39 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         return min(max(clampedPreviewWidth / 2, 512), 1600)
     }
 
-    private func makeCachedMosaicPreviewOutput(for panels: [PhotonStackAsset]) -> URL {
-        let cacheInput = panels.first?.originalURL ?? previewDirectory
-        return makeCachedPreviewOutput(
-            prefix: "mosaic-preview",
-            input: cacheInput,
-            parameters: [
-                "panels": mosaicInputSignature(panels),
-                "overlapPixels": String(parameters.mosaicOverlapPixels),
-                "projection": parameters.mosaicProjection.rawValue,
-                "layout": parameters.mosaicLayout.rawValue,
-                "alignment": parameters.mosaicAlignment.rawValue,
-                "blend": parameters.mosaicBlendMode.rawValue,
-                "exposureMatching": String(parameters.mosaicExposureMatching),
-                "columns": String(parameters.mosaicColumns),
-                "previewWidth": String(parameters.mosaicPreviewWidth),
-            ]
-        )
+    var mosaicStitchParameters: [String: String] {
+        [
+            "overlapPixels": String(parameters.mosaicOverlapPixels),
+            "projection": parameters.mosaicProjection.rawValue,
+            "layout": parameters.mosaicLayout.rawValue,
+            "alignment": parameters.mosaicAlignment.rawValue,
+            "blend": parameters.mosaicBlendMode.rawValue,
+            "exposureMatching": String(parameters.mosaicExposureMatching),
+            "columns": String(parameters.mosaicColumns)
+        ]
+    }
+
+    /// Use the same settings and original-frame fingerprint as the actual stitch.
+    func mosaicJourneyProducts(for panels: [PhotonStackAsset]) -> (preview: Bool, result: Bool) {
+        let operation = latestMosaicOperation
+        guard !panels.isEmpty, mosaicQualityReportSourceURL != nil || operation != nil else { return (false, false) }
+        let signature = mosaicInputSignature(panels)
+        let preview = mosaicQualityReportSourceURL == makeCachedMosaicPreviewOutput(for: panels, signature: signature).standardizedFileURL
+        guard let recorded = operation?.parameters else { return (preview, false) }
+        guard recorded["panelIDs"] == panels.map(\.id.uuidString).joined(separator: ","),
+              mosaicStitchParameters.allSatisfy({ recorded[$0.key] == $0.value }) else { return (preview, false) }
+        if recorded["panelSignature"] == signature { return (preview, true) }
+        // Projects saved before folder stacking recorded the master paths and modification times.
+        let legacy = recorded["panelSignature"]?.hasPrefix("/") == true && panels.allSatisfy { $0.mosaicFolder == nil }
+        return (preview, legacy && recorded["panelSignature"] == inputSignature(panels.map(\.originalURL)))
+    }
+
+    private func makeCachedMosaicPreviewOutput(for panels: [PhotonStackAsset], signature: String? = nil) -> URL {
+        var settings = mosaicStitchParameters
+        settings["panels"] = signature ?? mosaicInputSignature(panels)
+        settings["previewWidth"] = String(parameters.mosaicPreviewWidth)
+        return makeCachedPreviewOutput(prefix: "mosaic-preview", input: panels.first?.originalURL ?? previewDirectory,
+                                       parameters: settings)
     }
 
     private func makeBatchOutputURL(for item: BatchQueueItem, parameters: [String: String]) throws -> URL {

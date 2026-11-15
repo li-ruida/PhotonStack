@@ -2977,11 +2977,15 @@ import Testing
     #expect(try Data(contentsOf: original) == originalBytes)
     let restored = try JSONDecoder().decode(PhotonStackProject.self, from: JSONEncoder().encode(model.project))
     #expect(restored.assets == model.project.assets)
+    #expect(!model.mosaicJourneyProducts(for: model.mosaicAssets).preview)
     await model.runMosaicPreview()
+    #expect(model.mosaicJourneyProducts(for: model.mosaicAssets).preview)
     let preview = try #require(await service.snapshot().mosaicInputGroups.last)
     #expect(preview.count == 2 && Set(preview).count == 2)
     #expect(preview.allSatisfy { $0.deletingLastPathComponent().lastPathComponent == "mosaic-panels" })
+    #expect(!model.mosaicJourneyProducts(for: model.mosaicAssets).result)
     await model.runMosaic()
+    #expect(model.mosaicJourneyProducts(for: model.mosaicAssets).result)
     #expect(await service.snapshot().mosaicInputGroups.last == preview)
 
     // Replaying the saved build must use the original two-frame selection after a folder grows.
@@ -2989,6 +2993,7 @@ import Testing
     try writeMinimalFITS(to: third)
     model.importMosaicPanels(from: [third])
     #expect(model.mosaicAssets.last?.mosaicFolder?.frames.count == 3)
+    #expect(!model.mosaicJourneyProducts(for: model.mosaicAssets).result)
     let jobsBeforeReplay = model.jobs.count
     model.startReplayEditGraph()
     try await waitForStartedProcessingCompletion(in: model, minimumJobCount: jobsBeforeReplay + 1)

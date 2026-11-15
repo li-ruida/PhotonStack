@@ -116,7 +116,13 @@ struct MosaicJourneyBar: View {
         switch candidate {
         case .importPanels: onInspect(); onImport()
         case .preview: onInspect(); model.startRunMosaicPreview()
-        case .build: onInspect(); model.startRunMosaic()
+        case .build:
+            onInspect()
+            if products.result {
+                model.showLatestMosaicResult()
+            } else {
+                model.startRunMosaic()
+            }
         case .finish: onFinish()
         case .export: onExport()
         }
@@ -126,7 +132,9 @@ struct MosaicJourneyBar: View {
         switch step {
         case .importPanels: chinese ? "导入天区…" : "Add panels…"
         case .preview: chinese ? "预览拼接" : "Preview mosaic"
-        case .build: chinese ? "生成拼接成片" : "Build full mosaic"
+        case .build:
+            if products.result { chinese ? "查看拼接成片" : "Show full mosaic" }
+            else { chinese ? "生成拼接成片" : "Build full mosaic" }
         case .finish: chinese ? "进入后期调整" : "Edit mosaic"
         case .export: chinese ? "导出成片…" : "Export image…"
         }
@@ -155,6 +163,9 @@ struct MosaicJourneyBar: View {
             }
             return chinese ? "预览会分别堆栈各区原片，并用共同星点对齐相邻天区。" : "Preview stacks each panel and aligns adjacent panels using shared stars."
         case .build:
+            if products.result {
+                return chinese ? "检查预览中的星点，或返回已有的全分辨率成片。" : "Inspect the alignment stars or return to the full-resolution mosaic."
+            }
             return chinese ? "检查预览中的重叠区域和星点，再生成全分辨率成片。" : "Check the overlapping stars, then build the full-resolution mosaic."
         case .finish:
             return chinese ? "拼接成片已就绪，可以调整亮度、色彩与细节。" : "Your mosaic is ready for brightness, color and detail adjustments."

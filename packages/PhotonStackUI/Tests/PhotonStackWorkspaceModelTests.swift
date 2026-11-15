@@ -2933,7 +2933,8 @@ import Testing
     let repository = ProjectRepository()
     try await repository.save(old, to: folder)
     let service = RecordingProcessingService()
-    let model = PhotonStackWorkspaceModel(autosaveEnabled: false, processingService: service)
+    let model = PhotonStackWorkspaceModel(autosaveEnabled: false, processingService: service,
+        settingsRepository: AppSettingsRepository(settingsURL: folder.appendingPathComponent("settings.json")))
     await model.loadProject(from: folder)
     #expect(model.project.assets.map(\.id) == old.assets.map(\.id))
     #expect(model.mosaicAssets.map(\.displayName) == ["T1_sub"])

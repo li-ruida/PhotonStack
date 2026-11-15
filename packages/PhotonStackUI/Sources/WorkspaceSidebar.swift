@@ -165,9 +165,14 @@ struct AssetSidebar: View {
     }
 
     private var assetGroups: [SidebarAssetGroup] {
-        let panelIDs = model.usesMosaicWorkflow ? Set(model.mosaicAssets.map(\.id)) : []
+        let panels = model.usesMosaicWorkflow ? model.mosaicAssets : []
+        let panelIDs = Set(panels.map(\.id))
+        let groupedSources = Set(panels.flatMap { $0.mosaicFolder?.frames ?? [] })
+        let visible = model.project.assets.filter {
+            panelIDs.contains($0.id) || $0.role != .light || !groupedSources.contains($0.originalURL)
+        }
         return CalibrationFrameRole.allCases.compactMap { role in
-            let assets = model.project.assets.filter { (panelIDs.contains($0.id) ? .mosaic : $0.role) == role }
+            let assets = visible.filter { (panelIDs.contains($0.id) ? .mosaic : $0.role) == role }
             return assets.isEmpty ? nil : SidebarAssetGroup(role: role, assets: assets)
         }
     }

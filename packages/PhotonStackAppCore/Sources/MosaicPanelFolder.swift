@@ -69,3 +69,63 @@ public struct MosaicPanelFolder: Codable, Equatable, Sendable {
         }
     }
 }
+
+extension PhotonStackProject {
+    /// Recover explicit light-frame directories from older flat imports. Read only
+    /// project membership: opening a project must never add unselected files from disk.
+    public mutating func regroupMosaicLightSequences() {
+        let ordered = Set(mosaicPanelOrder)
+        let recorded = Set(editGraph.operations.filter { $0.kind == .mosaic }
+            .flatMap { ($0.parameters["panelIDs"] ?? "").split(separator: ",").compactMap { UUID(uuidString: String($0)) } })
+        let candidates = assets.indices.filter {
+            let asset = assets[$0]
+            let panel = asset.role == .mosaic || (asset.role == .light && ordered.contains(asset.id))
+            return panel && (asset.mosaicFolder != nil || !recorded.contains(asset.id))
+        }
+        var groups: [URL: [Int]] = [:]
+        var masters: [Int] = []
+        for index in candidates {
+            let asset = assets[index]
+            if let folder = asset.mosaicFolder {
+                groups[folder.directory.standardizedFileURL, default: []].append(index)
+                continue
+            }
+            let url = asset.originalURL
+            let parent = url.deletingLastPathComponent().standardizedFileURL
+            let name = parent.lastPathComponent
+            if name.lowercased() == "lights" {
+                groups[parent.deletingLastPathComponent(), default: []].append(index)
+            } else if name.lowercased().hasSuffix("_sub"), url.lastPathComponent.lowercased().hasPrefix("light_") {
+                groups[parent, default: []].append(index)
+            } else if url.lastPathComponent.hasPrefix("Stacked_") {
+                masters.append(index)
+            }
+        }
+
+        var members = Set<UUID>()
+        for (directory, indexes) in groups {
+            let representative = indexes.first { assets[$0].mosaicFolder != nil } ?? indexes[0]
+            if indexes.count == 1 && assets[representative].mosaicFolder != nil { continue }
+            var seen = Set<URL>()
+            let frames = indexes.flatMap { assets[$0].mosaicFolder?.frames ?? [assets[$0].originalURL] }
+                .filter { seen.insert($0.standardizedFileURL).inserted }
+            assets[representative].mosaicFolder = MosaicPanelFolder(directory: directory, frames: frames)
+            members.formUnion(indexes.filter { $0 != representative }.map { assets[$0].id })
+        }
+        for index in masters {
+            let url = assets[index].originalURL
+            let parent = url.deletingLastPathComponent()
+            let rawDirectory = parent.deletingLastPathComponent()
+                .appendingPathComponent(parent.lastPathComponent + "_sub", isDirectory: true).standardizedFileURL
+            if let group = groups[rawDirectory], group.contains(where: {
+                assets[$0].originalURL.lastPathComponent.hasPrefix("Light_" + parent.lastPathComponent + "_")
+            }) {
+                members.insert(assets[index].id)
+            }
+        }
+        guard !members.isEmpty else { return }
+        // Keep every source asset and its ID for existing layers, sequences and edits.
+        for index in assets.indices where members.contains(assets[index].id) { assets[index].role = .light }
+        mosaicPanelOrder.removeAll { members.contains($0) }
+    }
+}

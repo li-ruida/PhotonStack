@@ -551,6 +551,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         previewDirectory: URL? = nil,
         cacheBuildIdentity: String? = nil
     ) {
+        var project = project
+        if project.mosaicWorkflow ?? (project.template == .mosaic) { project.regroupMosaicLightSequences() }
         self.project = project
         self.canvasMode = project.workspaceState?.canvasMode
             ?? (project.layers.contains(where: { $0.kind != .mask }) ? .layerComposite : .sourcePreview)
@@ -700,6 +702,13 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
         let movingFrames = selectedBatchRegistrationMovingFrames(reference: reference)
         return movingFrames.isEmpty == false && firstMissingAsset(in: movingFrames) == nil
+    }
+
+    var missingMosaicPanelHint: String? {
+        guard parameters.mosaicAlignment == .auto, mosaicAssets.count == 1, let panel = mosaicAssets.first else { return nil }
+        return language == .simplifiedChinese
+            ? "当前只有一个天区（\(panel.displayName)）。请添加另一个有重叠星点的天区文件夹或母片。"
+            : "Only one sky panel (\(panel.displayName)). Add another overlapping panel folder or master."
     }
 
     public var canRunMosaic: Bool {
@@ -1110,7 +1119,16 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public func localizedMessage(_ message: String) -> String {
-        language.localizedMessage(message)
+        if message.contains("MosaicInsufficientOverlap"), let start = message.firstIndex(of: "{"),
+           let detail = try? JSONDecoder().decode([String: String].self, from: Data(message[start...].utf8)),
+           detail["code"] == "MosaicInsufficientOverlap", let description = detail["message"],
+           let number = description.split(separator: " ").dropFirst().first.flatMap({ Int($0) }),
+           number > 0, let panel = mosaicAssets.dropFirst(number - 1).first {
+            return language == .simplifiedChinese
+                ? "未能从「\(panel.displayName)」找到与其他天区相连的共同星点。请检查该天区的原片分组和拍摄重叠区域。"
+                : "No verified star overlap connects \(panel.displayName) to the other panels. Check its frame group and sky coverage."
+        }
+        return language.localizedMessage(message)
     }
 
     public func roleName(_ role: CalibrationFrameRole) -> String {
@@ -1494,6 +1512,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
         project.mosaicWorkflow = enabled
         if enabled {
+            project.regroupMosaicLightSequences()
             parameters.mosaicAlignment = .auto
         } else if isShowingMosaicPreview || isShowingMosaicResult {
             showSelectedOriginal()
@@ -3001,7 +3020,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
 
         cancelRawPreviewUpdate()
-        return importReadableAssets(from: readableURLs)
+        let imported = importReadableAssets(from: readableURLs)
+        if imported && usesMosaicWorkflow { project.regroupMosaicLightSequences() }
+        return imported
     }
 
     private func adoptMosaicFolders(_ groups: [MosaicPanelFolder]) -> Bool {
@@ -3547,6 +3568,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             paths.contains(PhotonStackProject.assetIdentityPath(for: asset.originalURL)) {
             setRole(.mosaic, for: asset)
         }
+        project.regroupMosaicLightSequences()
         if firstPanelImport && !mosaicAssets.isEmpty && parameters.mosaicAlignment != .auto {
             var updated = parameters
             updated.mosaicAlignment = .auto
@@ -3622,7 +3644,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             self.cancelMetadataRefresh()
             self.clearPendingAssetImports()
             await self.waitForPendingAutosave()
-            let loaded = try await self.projectRepository.load(from: directory)
+            var loaded = try await self.projectRepository.load(from: directory)
+            if loaded.mosaicWorkflow ?? (loaded.template == .mosaic) { loaded.regroupMosaicLightSequences() }
             try Task.checkCancellation()
             self.clearProjectTransientState()
             self.project = loaded
@@ -6634,6 +6657,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public func runMosaic() async {
+        if let hint = missingMosaicPanelHint { errorMessage = hint; return }
         guard rejectMissingAsset(in: mosaicAssets) == false else {
             return
         }
@@ -6737,6 +6761,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public func runMosaicPreview() async {
+        if let hint = missingMosaicPanelHint { errorMessage = hint; return }
         guard rejectMissingAsset(in: mosaicAssets) == false else {
             return
         }

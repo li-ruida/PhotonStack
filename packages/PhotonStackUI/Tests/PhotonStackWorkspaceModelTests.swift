@@ -2920,6 +2920,36 @@ import Testing
     #expect(model.previewOperationID == operation.id)
 }
 
+@Test @MainActor func mosaicLegacyProjectGroupsOnlyImportedLightsAcrossOpenAndIncrementalImport() async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: folder) }
+    func light(_ panel: String, _ frame: Int) -> URL {
+        folder.appendingPathComponent("\(panel)_sub/Light_\(panel)_\(frame).fit")
+    }
+    var old = PhotonStackProject()
+    old.mosaicWorkflow = true
+    let first = (1...90).map { light("T1", $0) }
+    old.addAssets(from: first, role: .mosaic)
+    let repository = ProjectRepository()
+    try await repository.save(old, to: folder)
+    let service = RecordingProcessingService()
+    let model = PhotonStackWorkspaceModel(autosaveEnabled: false, processingService: service)
+    await model.loadProject(from: folder)
+    #expect(model.project.assets.map(\.id) == old.assets.map(\.id))
+    #expect(model.mosaicAssets.map(\.displayName) == ["T1_sub"])
+    #expect(model.mosaicAssets.first?.mosaicFolder?.frames == first)
+    #expect(!model.canRunMosaic)
+    await model.runMosaicPreview()
+    #expect(model.errorMessage?.contains("T1_sub") == true)
+    #expect(await service.snapshot().mosaicInputGroups.isEmpty)
+    model.importMosaicPanels(from: [light("T1", 91), light("T2", 1), light("T2", 2)])
+    #expect(model.mosaicAssets.compactMap { $0.mosaicFolder?.frames.count } == [91, 2])
+    #expect(model.canRunMosaic)
+    // Explicit master images sharing a directory must remain separate.
+    model.importAssets(from: [folder.appendingPathComponent("panels/A.fits"), folder.appendingPathComponent("panels/B.fits")])
+    #expect(model.mosaicAssets.count == 4)
+}
+
 @Test @MainActor func mosaicFoldersStaySeparateThroughImportPreviewBuildAndReopen() async throws {
     let base = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
     defer { try? FileManager.default.removeItem(at: base) }

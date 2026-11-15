@@ -40,6 +40,8 @@ struct MosaicJourneyBar: View {
                 }.font(.caption)
             } else if let error = model.errorMessage, !error.isEmpty {
                 Text(model.localizedMessage(error)).font(.caption).foregroundStyle(.red)
+            } else if let hint = model.missingMosaicPanelHint {
+                Text(hint).font(.caption).foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 6).background(.bar)

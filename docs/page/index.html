@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#ffffff">
-  <meta name="description" content="PhotonStack 是开源的 macOS 深空摄影叠加工作台。跟随一次 M31 实拍，从 200 张 FITS 原片走到最终成片。">
+  <meta name="description" content="PhotonStack 是开源的 macOS 深空摄影叠加工作台。通过 M31 一键成片与双天区拼接两个实拍示例，了解从 FITS 原片到成片的流程。">
   <title>PhotonStack · 深空摄影工作台</title>
   <link rel="icon" href="assets/app-icon.png" type="image/png">
   <link rel="stylesheet" href="style.css">
@@ -30,32 +30,58 @@
           Download
         </a>
       </div>
-      <figure class="plate">
+      <figure class="plate" data-example="m31">
         <a href="assets/m31.jpg" aria-label="查看仙女座星系完整彩色成片">
           <img width="1120" height="574" src="assets/m31-detail.webp" alt="黑白局部：仙女座星系明亮的核心与两侧的暗尘埃带。" fetchpriority="high">
         </a>
         <figcaption><span>M31 · 仙女座星系</span><span>182 帧叠加</span></figcaption>
       </figure>
+      <figure class="plate" data-example="mosaic">
+        <a href="assets/mosaic/final.jpg" aria-label="查看两个天区的完整彩色拼接成片">
+          <img width="1120" height="574" src="assets/mosaic/detail.webp" alt="拼接成片的黑白局部，丝状星云穿过密集的星点。" loading="lazy">
+        </a>
+        <figcaption><span>T1 + T2 · 天区拼接</span><span>2 个天区 · 202 帧</span></figcaption>
+      </figure>
     </section>
     <section id="process" aria-labelledby="process-title">
       <div class="process-head">
         <div>
-          <h2 id="process-title">处理过程</h2>
-          <p>从 200 张 FITS 亮场，到一张仙女座星系成片。</p>
+          <div class="example-heading">
+            <h2 id="process-title">处理过程</h2>
+            <fieldset class="examples" aria-label="选择示例工作流">
+              <label><input type="radio" name="workflow" value="m31" checked><span>一键成片</span></label>
+              <label><input type="radio" name="workflow" value="mosaic" id="example-mosaic"><span>天区拼接</span></label>
+            </fieldset>
+          </div>
+          <p data-example="m31">从 200 张 FITS 亮场，到一张仙女座星系成片。</p>
+          <p data-example="mosaic">T1 的 90 帧与 T2 的 112 帧分别堆栈，再用共同星点拼接。</p>
         </div>
-        <ol class="steps" aria-label="选择处理步骤">
+        <ol class="steps" data-example="m31" aria-label="选择处理步骤">
           <li><a href="assets/01-import-200.webp" aria-current="step" data-caption="导入 200 张 FITS 亮场，逐张预览原片。">导入</a></li>
           <li><a href="assets/02-analysis-review.webp" data-caption="按星点形状筛选，逐帧复核自动排除的 18 张原片。">筛选</a></li>
           <li><a href="assets/03-stacked-result.webp" data-caption="对齐余下的 182 帧，以 Winsorized 模式抑制异常值。">叠加</a></li>
           <li><a href="assets/04-color-adjustment.webp" data-caption="以 0.35 强度中和色偏，同时保留星系亮度。">调色</a></li>
           <li><a href="assets/05-export-success.webp" data-caption="导出 1928 × 3638 像素的 TIFF，并保存处理记录。">导出</a></li>
         </ol>
+        <ol class="steps" data-example="mosaic" aria-label="选择拼接步骤">
+          <li><a href="assets/mosaic/01-panels.webp" aria-current="step" data-caption="按天区导入原片。T1_sub 有 90 帧，T2_sub 有 112 帧。">导入</a></li>
+          <li><a href="assets/mosaic/02-align.webp" data-caption="分别堆栈两组原片，在配准预览中检查重叠区域的共同星点。">配准</a></li>
+          <li><a href="assets/mosaic/03-stitch.webp" data-caption="复用两张母片，以 223 个星点匹配完成对齐，再羽化融合重叠区域。">拼接</a></li>
+          <li><a href="assets/mosaic/04-finish.webp" data-caption="在整张拼接成片上将曝光提高 0.35 EV，提亮暗弱的星云。">后期</a></li>
+          <li><a href="assets/mosaic/05-export.webp" data-caption="导出 3913 × 3905 像素的 TIFF，保留两个天区的完整画幅。">导出</a></li>
+        </ol>
       </div>
-      <figure class="workspace">
-        <a id="preview-link" href="assets/01-import-200.webp" aria-label="放大查看当前步骤截图">
-          <img id="preview" width="1600" height="1000" src="assets/01-import-200.webp" alt="PhotonStack 导入界面，左侧列出原片，中央显示单帧预览。" loading="lazy">
+      <figure class="workspace" data-example="m31">
+        <a href="assets/01-import-200.webp" aria-label="放大查看当前步骤截图">
+          <img width="1600" height="1000" src="assets/01-import-200.webp" alt="PhotonStack 导入界面，左侧列出原片，中央显示单帧预览。" loading="lazy">
         </a>
-        <figcaption id="caption" aria-live="polite">导入 200 张 FITS 亮场，逐张预览原片。</figcaption>
+        <figcaption aria-live="polite">导入 200 张 FITS 亮场，逐张预览原片。</figcaption>
+      </figure>
+      <figure class="workspace" data-example="mosaic">
+        <a href="assets/mosaic/01-panels.webp" aria-label="放大查看当前步骤截图">
+          <img width="1600" height="1004" src="assets/mosaic/01-panels.webp" alt="两个天区文件夹分别列出 90 帧和 112 帧，中央显示单帧预览。" loading="lazy">
+        </a>
+        <figcaption aria-live="polite">按天区导入原片。T1_sub 有 90 帧，T2_sub 有 112 帧。</figcaption>
       </figure>
     </section>
   </main>

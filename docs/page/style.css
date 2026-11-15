@@ -71,3 +71,17 @@ footer a { padding-block: 6px; }
 @media (prefers-reduced-motion: reduce) {
   :root { scroll-behavior: auto; }
 }
+
+/* Select the matching plate, steps and screenshot as a single example. */
+main:has(#example-mosaic:checked) [data-example="m31"],
+main:not(:has(#example-mosaic:checked)) [data-example="mosaic"] { display: none; }
+.example-heading, .examples { display: flex; align-items: center; }
+.example-heading { flex-wrap: wrap; gap: 4px 24px; }
+.examples { border: 0; padding: 0; margin: 0; gap: 16px; }
+.examples label { position: relative; cursor: pointer; color: var(--quiet); font-size: 14px; }
+.examples input { position: absolute; opacity: 0; }
+.examples span { display: inline-flex; align-items: center; min-height: 44px; }
+.examples input:checked + span, .examples label:hover span {
+  color: #111; text-decoration: underline; text-underline-offset: 6px;
+}
+.examples input:focus-visible + span { outline: 2px solid currentColor; outline-offset: 2px; }

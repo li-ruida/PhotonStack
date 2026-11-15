@@ -16,13 +16,24 @@ automation.
 - Explains every automatic frame exclusion with the filename, metric, group
   median, and threshold; users can keep, exclude, or restore automatic choices.
 - Supports calibration, registration, normalization, Winsorized and other
-  stacking modes, drizzle, mosaics, star detection, masks, and star reduction.
+  stacking modes, drizzle, star detection, masks, and star reduction.
+- Builds sky mosaics from overlapping pointings. Import one folder per panel or
+  start with stacked masters, inspect the alignment stars, and blend the panels.
 - Provides deep-sky development, histogram and curves, background and color
   correction, contrast, denoise, sharpen, deconvolution, and artifact controls.
 - Keeps processing history and exports the final image separately from the
   editable project.
 - Exposes the core processing pipeline through the macOS app and CLI for
   repeatable workflows.
+
+## Workflow examples
+
+| Workflow | Capture | Output |
+| --- | --- | --- |
+| [Stack & finish](#real-m31-workflow-200-source-frames) | 200 exposures of M31 | 182 selected frames, 1928 × 3638 TIFF |
+| [Sky mosaic](#two-panel-sky-mosaic) | Two overlapping pointings, 90 + 112 exposures | 3913 × 3905 TIFF |
+
+[Explore both workflows on the project site](https://astro.ruida.li/#process).
 
 ## Real M31 workflow: 200 source frames
 
@@ -81,6 +92,53 @@ traceability.
 > This is a real end-to-end product walkthrough, not a calibrated scientific
 > benchmark. Capture conditions, calibration frames, recipe choices, hardware,
 > and output resolution all affect quality and processing time.
+
+## Two-panel sky mosaic
+
+T1 and T2 cover adjacent patches of sky. This walkthrough follows the same 202
+FITS exposures from folder import through registration, blending and export.
+[Open the interactive mosaic walkthrough](https://astro.ruida.li/?workflow=mosaic#process).
+
+### 1. Import the pointings
+
+Choose **Sky mosaic** and select the parent directory or the individual panel
+folders. The sidebar groups the 90 exposures in `T1_sub` and the 112 in
+`T2_sub` as two panels. If each pointing already has a stacked master, import
+the two masters directly.
+
+![T1 and T2 listed as separate panels with their exposure counts](docs/page/assets/mosaic/01-panels.webp)
+
+### 2. Preview the star alignment
+
+PhotonStack stacks the exposures within each panel, then registers the two
+masters using stars in their overlap. Toggle the star markers to inspect where
+the panels meet before building the full-resolution image.
+
+![Alignment preview of the two overlapping sky panels](docs/page/assets/mosaic/02-align.webp)
+
+### 3. Build the mosaic
+
+The full-resolution build reused both panel masters. The quality report
+recorded 223 star matches and zero fallback panels. Exposure matching and
+feather blending combined the fields across the overlap.
+
+![Full mosaic and its registration report](docs/page/assets/mosaic/03-stitch.webp)
+
+### 4. Adjust the combined image
+
+This example raises exposure by 0.35 EV across the assembled field to bring
+out the faint filaments.
+
+![Exposure adjustment on the assembled mosaic](docs/page/assets/mosaic/04-finish.webp)
+
+### 5. Export the image
+
+The final TIFF measures 3913 × 3905 pixels. The export confirmation shows the
+filename, and the project retains the panel groups and edit history.
+
+![Completed TIFF export from the sky mosaic workflow](docs/page/assets/mosaic/05-export.webp)
+
+![Final two-panel sky mosaic](docs/page/assets/mosaic/final.jpg)
 
 ## Architecture
 

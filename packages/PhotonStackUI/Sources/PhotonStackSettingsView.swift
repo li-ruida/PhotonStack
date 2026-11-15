@@ -4,9 +4,11 @@ import SwiftUI
 public struct PhotonStackSettingsView: View {
     @ObservedObject private var commandState: PhotonStackApplicationCommandState
 
+    @ObservedObject private var updateChecker: PhotonStackUpdateChecker
     @State private var expandedStages: Set<String> = []
 
-    public init(commandState: PhotonStackApplicationCommandState) {
+    public init(commandState: PhotonStackApplicationCommandState, updateChecker: PhotonStackUpdateChecker = PhotonStackUpdateChecker()) {
+        self.updateChecker = updateChecker
         self.commandState = commandState
     }
 
@@ -68,6 +70,7 @@ public struct PhotonStackSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            updateSection
 
             Section {
                 Picker(
@@ -107,6 +110,42 @@ public struct PhotonStackSettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 560, height: 530)
+    }
+
+    private var updateSection: some View {
+        let zh = language == .simplifiedChinese
+        return Section {
+            Toggle(zh ? "启动时检查更新" : "Check for updates at launch", isOn: $updateChecker.automatic)
+                .accessibilityIdentifier("settings.updates.automatic")
+            LabeledContent(zh ? "当前版本" : "Installed version") {
+                Text(updateChecker.installedVersion)
+                Button(zh ? "检查更新" : "Check for updates") {
+                    Task { await updateChecker.check() }
+                }
+                .disabled(updateChecker.status == .checking)
+                .accessibilityIdentifier("settings.updates.check")
+            }
+            switch updateChecker.status {
+            case .idle:
+                EmptyView()
+            case .checking:
+                Text(zh ? "正在检查…" : "Checking…")
+            case .current:
+                Text(zh ? "已是最新版本" : "You're up to date")
+            case .noRelease:
+                Text(zh ? "GitHub 暂无正式版本" : "No published release on GitHub yet")
+            case .available(let tag):
+                LabeledContent(zh ? "发现新版 \(tag)" : "Version \(tag) available") {
+                    Link(zh ? "查看新版" : "View release", destination: PhotonStackUpdateChecker.releasePage(tag: tag))
+                }
+            case .failed:
+                LabeledContent(zh ? "检查失败，请稍后重试" : "Update check failed. Try again later.") {
+                    Link(zh ? "查看发布页" : "View releases", destination: PhotonStackUpdateChecker.releasesPage)
+                }
+            }
+        } header: {
+            Label(zh ? "软件更新" : "Software updates", systemImage: "arrow.triangle.2.circlepath")
+        }
     }
 
     @ViewBuilder

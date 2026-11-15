@@ -11,12 +11,15 @@ struct PhotonStackMacApp: App {
     @NSApplicationDelegateAdaptor(PhotonStackMacAppDelegate.self) private var appDelegate
     @StateObject private var commandState = PhotonStackApplicationCommandState()
 
+    @StateObject private var updateChecker = PhotonStackUpdateChecker()
+
     var body: some Scene {
         Window("PhotonStack", id: "main") {
             PhotonStackRootView(
                 processingService: CLIProcessingService.makeDefault(),
                 applicationCommandState: commandState
             )
+                .checkPhotonStackUpdatesOnLaunch(updateChecker, chinese: commandState.snapshot.language == .simplifiedChinese)
                 .frame(minWidth: 1120, minHeight: 720)
                 .onAppear {
                     NSApp.setActivationPolicy(.regular)
@@ -33,7 +36,7 @@ struct PhotonStackMacApp: App {
         }
 
         Settings {
-            PhotonStackSettingsView(commandState: commandState)
+            PhotonStackSettingsView(commandState: commandState, updateChecker: updateChecker)
                 .onAppear {
                     PhotonStackMenuBarCoordinator.schedule(language: commandState.snapshot.language)
                 }

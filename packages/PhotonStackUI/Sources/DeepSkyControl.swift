@@ -60,7 +60,7 @@ struct DeepSkyRecipeSheet: View {
                 Spacer()
                 Button(chinese ? "关闭" : "Close") { presented = false }.keyboardShortcut(.cancelAction)
             }
-            Text(chinese ? "2 分析与筛片 → 3 堆栈 → 4 后期调整。排除只影响这次堆栈，不会删除原片。" : "2 Review → 3 Stack → 4 Finish. Excluding frames never deletes originals.")
+            Text(chinese ? "排除的帧会跳过本次堆栈，原片保留。" : "Excluded frames are skipped in this stack. The original files are kept.")
                 .font(.callout).foregroundStyle(.secondary)
             if resultIsCurrent && !model.isProcessing, let report {
                 DeepSkyResultReviewView(report: report, chinese: chinese, viewImage: {
@@ -169,7 +169,7 @@ struct DeepSkyRecipeSheet: View {
             Button(chinese ? "取消处理" : "Cancel") { model.cancelCurrentTask() }
         } else {
             if model.canRefinishDeepSkyMaster {
-                Button(chinese ? "从母版重新显影" : "Reprocess master") { model.startRefinishDeepSkyMaster() }
+                Button(chinese ? "从母片重新显影" : "Reprocess master") { model.startRefinishDeepSkyMaster() }
                     .accessibilityIdentifier("deep-sky.refinish")
                     .help(chinese ? "复用线性母片，只更新裁边、背景、降噪和显影；素材和堆栈参数必须保持一致。" : "Reuse the linear master for crop, background, denoising and development. Inputs and stack settings must match.")
             }
@@ -241,7 +241,7 @@ struct DeepSkyRecipeSheet: View {
                     } else if report.success, !report.analysisOnly,
                               !DeepSkyReview.sameResultRecipe(try? model.deepSkyRecipeText(), report.recipe) {
                         Label(model.canRefinishDeepSkyMaster
-                            ? (chinese ? "修整参数已变化；筛片仍有效。点击“从母版重新显影”生成新成片，当前显示仍是上次结果。" : "Finishing settings changed; frame review is still valid. Reprocess the master to update the displayed result.")
+                            ? (chinese ? "修整参数已变化；筛片仍有效。点击“从母片重新显影”生成新成片，当前显示仍是上次结果。" : "Finishing settings changed; frame review is still valid. Reprocess the master to update the displayed result.")
                             : (chinese ? "当前选择或参数尚未生成成片，显示的仍是上次结果。" : "Current decisions have not been rendered; the displayed image is the previous result."), systemImage: "photo.badge.arrow.down")
                             .font(.caption).foregroundStyle(.orange)
                             .accessibilityIdentifier("deep-sky.result-outdated")
@@ -273,7 +273,7 @@ struct DeepSkyRecipeSheet: View {
                     VStack(spacing: 16) {
                         Spacer()
                         Image(systemName: "photo.on.rectangle.angled").font(.system(size: 42)).foregroundStyle(.secondary)
-                        Text(chinese ? "先了解这组照片，再决定用哪些" : "Inspect the sequence before choosing frames").font(.title3.weight(.semibold))
+                        Text(chinese ? "分析亮场并选择参与堆栈的帧" : "Analyze the sequence to select frames for stacking").font(.title3.weight(.semibold))
                         Text(chinese ? "已导入 \(model.lightAssets.count) 张亮场。分析会检查星点、噪声、对齐和局部异常。\n完成后可直接看原片、多选标记，并随时撤销。" : "\(model.lightAssets.count) lights imported. Analyze stars, noise, registration and local anomalies.\nThen inspect originals, mark multiple frames and undo decisions.")
                             .multilineTextAlignment(.center).foregroundStyle(.secondary)
                         if model.lightAssets.count < 3 {

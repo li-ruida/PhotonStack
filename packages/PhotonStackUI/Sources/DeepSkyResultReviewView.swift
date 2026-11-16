@@ -19,7 +19,7 @@ enum DeepSkyResultReview {
     static func text(_ cue: String, chinese: Bool) -> String {
         switch cue {
         case "reused-master": chinese
-            ? "本次仅重新处理已有母版，没有重新筛片、配准或堆栈；母版里的缺陷可能仍在。"
+            ? "本次仅重新处理已有母片，没有重新筛片、配准或堆栈；母片里的缺陷可能仍在。"
             : "This run only reprocessed an existing master; source review, alignment and stacking were not repeated. Existing defects may remain."
         case "few-frames": chinese
             ? "入栈少于 8 张：请重点检查噪声和残留轨迹。帧数不是总曝光，也不能单独决定画质。"

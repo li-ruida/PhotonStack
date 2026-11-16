@@ -63,10 +63,11 @@ func exportRejectsProjectSourcesAndTheirAliases(reference: String, aliasKind: St
         try FileManager.default.linkItem(at: source, to: destination)
     default: destination = source
     }
-    let model = PhotonStackWorkspaceModel(project: project, autosaveEnabled: false,
+    let model = PhotonStackWorkspaceModel(project: project, language: .english, autosaveEnabled: false,
         processingService: try exportProtectionService(root), previewDirectory: root.appendingPathComponent("previews"))
     await model.exportCurrentImage(to: destination)
-    #expect(model.errorMessage?.contains("cannot overwrite") == true)
+    #expect(model.errorMessage?.hasPrefix("Choose another export location") == true
+            && model.errorMessage?.contains(source.lastPathComponent) == true)
     #expect(model.jobs.isEmpty)
     #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("launched").path))
     #expect(try Data(contentsOf: source) == original)
@@ -84,10 +85,11 @@ func exportRejectsProjectSourcesAndTheirAliases(reference: String, aliasKind: St
     var project = PhotonStackProject(name: "Sidecar protection")
     project.addAssets(from: [selected, sidecar])
     let service = try exportProtectionService(root)
-    let protected = PhotonStackWorkspaceModel(project: project, autosaveEnabled: false, processingService: service,
+    let protected = PhotonStackWorkspaceModel(project: project, language: .simplifiedChinese, autosaveEnabled: false, processingService: service,
         previewDirectory: root.appendingPathComponent("previews"))
     await protected.exportCurrentImage(to: output)
-    #expect(protected.errorMessage?.contains("cannot overwrite") == true)
+    #expect(protected.errorMessage?.hasPrefix("不能覆盖项目原片") == true
+            && protected.errorMessage?.contains(sidecar.lastPathComponent) == true)
     #expect(!FileManager.default.fileExists(atPath: output.path))
     #expect(try String(contentsOf: sidecar, encoding: .utf8) == "original metadata")
     var ordinaryProject = PhotonStackProject(name: "Ordinary overwrite")

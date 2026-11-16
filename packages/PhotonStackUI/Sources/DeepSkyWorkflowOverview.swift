@@ -70,7 +70,7 @@ struct DeepSkyWorkflowOverview: View {
         }
         let current = reportIsCurrent
         if current, model.canRefinishDeepSkyMaster {
-            return chinese ? "修整参数已变化，当前显示的仍是上次成片。在工作台点击“从母版重新显影”即可，无需重新筛片和堆栈。" : "Finishing settings changed; the displayed image is the previous result. Reprocess the master in the workbench without analyzing or stacking again."
+            return chinese ? "修整参数已变化，当前显示的仍是上次成片。在工作台点击“从母片重新显影”即可，无需重新筛片和堆栈。" : "Finishing settings changed; the displayed image is the previous result. Reprocess the master in the workbench without analyzing or stacking again."
         }
         if current, let report = model.project.deepSkySettings?.lastReport {
             let kept = DeepSkyReview.keptCount(report.frames, settings: model.deepSkySettings)

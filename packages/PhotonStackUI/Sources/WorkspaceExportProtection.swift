@@ -6,7 +6,7 @@ enum WorkspaceExportProtection {
         var errorDescription: String? {
             switch self {
             case let .protectedSource(path):
-                "不能覆盖项目原片或处理依赖，请选择新的导出位置。Export cannot overwrite a project source or processing dependency: \(path)"
+                "不能覆盖项目原片或处理所需文件，请另选导出位置。 / Choose another export location to preserve the project source or processing input.\n\(path)"
             }
         }
     }

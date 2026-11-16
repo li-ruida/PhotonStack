@@ -47,17 +47,15 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
     }
 
     public func localizedMessage(_ message: String) -> String {
-        guard let separator = message.range(of: " / ", options: .backwards) else {
-            return message
-        }
-        let chineseVariant = message[..<separator.lowerBound]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let englishVariant = message[separator.upperBound...]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard chineseVariant.isEmpty == false, englishVariant.isEmpty == false else {
-            return message
-        }
-        return self == .simplifiedChinese ? chineseVariant : englishVariant
+        // Only the first line holds the bilingual label. Paths and other
+        // shared details on later lines must survive language selection intact.
+        let end = message.firstIndex(of: "\n") ?? message.endIndex
+        let label = message[..<end]
+        guard let separator = label.range(of: " / "),
+              label[..<separator.lowerBound].unicodeScalars.contains(where: { $0.properties.isIdeographic }),
+              label[separator.upperBound...].first?.isASCII == true else { return message }
+        let variant = self == .simplifiedChinese ? label[..<separator.lowerBound] : label[separator.upperBound...]
+        return String(variant) + message[end...]
     }
 
     public func roleName(_ role: CalibrationFrameRole) -> String {
@@ -71,7 +69,7 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
         case (.english, .flat):
             return "Flat"
         case (.english, .mosaic):
-            return "Mosaic"
+            return "Sky panel"
         case (.english, .reference):
             return "Reference"
         case (.english, .other):
@@ -85,7 +83,7 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
         case (.simplifiedChinese, .flat):
             return "平场"
         case (.simplifiedChinese, .mosaic):
-            return "接片"
+            return "天区"
         case (.simplifiedChinese, .reference):
             return "参考"
         case (.simplifiedChinese, .other):
@@ -155,7 +153,7 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
         case (.simplifiedChinese, .artifactDetect): "检测航迹"
         case (.simplifiedChinese, .artifactRemove): "去除航迹"
         case (.simplifiedChinese, .cloudDetect): "检测云雾"
-        case (.simplifiedChinese, .mosaic): "接片"
+        case (.simplifiedChinese, .mosaic): "天区拼接"
         case (.simplifiedChinese, .export): "导出"
         }
     }
@@ -226,8 +224,8 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
             "Apply Curve": "应用曲线",
             "Register Frames": "配准照片",
             "Calibrate and Stack": "校准并堆栈",
-            "Mosaic": "接片",
-            "Mosaic Preview": "接片预览",
+            "Mosaic": "天区拼接",
+            "Mosaic Preview": "拼接预览",
             "Console": "控制台命令",
             "Replay Edit Graph": "重放处理历史",
         ]
@@ -324,7 +322,7 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
         case (.simplifiedChinese, .lunarPlanetary):
             return "月面 / 行星"
         case (.simplifiedChinese, .mosaic):
-            return "接片"
+            return "天区拼接"
         case (.simplifiedChinese, .singleFrame):
             return "单张"
         }
@@ -569,11 +567,11 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
         case (.english, .manual):
             return "Manual"
         case (.english, .auto):
-            return "Auto affine"
+            return "Automatic star alignment"
         case (.simplifiedChinese, .manual):
             return "手动"
         case (.simplifiedChinese, .auto):
-            return "自动仿射"
+            return "星点自动配准"
         }
     }
 
@@ -1096,7 +1094,7 @@ private enum LocalizedTextCatalog {
         .sourcePreviewAction: "Preview Source",
         .currentImageLabel: "Current image",
         .stretchAction: "Stretch",
-        .contrastAction: "Contrast",
+        .contrastAction: "Local Contrast",
         .denoiseAction: "Denoise",
         .sharpenAction: "Sharpen",
         .starsAction: "Stars",
@@ -1473,7 +1471,7 @@ private enum LocalizedTextCatalog {
         .importFilesAction: "导入文件...",
         .importFolderAction: "导入文件夹...",
         .importFilesMessage: "选择一个或多个 RAW、FITS、TIFF、JPEG、PNG 或 HEIF 文件。",
-        .importFolderMessage: "选择一个文件夹；其子文件夹中的受支持图像也会导入。",
+        .importFolderMessage: "同时导入子文件夹中的图像。",
         .assetImportQueued: "已排队 %d 个素材，将在当前任务结束后导入。",
         .assetsImported: "已导入 %d 个素材。",
         .openProjectMessage: "选择一个 PhotonStack 项目文件夹。",
@@ -1491,7 +1489,7 @@ private enum LocalizedTextCatalog {
         .autoStretchAction: "自动拉伸",
         .autoStretchHelp: "生成可撤销的拉伸图层，不改动原片；目标背景值在右侧检查器设置。",
         .unsavedChangesTitle: "继续前保存更改？",
-        .unsavedChangesMessage: "当前项目包含尚未保存的更改。替换或关闭项目前，可以先保存这些更改。",
+        .unsavedChangesMessage: "选择“不保存”会丢弃本次更改。",
         .saveChangesAction: "保存更改",
         .discardChangesAction: "不保存",
         .unsavedChangesStatus: "有未保存的更改",
@@ -1505,11 +1503,11 @@ private enum LocalizedTextCatalog {
         .sourcePreviewAction: "预览原片",
         .currentImageLabel: "当前图像",
         .stretchAction: "拉伸",
-        .contrastAction: "对比",
+        .contrastAction: "局部对比度",
         .denoiseAction: "降噪",
         .sharpenAction: "锐化",
         .starsAction: "星点",
-        .comaAction: "去慧差",
+        .comaAction: "修正彗差",
         .backAction: "上一步",
         .resetAction: "重置",
         .cancelAction: "取消",
@@ -1539,9 +1537,9 @@ private enum LocalizedTextCatalog {
         .relinkAssetSuccess: "已重新链接素材",
         .relinkAssetInvalid: "请选择一个存在且受支持的图像文件。",
         .relinkAssetDuplicate: "该文件已经作为项目中的另一个素材使用。",
-        .missingAssetStatus: "原始文件已失联",
-        .missingAssetExportError: "全分辨率导出前请重新链接失联素材",
-        .missingAssetProcessingError: "处理前请重新链接失联素材",
+        .missingAssetStatus: "找不到原文件",
+        .missingAssetExportError: "全分辨率导出前请重新链接缺失的素材",
+        .missingAssetProcessingError: "处理前请重新链接缺失的素材",
         .missingWorkspaceSourceError: "工作区来源已失效，请先重放或重新生成",
         .imageProcessingRequiresImageLayer: "请先选择图像图层，再使用图像处理工具",
         .emptyAssetsTitle: "还没有素材",
@@ -1684,16 +1682,16 @@ private enum LocalizedTextCatalog {
         .rawAutoPreview: "RAW 参数变化后会自动刷新预览。",
         .rawAppliedParameters: "预览只应用当前选择的白平衡、曝光补偿和黑电平。",
         .rawDeferredParameters: "线性输出会保存到后续处理/导出参数，不作为显示增强叠加到预览。",
-        .previewWidth: "预览",
+        .previewWidth: "预览宽度",
         .stretchParameter: "拉伸",
         .starReduction: "缩星",
         .profileAwareStars: "保轮廓缩星",
         .edgeAwareStars: "边缘优先缩星",
-        .comaReduction: "慧差减弱",
-        .comaRadius: "慧差半径",
-        .comaEccentricity: "慧差偏心阈值",
-        .edgeAwareComa: "边缘优先慧差",
-        .localContrast: "局部对比",
+        .comaReduction: "彗差修正强度",
+        .comaRadius: "彗差修正半径",
+        .comaEccentricity: "星点偏心率阈值",
+        .edgeAwareComa: "优先修正边缘彗差",
+        .localContrast: "局部对比度",
         .contrastRadius: "对比半径",
         .denoiseParameter: "降噪",
         .chromaDenoiseParameter: "色彩降噪",
@@ -1856,11 +1854,11 @@ private enum LocalizedTextCatalog {
         .midInput: "中点输入",
         .midOutput: "中点输出",
         .whitePoint: "白点",
-        .mosaicSection: "接片",
-        .mosaicPanels: "面板",
+        .mosaicSection: "天区拼接",
+        .mosaicPanels: "天区",
         .mosaicEstimatedSize: "预计尺寸",
-        .mosaicMissingMetadata: "检查面板后可估算尺寸",
-        .mosaicHeightMismatch: "面板高度不一致",
+        .mosaicMissingMetadata: "读取天区图像尺寸后可估算",
+        .mosaicHeightMismatch: "天区图像高度不一致",
         .estimateOverlap: "估算重叠",
         .mosaicProjection: "投影",
         .mosaicLayout: "布局",
@@ -1868,13 +1866,13 @@ private enum LocalizedTextCatalog {
         .mosaicBlend: "融合",
         .mosaicExposureMatch: "曝光匹配",
         .mosaicQualityReport: "质量报告",
-        .mosaicFallbackPanels: "回退面板",
+        .mosaicFallbackPanels: "使用备用定位的天区",
         .mosaicColumns: "列数",
         .mosaicPreviewWidth: "预览宽度",
-        .previewMosaic: "预览接片",
+        .previewMosaic: "预览拼接",
         .overlapPixels: "重叠像素",
-        .runMosaic: "运行接片",
-        .mosaicNoPanels: "添加有重叠天区的面板。星点配准至少需要两张面板。",
+        .runMosaic: "生成拼接成片",
+        .mosaicNoPanels: "请导入至少两个有重叠星点的天区。",
     ]
 
     static func text(_ key: LocalizedTextKey, language: AppLanguage) -> String {

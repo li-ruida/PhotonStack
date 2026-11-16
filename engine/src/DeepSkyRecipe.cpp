@@ -182,11 +182,11 @@ std::vector<Binding> fields(DeepSkyWorkflowOptions& o) {
     f.numeric("selection.signal-tolerance", "Signal-dependent tolerance", "亮信号残差容差", "selection", o.quality.signalTolerance, 0, 1);
     f.numeric("selection.minimum-coverage", "Minimum valid coverage", "最低有效覆盖率", "selection", o.quality.minimumCoverage, 0, 1);
     f.numeric("selection.maximum-noise-ratio", "Maximum relative noise", "最大相对噪声", "selection", o.quality.maximumNoiseRatio, 1, 100);
-    f.numeric("selection.maximum-fwhm-ratio", "Maximum relative FWHM", "最大相对星点宽度", "selection", o.quality.maximumFwhmRatio, 1, 100);
+    f.numeric("selection.maximum-fwhm-ratio", "Maximum relative FWHM", "最大相对星点半高全宽（FWHM）", "selection", o.quality.maximumFwhmRatio, 1, 100);
     f.numeric("selection.maximum-eccentricity", "Eccentricity review threshold", "星点偏心率复查阈值", "selection", o.quality.maximumEccentricity, 0, 1);
     f.numeric("selection.minimum-star-ratio", "Minimum relative star count", "最低相对星点数量", "selection", o.quality.minimumStarRatio, 0, 1);
     f.numeric("selection.maximum-residual-fraction", "Broad residual fraction", "大范围残差比例阈值", "selection", o.quality.maximumResidualFraction, 0, 1);
-    f.numeric("selection.minimum-peers", "Minimum temporal peers", "最少时间比较帧", "selection", o.quality.minimumTemporalPeers, 4, 1999);
+    f.numeric("selection.minimum-peers", "Minimum temporal peers", "时序比较所需的最少帧数", "selection", o.quality.minimumTemporalPeers, 4, 1999);
     f.numeric("selection.minimum-kept", "Minimum retained frames", "最少保留帧数", "selection", o.quality.minimumKeptFrames, 3, 2000);
     f.numeric("selection.minimum-kept-fraction", "Minimum retained fraction", "最低保留比例", "selection", o.quality.minimumKeptFraction, 0, 1);
     f.text("selection.overrides", "Per-frame auto/keep/reject", "逐帧 auto/keep/reject 覆盖", "selection", [&o] {
@@ -224,7 +224,7 @@ std::vector<Binding> fields(DeepSkyWorkflowOptions& o) {
         {{"scene", DeepSkyNoiseModel::Scene}, {"independent-luminance", DeepSkyNoiseModel::IndependentLuminance}});
     f.numeric("denoise.blend", "Maximum denoise blend", "降噪最大混合比例", "denoise", o.denoiseBlend, 0, 1);
     f.numeric("denoise.multiscale-luminance", "Multiscale luminance denoise", "多尺度亮度降噪", "denoise", o.multiscale.luminance, 0, 1);
-    f.numeric("denoise.multiscale-chroma", "Multiscale color denoise", "多尺度彩色降噪", "denoise", o.multiscale.chroma, 0, 1);
+    f.numeric("denoise.multiscale-chroma", "Multiscale color denoise", "多尺度色度降噪", "denoise", o.multiscale.chroma, 0, 1);
     f.numeric("denoise.multiscale-scales", "Denoising scales", "降噪尺度数", "denoise", o.multiscale.scales, 1, 6);
     f.numeric("denoise.background-strength", "Residual background denoise", "背景纹理降噪", "denoise", o.backgroundDenoiseStrength, 0, 1);
     f.choice<AstroToneCurve>("develop.curve", "Tone curve", "显影曲线", "develop", o.develop.toneCurve,
@@ -239,15 +239,15 @@ std::vector<Binding> fields(DeepSkyWorkflowOptions& o) {
     f.numeric("develop.green-gain", "Green gain", "绿色增益", "develop", o.develop.gains[1], .1, 10);
     f.numeric("develop.blue-gain", "Blue gain", "蓝色增益", "develop", o.develop.gains[2], .1, 10);
     f.numeric("develop.background", "Display background", "显示背景亮度", "develop", o.develop.background, 0, .3);
-    f.numeric("develop.sky-percentile", "Sky reference quantile (0.5 legacy)", "背景参考分位（0.5 原方式）", "develop", o.develop.skyPercentile, .05, .5);
+    f.numeric("develop.sky-percentile", "Sky reference quantile (0.5 = median)", "背景参考分位数（0.5 为中位数）", "develop", o.develop.skyPercentile, .05, .5);
     f.numeric("develop.tone-scale", "Tone scale (0 auto)", "拉伸尺度（0 自动）", "develop", o.develop.toneScale, 0, 1000000000);
     f.numeric("develop.white-point", "Highlight reference (0 auto)", "高光参考（0 自动）", "develop", o.develop.whitePoint, 0, 1000000000);
     f.numeric("develop.brightness", "Brightness", "亮度", "develop", o.develop.brightness, .1, 10);
-    f.numeric("develop.saturation", "Saturation", "色彩浓度", "develop", o.develop.saturation, 0, 2);
+    f.numeric("develop.saturation", "Saturation", "饱和度", "develop", o.develop.saturation, 0, 2);
     f.numeric("develop.star-exposure", "Star exposure", "恒星曝光", "develop", o.develop.starExposure, .05, 1);
     f.numeric("develop.star-color-cleanup", "Stellar color-fringe suppression (0 off)", "星点彩边抑制（0 关闭）", "develop", o.develop.starColorCleanup, 0, 1);
-    f.numeric("develop.star-threshold", "Bright-star threshold", "亮星门槛", "develop", o.develop.starPeakThreshold, 0, 1);
-    f.boolean("output.save-denoise-stages", "Save denoising stage images", "保存各阶段降噪过程图", "output", o.saveDenoiseStages);
+    f.numeric("develop.star-threshold", "Bright-star threshold", "亮星阈值", "develop", o.develop.starPeakThreshold, 0, 1);
+    f.boolean("output.save-denoise-stages", "Save denoising stage images", "保存各降噪阶段的图像", "output", o.saveDenoiseStages);
     return std::move(f.bindings);
 }
 } // namespace

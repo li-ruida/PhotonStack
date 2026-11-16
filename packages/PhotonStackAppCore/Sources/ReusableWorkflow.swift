@@ -86,7 +86,7 @@ public struct WorkflowStep: Codable, Equatable, Sendable {
         let roles = WorkflowCalibrationRole.allCases.filter { !values[$0.recipeKey, default: ""].isEmpty }
         var notices = ["新目标会重新分析、筛片并自动选择参考帧；不会沿用旧片的手动取舍或逐帧权重。 / New targets are analyzed and selected afresh with an automatic reference."]
         if !roles.isEmpty {
-            notices.append("每个目标文件夹必须提供校准子文件夹 / Required calibration folders: " + roles.map(\.rawValue).joined(separator: ", "))
+            notices.append("每个目标文件夹必须提供校准子文件夹 / Required calibration folders\n" + roles.map(\.rawValue).joined(separator: ", "))
         }
         let step = Self(kind: .stack, deepSkyValues: values.filter { !targetSpecificRecipeKeys.contains($0.key) }, calibration: roles)
         try step.validate()
@@ -106,7 +106,7 @@ public struct WorkflowStep: Codable, Equatable, Sendable {
             throw WorkflowError("逐帧清理步骤需保留序列语义，不能保存为单图后期 / Sequence cleanup is not a single-image step")
         }
         guard let keys = portableKeys[operation.kind] else {
-            throw WorkflowError("此步骤需要目标专属输入，暂不能自动复用 / Step requires target-specific inputs: \(operation.kind.rawValue)")
+            throw WorkflowError("此步骤需要目标专属输入，暂不能自动复用 / Step requires target-specific inputs\n\(operation.kind.rawValue)")
         }
         var roles: [WorkflowCalibrationRole] = []
         if operation.kind == .stack {
@@ -157,7 +157,7 @@ public struct WorkflowStep: Codable, Equatable, Sendable {
             guard key.count <= 100, value.count <= 16_384,
                   !value.contains("/"), !value.contains("\\"), !value.contains("\n"),
                   !value.contains("\r"), !value.contains("\0") else {
-                throw WorkflowError("工作流参数不是可移植的数值或选项 / Non-portable workflow parameter: \(key)")
+                throw WorkflowError("工作流参数不是可移植的数值或选项 / Non-portable workflow parameter\n\(key)")
             }
         }
     }

@@ -297,7 +297,7 @@ import Testing
     defer { workflow.cancel() }
     let deadline = ContinuousClock.now + .seconds(5)
     while ContinuousClock.now < deadline,
-          model.progressMessage != "stack combine" {
+          model.progressMessage != model.language.progressStage("combine") {
         try await Task.sleep(for: .milliseconds(10))
     }
 
@@ -7344,7 +7344,7 @@ import Testing
     #expect(model.selectedTemplate == .mosaic)
     #expect(model.autosaveEnabled == false)
     #expect(model.exportOptions == originalOptions)
-    #expect(model.errorMessage?.contains("64 bytes") == true)
+    #expect(model.errorMessage?.contains("64 字节") == true)
 }
 
 @Test @MainActor func settingsLoadMergesUserChangesMadeWhileStorageIsWaiting() async throws {
@@ -9542,7 +9542,7 @@ import Testing
     await model.removeClouds(selectedIndices: [2], strength: 0.4)
 
     #expect(model.latestJob?.status == .failed)
-    #expect(model.errorMessage?.contains("selected candidate") == true)
+    #expect(model.errorMessage?.contains(model.language == .simplifiedChinese ? "请重新选择" : "Select it again") == true)
     #expect(await service.snapshot().cloudSelectedIndices == nil)
     #expect(model.cloudRegionReport != nil)
     #expect(model.project.editGraph.operations.isEmpty)
@@ -9901,7 +9901,7 @@ import Testing
     await model.removeArtifactTrails(selectedIndices: [2], removeMeteors: false)
 
     #expect(model.latestJob?.status == .failed)
-    #expect(model.errorMessage?.contains("selected candidate") == true)
+    #expect(model.errorMessage?.contains(model.language == .simplifiedChinese ? "请重新选择" : "Select it again") == true)
     #expect(await service.snapshot().artifactSelectedIndices == nil)
     #expect(model.artifactTrailReport != nil)
     #expect(model.project.editGraph.operations.isEmpty)
@@ -10900,7 +10900,7 @@ import Testing
 
     model.enqueueCurrent(.mosaic)
     #expect(model.batchQueue.isEmpty)
-    #expect(model.errorMessage == "Unsupported batch queue operation")
+    #expect(model.errorMessage == (model.language == .simplifiedChinese ? "批处理队列不支持此操作" : "Unsupported batch queue operation"))
 
     let allAssetsModel = PhotonStackWorkspaceModel(
         project: project,
@@ -10908,7 +10908,7 @@ import Testing
     )
     allAssetsModel.enqueueAllAssets(.export)
     #expect(allAssetsModel.batchQueue.isEmpty)
-    #expect(allAssetsModel.errorMessage == "Unsupported batch queue operation")
+    #expect(allAssetsModel.errorMessage == (allAssetsModel.language == .simplifiedChinese ? "批处理队列不支持此操作" : "Unsupported batch queue operation"))
 
     let supportedModel = PhotonStackWorkspaceModel(
         project: project,
@@ -11245,7 +11245,7 @@ import Testing
 
     model.enqueueCurrent(.export)
     #expect(model.batchQueue.isEmpty)
-    #expect(model.errorMessage == "Unsupported batch queue operation")
+    #expect(model.errorMessage == (model.language == .simplifiedChinese ? "批处理队列不支持此操作" : "Unsupported batch queue operation"))
 
     await model.exportCurrentImage(to: directory.appendingPathComponent("blocked-export.tiff"))
     #expect(await service.snapshot().convertInputs.isEmpty)

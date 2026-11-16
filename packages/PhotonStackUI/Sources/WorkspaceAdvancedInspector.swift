@@ -58,6 +58,7 @@ struct AdvancedProcessingSection: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     @Binding var parameters: ProcessingParameters
     @ObservedObject var settings: AdvancedToolSettings
+    private var chinese: Bool { model.language == .simplifiedChinese }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -144,14 +145,14 @@ struct AdvancedProcessingSection: View {
                 Button {
                     model.startDetectCloudsTemporally()
                 } label: {
-                    Label("多帧辅助识别", systemImage: "rectangle.3.group.bubble")
+                    Label(chinese ? "跨帧检测云雾" : "Detect clouds across frames", systemImage: "rectangle.3.group.bubble")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
                 .disabled(!hasReferences || model.canProcessCurrentInput == false || model.isProcessing)
 
                 if !hasReferences {
-                    Text("至少载入 3 张同尺寸的光照/参考帧后可启用弱云辅助识别。")
+                    Text(chinese ? "至少需要 3 张尺寸相同的亮场或参考帧。" : "Add at least 3 light or reference frames of the same size.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -161,7 +162,8 @@ struct AdvancedProcessingSection: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     if report.temporalFramesUsed > 0 {
-                        Text("多帧：\(report.temporalFramesUsed) 帧，确认 \(report.temporallyConfirmedClouds) 个暗云候选")
+                        Text(chinese ? "已比对 \(report.temporalFramesUsed) 帧，确认 \(report.temporallyConfirmedClouds) 处疑似云雾。"
+                             : "Compared \(report.temporalFramesUsed) frames and confirmed \(report.temporallyConfirmedClouds) cloud candidates.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -200,13 +202,15 @@ struct AdvancedProcessingSection: View {
                                         Image(systemName: "cloud")
                                             .foregroundStyle(.cyan)
                                         VStack(alignment: .leading, spacing: 2) {
-                            Text(item.displayLabel)
-                                                .font(.caption)
-                                            Text(item.temporalSupport > 0
-                                                ? "A \(item.coverage * 100, format: .number.precision(.fractionLength(1)))%  C \(item.confidence, format: .number.precision(.fractionLength(2)))  T \(item.temporalSupport)"
-                                                : "A \(item.coverage * 100, format: .number.precision(.fractionLength(1)))%  C \(item.confidence, format: .number.precision(.fractionLength(2)))")
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
+                                            Text(item.displayLabel).font(.caption)
+                                            Text(chinese
+                                                 ? "覆盖 \(item.coverage * 100, format: .number.precision(.fractionLength(1)))% · 置信度 \(item.confidence, format: .number.precision(.fractionLength(2)))"
+                                                 : "Coverage \(item.coverage * 100, format: .number.precision(.fractionLength(1)))% · Confidence \(item.confidence, format: .number.precision(.fractionLength(2)))")
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                            if item.temporalSupport > 0 {
+                                                Text(chinese ? "支持帧数：\(item.temporalSupport)" : "Supporting frames: \(item.temporalSupport)")
+                                                    .font(.caption2).foregroundStyle(.secondary)
+                                            }
                                         }
                                         Spacer()
                                     }
@@ -234,7 +238,8 @@ struct AdvancedProcessingSection: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(settings.selectedCloudIndices.isEmpty || model.canProcessCurrentInput == false || model.isProcessing)
                     if report.temporalFramesUsed > 0 {
-                        Text("去除会复用这次多帧确认的掩膜；需要至少保留 3 张同组帧。")
+                        Text(chinese ? "请保留同组的至少 3 帧，以便使用本次检测的蒙版去除云雾。"
+                             : "Keep at least 3 frames from this group to remove clouds with the detected mask.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -367,12 +372,15 @@ struct AdvancedProcessingSection: View {
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(artifactKindName(item.kind))
                                                 .font(.caption)
-                                            Text("\(model.localized(.artifactTrailWeight)) \(item.weight, format: .number.precision(.fractionLength(2)))  L \(item.length, format: .number.precision(.fractionLength(0)))  B \(item.meanBrightness, format: .number.precision(.fractionLength(2)))  C \(item.confidence, format: .number.precision(.fractionLength(2)))")
-                                                .font(.caption2)
-                                                .foregroundStyle(.secondary)
+                                            Group {
+                                                Text("\(model.localized(.artifactTrailWeight)) \(item.weight, format: .number.precision(.fractionLength(2))) · \(chinese ? "长度" : "Length") \(item.length, format: .number.precision(.fractionLength(0))) px")
+                                                Text("\(chinese ? "平均亮度" : "Mean brightness") \(item.meanBrightness, format: .number.precision(.fractionLength(2))) · \(chinese ? "置信度" : "Confidence") \(item.confidence, format: .number.precision(.fractionLength(2)))")
+                                            }
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
                                         }
                                         Spacer()
-                        Text(item.displayLabel)
+                                        Text(item.displayLabel)
                                             .font(.caption2.monospaced())
                                             .foregroundStyle(.secondary)
                                     }

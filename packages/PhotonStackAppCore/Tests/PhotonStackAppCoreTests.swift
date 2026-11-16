@@ -1076,8 +1076,13 @@ import Testing
     #expect(AppLanguage.english.processingJobTitle("工作流 / Workflow: M31") == "Workflow: M31")
     #expect(AppLanguage.simplifiedChinese.localizedMessage("无法绑定新原片 / Cannot bind new source") == "无法绑定新原片")
     #expect(AppLanguage.english.localizedMessage("无法绑定新原片 / Cannot bind new source") == "Cannot bind new source")
+    let path = "/Volumes/Orion / M42/light.fit"
+    let missing = "找不到原片 / Missing frame\n\(path)"
+    #expect(AppLanguage.english.localizedMessage(missing) == "Missing frame\n\(path)")
+    #expect(AppLanguage.simplifiedChinese.localizedMessage(missing) == "找不到原片\n\(path)")
+    #expect(AppLanguage.english.localizedMessage(path) == path)
     #expect(AppLanguage.simplifiedChinese.roleName(.light) == "亮场")
-    #expect(AppLanguage.simplifiedChinese.roleName(.mosaic) == "接片")
+    #expect(AppLanguage.simplifiedChinese.roleName(.mosaic) == "天区")
     #expect(AppLanguage.simplifiedChinese.alignmentMethodName(.translation) == "平移")
     #expect(AppLanguage.simplifiedChinese.alignmentMethodName(.distortion) == "畸变分区")
     #expect(AppLanguage.simplifiedChinese.curvePresetName(.deepSkyContrast) == "深空对比")
@@ -1109,7 +1114,7 @@ import Testing
     #expect(AppLanguage.simplifiedChinese.text(.estimateOverlap) == "估算重叠")
     #expect(AppLanguage.simplifiedChinese.mosaicProjectionName(.cylindrical) == "圆柱")
     #expect(AppLanguage.simplifiedChinese.mosaicLayoutName(.grid) == "网格")
-    #expect(AppLanguage.simplifiedChinese.mosaicAlignmentName(.auto) == "自动仿射")
+    #expect(AppLanguage.simplifiedChinese.mosaicAlignmentName(.auto) == "星点自动配准")
     #expect(AppLanguage.simplifiedChinese.mosaicBlendModeName(.feather) == "羽化")
 }
 

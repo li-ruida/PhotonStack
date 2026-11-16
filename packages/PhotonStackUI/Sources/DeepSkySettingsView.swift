@@ -45,14 +45,17 @@ struct DeepSkySettingsView: View {
                     .toggleStyle(.switch).controlSize(.small)
                     .accessibilityIdentifier("deep-sky.settings.advanced")
             }
-            Text(searching
-                 ? (chinese ? "搜索包含全部参数；调整后需更新相应处理阶段。" : "Search includes all settings. Rerun the affected stage after changes.")
-                 : (chinese ? "先使用默认值。这里显示常用项及已修改项；展开分组逐步调整。" : "Start with the defaults. Common and modified settings appear here; expand a section to adjust."))
-                .font(.caption).foregroundStyle(.secondary)
+            if !showAdvanced || searching {
+                Text(searching
+                     ? (chinese ? "搜索包含全部参数；调整后需更新相应处理阶段。" : "Search includes all settings. Rerun the affected stage after changes.")
+                     : (chinese ? "显示常用参数和已修改的参数。" : "Showing common and modified settings."))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if model.deepSkySchema == nil {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if fields.isEmpty {
-                ContentUnavailableView.search(text: query)
+                ContentUnavailableView(chinese ? "没有匹配的参数" : "No matching settings", systemImage: "magnifyingglass",
+                                       description: Text(query))
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
@@ -87,7 +90,7 @@ struct DeepSkySettingsView: View {
     private func groupGuidance(_ group: String) -> String {
         switch group {
         case "calibration": chinese ? "校准帧需与拍摄条件匹配。也可在素材栏指定暗场、偏置和平场。" : "Use calibration frames matched to acquisition conditions. Assign darks, biases and flats in the asset list."
-        case "decode": chinese ? "彩色 FITS 根据 CFA 信息去马赛克。改变解码设置需要重新堆栈。" : "Color FITS uses CFA metadata for debayering. Decode changes require a new stack."
+        case "decode": chinese ? "按 FITS 中记录的拜耳阵列还原色彩。更改 FITS 或 RAW 解码设置后需重新堆栈。" : "Bayer FITS frames use their recorded color pattern. Stack again after changing FITS or RAW decoding."
         case "selection": chinese ? "先分析，再复查异常帧。相对质量筛选无法保证所有保留帧都清晰。" : "Analyze first, then inspect flagged frames. Relative screening cannot guarantee sharpness."
         case "registration": chinese ? "深空照片需要星点对齐；星轨合成应保留相机坐标。" : "Align stars for deep sky; preserve camera coordinates for star trails."
         case "stack": chinese ? "合成方法决定如何保留信号、排除异常值；更改后需要重新堆栈。" : "The method controls signal combination and outlier rejection. Changes require a new stack."
@@ -127,7 +130,7 @@ struct DeepSkySettingsView: View {
             } else if field.type == "choice" {
                 Picker(title, selection: binding(field)) {
                     ForEach(field.choices, id: \.self) { choice in
-                        Text(choiceTitle(choice, field: field)).tag(choice)
+                        Text(model.language.deepSkyChoiceTitle(choice, field: field)).tag(choice)
                             .disabled(field.key == "denoise.noise-model" && choice == "independent-luminance" &&
                                 model.deepSkySchema.map { model.deepSkySettings.effectiveValue("stack.method", schema: $0) } != "sigma")
                     }
@@ -148,7 +151,7 @@ struct DeepSkySettingsView: View {
                 ? (chinese ? "亮星暗环保护会约束去马赛克产生的异常暗凹，保留原始采样和单星 RGB 总通量。改变此项需要重新堆栈，无法通过更新显影修复已有母片。"
                     : "The bright-star guard constrains demosaicing undershoot while retaining native samples and each star's integrated RGB. Rebuild the stack after changing this setting; finishing an existing master cannot apply it.")
                 : field.key == "develop.color-transfer"
-                ? (chinese ? "线性光模式在线性 RGB 中分配颜色，再编码为显示色彩。旧版模式用于重现此前的显影效果。切换后可从现有母版重新显影。"
+                ? (chinese ? "线性光模式在线性 RGB 中分配颜色，再编码为显示色彩。旧版模式用于重现此前的显影效果。切换后可从现有母片重新显影。"
                     : "Linear light applies color in linear RGB before display encoding. Legacy rendering replays earlier results. Reprocess the existing master after switching.")
                 : field.key == "calibration.sensor-pattern"
                 ? (chinese ? "在去马赛克前减去传感器固定细纹。需至少 36 张同设置的亮场及足够视场位移，暂不能与暗场、偏置、平场一起使用。默认关闭；请对比检查微弱结构。"
@@ -168,40 +171,8 @@ struct DeepSkySettingsView: View {
                 : title)
         }
     }
-    private func choiceTitle(_ choice: String, field: DeepSkySchema.Field) -> String {
-        if field.key == "stack.method", let method = StackMethod(rawValue: choice) {
-            return model.language.stackMethodName(method)
-        }
-        if field.key == "registration.mode", let method = AlignmentMethod(rawValue: choice) {
-            return model.language.alignmentMethodName(method)
-        }
-        if field.key == "denoise.noise-model" {
-            return choice == "scene" ? (chinese ? "从图像估计" : "From image")
-                : (chinese ? "从独立子堆栈估计（实验）" : "Independent sub-stacks (experimental)")
-        }
-        let names: [String: (String, String)] = [
-            "none": ("关闭", "Off"), "polynomial": ("多项式", "Polynomial"),
-            "grid": ("网格", "Grid"), "polynomial-grid": ("多项式 + 网格", "Polynomial + grid"),
-            "asinh": ("反双曲正弦", "Asinh"), "rational": ("有理曲线", "Rational"),
-            "bilinear": ("双线性", "Bilinear"), "bicubic": ("双三次", "Bicubic"),
-            "malvar-guarded": ("Malvar · 亮星暗环保护", "Malvar · bright-star ringing guard"),
-            "linear-light": ("线性光（新默认）", "Linear light (default)"),
-            "legacy-code": ("旧版显影（兼容重放）", "Legacy rendering (replay)"),
-            "malvar": ("Malvar", "Malvar"), "menon": ("Menon", "Menon"),
-            "ratio": ("通道比例", "Channel ratio"),
-            "median": ("中位数", "Median"), "average": ("平均值", "Average"),
-            "unknown": ("未知", "Unknown"), "included": ("包含偏置", "Bias included"),
-            "removed": ("已减去偏置", "Bias removed"),
-            "camera": ("相机设置", "Camera"), "auto": ("自动", "Automatic"),
-            "manual": ("手动", "Manual"), "daylight": ("日光", "Daylight"),
-            "fast": ("快速", "Fast"), "balanced": ("均衡", "Balanced"), "high": ("高质量", "High quality")
-        ]
-        guard let name = names[choice] else { return choice }
-        return chinese ? name.0 : name.1
-    }
-
     private func groupName(_ group: String) -> String {
         guard chinese else { return group.capitalized }
-        return ["calibration": "暗场、偏置与平场校准", "decode": "科学解码", "registration": "星点对齐", "stack": "堆栈与像素剔除", "selection": "整帧质量筛选", "background": "背景校正", "crop": "覆盖率裁边", "denoise": "结构保护降噪", "develop": "色彩与显影", "output": "输出文件"][group] ?? group
+        return ["calibration": "暗场、偏置与平场校准", "decode": "FITS 与 RAW 解码", "registration": "星点对齐", "stack": "堆栈与像素剔除", "selection": "整帧质量筛选", "background": "背景校正", "crop": "覆盖率裁边", "denoise": "结构保护降噪", "develop": "色彩与显影", "output": "输出文件"][group] ?? group
     }
 }

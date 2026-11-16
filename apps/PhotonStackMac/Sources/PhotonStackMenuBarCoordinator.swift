@@ -31,6 +31,9 @@ enum PhotonStackMenuBarCoordinator {
 
             if containsAction("orderFrontStandardAboutPanel:", in: submenu) {
                 trackingObserver.observe(menu: submenu)
+            } else if ["File", "文件"].contains(item.title) {
+                trackingObserver.observe(menu: submenu)
+                setMenuTitle(chinese: "文件", english: "File", item: item, submenu: submenu, language: language)
             } else if submenu === NSApp.windowsMenu || ["Window", "窗口"].contains(item.title) {
                 trackingObserver.observe(menu: submenu)
                 setMenuTitle(

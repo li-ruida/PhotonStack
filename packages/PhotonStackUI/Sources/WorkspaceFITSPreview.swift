@@ -47,7 +47,7 @@ struct WorkspaceFITSPreview: View {
             catch {
                 guard !Task.isCancelled else { return }
                 preview = nil
-                failure = error.localizedDescription
+                failure = model.processingErrorMessage(error)
                 loadedKey = requestKey
             }
         }

@@ -1957,7 +1957,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 guard Task.isCancelled == false else {
                     return
                 }
-                errorMessage = error.localizedDescription
+                errorMessage = processingErrorMessage(error)
             }
         }
     }
@@ -2085,7 +2085,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             initialUserSettingsSnapshot = mergedSettings
             scheduleUserSettingsPersistence(mergedSettings)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = processingErrorMessage(error)
         }
     }
 
@@ -2496,7 +2496,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             errorMessage = nil
             commandOutput = "Imported \(importedPresets.count) curve preset(s)."
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = processingErrorMessage(error)
         }
     }
 
@@ -2510,7 +2510,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try data.write(to: url, options: .atomic)
             commandOutput = "Exported \(customCurvePresets.count) curve preset(s)."
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = processingErrorMessage(error)
         }
     }
 
@@ -2522,7 +2522,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             return
         }
         guard Self.supportedBatchOperationKinds.contains(kind) else {
-            errorMessage = BatchQueueError.unsupportedOperation.localizedDescription
+            errorMessage = processingErrorMessage(BatchQueueError.unsupportedOperation)
             return
         }
 
@@ -2540,7 +2540,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             return
         }
         guard Self.supportedBatchOperationKinds.contains(kind) else {
-            errorMessage = BatchQueueError.unsupportedOperation.localizedDescription
+            errorMessage = processingErrorMessage(BatchQueueError.unsupportedOperation)
             return
         }
         let items = project.assets.map { asset in
@@ -2633,7 +2633,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             errorMessage = nil
             return try buildPreviewCacheCleanupPlan()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = processingErrorMessage(error)
             return nil
         }
     }
@@ -2679,7 +2679,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             errorMessage = nil
             commandOutput = localized(.previewCacheCleared)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = processingErrorMessage(error)
         }
     }
 
@@ -3018,7 +3018,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                     let addedFiles = !files.isEmpty && importAssets(from: files)
                     return imported || addedFiles
                 } catch {
-                    errorMessage = error.localizedDescription
+                    errorMessage = processingErrorMessage(error)
                     return false
                 }
             }
@@ -3984,7 +3984,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 guard generation == self.rawPreviewGeneration else {
                     return
                 }
-                self.errorMessage = error.localizedDescription
+                self.errorMessage = self.processingErrorMessage(error)
             }
         }
     }
@@ -4040,7 +4040,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     public func loadDeepSkySchema() async {
         guard deepSkySchema == nil else { return }
         do { deepSkySchema = try await processingService.deepSkySchema() }
-        catch { errorMessage = error.localizedDescription }
+        catch { errorMessage = processingErrorMessage(error) }
     }
 
     public func setDeepSkyValue(_ value: String, for key: String) {
@@ -4152,7 +4152,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     public func exportDeepSkyRecipe(to url: URL) {
         guard !isProcessing else { return }
         do { try deepSkyRecipeText().write(to: url, atomically: true, encoding: .utf8) }
-        catch { errorMessage = error.localizedDescription }
+        catch { errorMessage = processingErrorMessage(error) }
     }
 
     public func importDeepSkyRecipe(from url: URL) async {
@@ -4183,7 +4183,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             project.deepSkySettings = settings
             project.updatedAt = Date()
             triggerAutosave()
-        } catch { errorMessage = error.localizedDescription }
+        } catch { errorMessage = processingErrorMessage(error) }
     }
 
     public var latestDeepSkyResultURL: URL? {
@@ -5172,9 +5172,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
     public func continuumTonePreview(settings: ContinuumToneSettings) async {
         guard let input = validatedCurrentInputURL() else { return }
-        guard settings.isValid else { errorMessage = ContinuumToneError.invalidSettings.localizedDescription; return }
+        guard settings.isValid else { errorMessage = processingErrorMessage(ContinuumToneError.invalidSettings); return }
         guard AssetKind.detect(from: input) != .fits else {
-            errorMessage = ContinuumToneError.displayImageRequired.localizedDescription; return
+            errorMessage = processingErrorMessage(ContinuumToneError.displayImageRequired); return
         }
         let operationParameters = settings.operationParameters
         let output = makeCachedPreviewOutput(prefix: "continuum-tone-v1", input: input,
@@ -5200,9 +5200,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
     public func displayGridPreview(settings: DisplayGridSettings) async {
         guard let input = validatedCurrentInputURL() else { return }
-        guard settings.isValid else { errorMessage = DisplayGridError.invalidSettings.localizedDescription; return }
+        guard settings.isValid else { errorMessage = processingErrorMessage(DisplayGridError.invalidSettings); return }
         guard DisplayGridSettings.supports(input) else {
-            errorMessage = DisplayGridError.displayImageRequired.localizedDescription; return
+            errorMessage = processingErrorMessage(DisplayGridError.displayImageRequired); return
         }
         let operationParameters = settings.operationParameters
         let output = makeCachedPreviewOutput(prefix: "display-grid-v1", input: input,
@@ -5361,7 +5361,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         await runJob(title: "Drizzle", kind: .drizzle, outputURL: plannedOutput) {
             let lights = self.lightAssets
             guard lights.isEmpty == false else {
-                throw WorkflowError.noLights
+                throw PhotonStackAppCore.WorkflowError(self.localized(.workflowNoLights))
             }
 
             let operationParameters = [
@@ -5435,7 +5435,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             return
         }
         do { try validateExportDestination(output) }
-        catch { errorMessage = error.localizedDescription; return }
+        catch { errorMessage = processingErrorMessage(error); return }
         guard editGraphNeedsReplay == false else {
             errorMessage = localized(.editGraphNeedsReplay)
             return
@@ -5498,7 +5498,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                     rawOptions: taskRawOptions
                 )
             } catch {
-                self.errorMessage = "\(self.localized(.exportSidecarFailed)) \(error.localizedDescription)"
+                self.errorMessage = "\(self.localized(.exportSidecarFailed)) \(self.processingErrorMessage(error))"
             }
             return result
         }
@@ -5615,7 +5615,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             errorMessage = nil
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = processingErrorMessage(error)
             return false
         }
     }
@@ -5994,7 +5994,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         await runJob(title: "Calibrate and Stack", kind: .stack, outputURL: nil) {
             let lights = self.lightAssets
             guard lights.isEmpty == false else {
-                throw WorkflowError.noLights
+                throw PhotonStackAppCore.WorkflowError(self.localized(.workflowNoLights))
             }
             let registeredSequence = self.latestArtifact(kind: .registeredSequence, minimumFrameCount: lights.count)
                 .flatMap { artifact -> ProcessingArtifact? in
@@ -6050,7 +6050,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 log: &log
             )
             if masterDark != nil {
-                advanceProgress("Master dark")
+                advanceProgress(self.language == .simplifiedChinese ? "已生成主暗场" : "Master dark")
             }
             let masterBias = try await self.createMasterIfNeeded(
                 title: "master bias",
@@ -6061,7 +6061,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 log: &log
             )
             if masterBias != nil {
-                advanceProgress("Master bias")
+                advanceProgress(self.language == .simplifiedChinese ? "已生成主偏置帧" : "Master bias")
             }
             let masterFlat = try await self.createMasterIfNeeded(
                 title: "master flat",
@@ -6072,7 +6072,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 log: &log
             )
             if masterFlat != nil {
-                advanceProgress("Master flat")
+                advanceProgress(self.language == .simplifiedChinese ? "已生成主平场" : "Master flat")
             }
 
             let hasCalibrationFrames = masterDark != nil || masterBias != nil || masterFlat != nil
@@ -6087,7 +6087,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 log.append("  \(registeredSequence.name)")
                 log.append("  frames: \(stackInputs.count)")
                 log.append("  output: \(registeredSequence.outputDirectory?.path ?? registeredSequence.previewURL?.deletingLastPathComponent().path ?? "")")
-                advanceProgress("Loaded registered sequence")
+                advanceProgress(self.language == .simplifiedChinese ? "已读取配准序列" : "Loaded registered sequence")
             } else if hasCalibrationFrames {
                 let calibratedDirectory = runDirectory.appendingPathComponent("calibrated", isDirectory: true)
                 try FileManager.default.createDirectory(at: calibratedDirectory, withIntermediateDirectories: true)
@@ -6111,7 +6111,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                     log.append("Calibrated \(light.displayName):")
                     log.append(self.message(for: calibrated))
                     stackInputs.append(output)
-                    advanceProgress("Calibrated \(light.displayName)")
+                    advanceProgress(self.language == .simplifiedChinese ? "已校准 \(light.displayName)" : "Calibrated \(light.displayName)")
                 }
             } else {
                 log.append("No calibration frames assigned; decoding RAW lights with current RAW settings before stacking.")
@@ -6142,10 +6142,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                         log.append("Decoded RAW \(light.displayName):")
                         log.append(self.message(for: decoded))
                         stackInputs.append(decodedOutput)
-                        advanceProgress("Decoded \(light.displayName)")
+                        advanceProgress(self.language == .simplifiedChinese ? "已解码 \(light.displayName)" : "Decoded \(light.displayName)")
                     } else {
                         stackInputs.append(light.originalURL)
-                        advanceProgress("Queued \(light.displayName)")
+                        advanceProgress(self.language == .simplifiedChinese ? "已加入队列：\(light.displayName)" : "Queued \(light.displayName)")
                     }
                 }
             }
@@ -6208,7 +6208,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                             "Alignment check: pass=\(pass), matches=\(metrics.matches), fallback=\(metrics.usedFallback)"
                         )
                         passInput = passOutput
-                        advanceProgress("Aligned \(input.lastPathComponent) pass \(pass)")
+                        advanceProgress(self.language == .simplifiedChinese ? "已对齐 \(input.lastPathComponent)（第 \(pass) 遍）" : "Aligned \(input.lastPathComponent) pass \(pass)")
                     }
                     alignedInputs[index] = output
                 }
@@ -6226,7 +6226,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Stacked calibrated lights:")
             log.append(self.message(for: stackResult))
-            advanceProgress("Stacked calibrated lights")
+            advanceProgress(self.language == .simplifiedChinese ? "已合成校准后的亮场" : "Stacked calibrated lights")
 
             var finalStackOutput = stackOutput
             if self.parameters.workflowRestoreMeteors {
@@ -6242,7 +6242,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                     log.append("Restored meteors from \(lights[index].displayName):")
                     log.append(self.message(for: restoreResult))
                     finalStackOutput = output
-                    advanceProgress("Restored meteors \(index + 1)/\(stackInputs.count)")
+                    advanceProgress(self.language == .simplifiedChinese ? "已恢复流星 \(index + 1)/\(stackInputs.count)" : "Restored meteors \(index + 1)/\(stackInputs.count)")
                 }
             }
 
@@ -6260,7 +6260,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             log.append("Removed stacked-frame background gradient:")
             log.append(self.message(for: backgroundResult))
             finalStackOutput = backgroundCorrectedStack
-            advanceProgress("Removed background gradient")
+            advanceProgress(self.language == .simplifiedChinese ? "已校正背景渐变" : "Removed background gradient")
 
             let stretchedPreview = runDirectory.appendingPathComponent("stack-stretched.png")
             let stretchResult = try await self.processingService.autoStretch(
@@ -6271,7 +6271,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Auto-stretched stack preview:")
             log.append(self.message(for: stretchResult))
-            advanceProgress("Auto-stretched stack preview")
+            advanceProgress(self.language == .simplifiedChinese ? "已拉伸堆栈预览" : "Auto-stretched stack preview")
 
             let neutralizedPreview = runDirectory.appendingPathComponent("stack-neutralized.png")
             let neutralizeResult = try await self.processingService.colorNeutralize(
@@ -6282,7 +6282,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Neutralized background color:")
             log.append(self.message(for: neutralizeResult))
-            advanceProgress("Neutralized color")
+            advanceProgress(self.language == .simplifiedChinese ? "已中和色偏" : "Neutralized color")
 
             let saturatedPreview = runDirectory.appendingPathComponent("stack-saturated.png")
             let saturateResult = try await self.processingService.colorSaturate(
@@ -6293,7 +6293,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Balanced saturation:")
             log.append(self.message(for: saturateResult))
-            advanceProgress("Balanced saturation")
+            advanceProgress(self.language == .simplifiedChinese ? "已调整饱和度" : "Balanced saturation")
 
             let denoisedPreview = runDirectory.appendingPathComponent("stack-denoised.png")
             let denoiseResult = try await self.processingService.denoise(
@@ -6306,7 +6306,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Reduced luminance/chroma noise:")
             log.append(self.message(for: denoiseResult))
-            advanceProgress("Denoised preview")
+            advanceProgress(self.language == .simplifiedChinese ? "预览降噪完成" : "Denoised preview")
 
             let contrastPreview = runDirectory.appendingPathComponent("stack-local-contrast.png")
             let contrastResult = try await self.processingService.localContrast(
@@ -6318,7 +6318,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Enhanced local Milky Way contrast:")
             log.append(self.message(for: contrastResult))
-            advanceProgress("Enhanced local contrast")
+            advanceProgress(self.language == .simplifiedChinese ? "已增强局部对比度" : "Enhanced local contrast")
 
             let redBalancedPreview = runDirectory.appendingPathComponent("stack-red-balanced.png")
             let redCurveResult = try await self.processingService.curves(
@@ -6330,7 +6330,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Applied red channel color balance:")
             log.append(self.message(for: redCurveResult))
-            advanceProgress("Balanced red channel")
+            advanceProgress(self.language == .simplifiedChinese ? "已调整红通道" : "Balanced red channel")
 
             let greenBalancedPreview = runDirectory.appendingPathComponent("stack-green-balanced.png")
             let greenCurveResult = try await self.processingService.curves(
@@ -6342,7 +6342,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Applied green channel color balance:")
             log.append(self.message(for: greenCurveResult))
-            advanceProgress("Balanced green channel")
+            advanceProgress(self.language == .simplifiedChinese ? "已调整绿通道" : "Balanced green channel")
 
             let blueBalancedPreview = runDirectory.appendingPathComponent("stack-blue-balanced.png")
             let blueCurveResult = try await self.processingService.curves(
@@ -6354,7 +6354,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Applied blue channel color balance:")
             log.append(self.message(for: blueCurveResult))
-            advanceProgress("Balanced blue channel")
+            advanceProgress(self.language == .simplifiedChinese ? "已调整蓝通道" : "Balanced blue channel")
 
             let luminanceBalancedPreview = runDirectory.appendingPathComponent("stack-luminance-balanced.png")
             let luminanceCurveResult = try await self.processingService.curves(
@@ -6366,7 +6366,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Applied luminance contrast balance:")
             log.append(self.message(for: luminanceCurveResult))
-            advanceProgress("Balanced luminance")
+            advanceProgress(self.language == .simplifiedChinese ? "已调整亮度" : "Balanced luminance")
 
             let greenSuppressedPreview = runDirectory.appendingPathComponent("stack-green-suppressed.png")
             let greenSuppressResult = try await self.processingService.removeGreenCast(
@@ -6378,7 +6378,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Suppressed low-background green cast:")
             log.append(self.message(for: greenSuppressResult))
-            advanceProgress("Suppressed green cast")
+            advanceProgress(self.language == .simplifiedChinese ? "已校正绿色偏色" : "Suppressed green cast")
 
             let starReducedPreview = runDirectory.appendingPathComponent("stack-star-reduced.png")
             let starReductionResult = try await self.processingService.reduceStars(
@@ -6391,7 +6391,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Reduced star dominance:")
             log.append(self.message(for: starReductionResult))
-            advanceProgress("Reduced star dominance")
+            advanceProgress(self.language == .simplifiedChinese ? "已缩星" : "Reduced star dominance")
 
             let comaReducedPreview = runDirectory.appendingPathComponent("stack-coma-rounded.png")
             let comaReductionResult = try await self.processingService.reduceComa(
@@ -6405,7 +6405,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Rounded short star trails:")
             log.append(self.message(for: comaReductionResult))
-            advanceProgress("Rounded star trails")
+            advanceProgress(self.language == .simplifiedChinese ? "已修正星点拖尾" : "Rounded star trails")
 
             let finalPreview = runDirectory.appendingPathComponent("stack-final.png")
             let polishStarReductionAmount = min(0.55, self.parameters.starReductionAmount + 0.15)
@@ -6419,7 +6419,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Polished shortened star profiles:")
             log.append(self.message(for: polishStarReductionResult))
-            advanceProgress("Polished star profiles")
+            advanceProgress(self.language == .simplifiedChinese ? "已修正星点轮廓" : "Polished star profiles")
 
             let framedPreview = runDirectory.appendingPathComponent("stack-final-framed.png")
             let cropResult = try await self.processingService.runCLI(arguments: [
@@ -6432,10 +6432,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             try Task.checkCancellation()
             log.append("Applied composition crop:")
             log.append(self.message(for: cropResult))
-            advanceProgress("Applied composition crop")
+            advanceProgress(self.language == .simplifiedChinese ? "已裁切" : "Applied composition crop")
 
             try await self.commitPreviewAfterHistogramRefresh(framedPreview)
-            advanceProgress("Updated histogram")
+            advanceProgress(self.language == .simplifiedChinese ? "已更新直方图" : "Updated histogram")
             var sourceArtifactIDs = usedRegisteredSequence.map { [$0.id] } ?? []
             let sourceAssets = lights + self.darkAssets + self.biasAssets + self.flatAssets
             for sourceID in self.sourceArtifactIDs(for: sourceAssets)
@@ -6650,7 +6650,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 throw CancellationError()
             } catch {
                 try Task.checkCancellation()
-                throw PhotonStackAppCore.WorkflowError("\(panel.displayName) · \(error.localizedDescription)")
+                throw PhotonStackAppCore.WorkflowError("\(panel.displayName) · \(processingErrorMessage(error))")
             }
         }
         return inputs
@@ -6659,7 +6659,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     private func preparedPanelMaster(_ group: MosaicPanelFolder, panel: PhotonStackAsset, index: Int, count: Int) async throws -> URL {
         let fm = FileManager.default
         if let missing = group.frames.first(where: { !fm.isReadableFile(atPath: $0.path) }) {
-            throw PhotonStackAppCore.WorkflowError("找不到原片 / Missing frame: \(missing.path)")
+            throw PhotonStackAppCore.WorkflowError("找不到原片 / Missing frame\n\(missing.path)")
         }
         let scientific = group.frames.allSatisfy { [.fits, .raw].contains(AssetKind.detect(from: $0)) }
         let fingerprint = mosaicInputSignature([panel])
@@ -6707,7 +6707,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         await runJob(title: "Mosaic", kind: .mosaic) {
             let panels = self.mosaicAssets
             guard panels.isEmpty == false else {
-                throw MosaicWorkflowError.noPanels
+                throw PhotonStackAppCore.WorkflowError(self.localized(.mosaicNoPanels))
             }
 
             var operationParameters = self.mosaicStitchParameters
@@ -6748,7 +6748,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 expectedPanelCount: panels.count
             )
             operationParameters["alignmentReport"] = String(decoding: try JSONEncoder().encode(qualityReport), as: UTF8.self)
-            self.updateProgress(1.0 / 3.0, message: "Mosaic assembled")
+            self.updateProgress(1.0 / 3.0, message: self.language == .simplifiedChinese ? "拼接完成" : "Mosaic assembled")
             progressScope?.update(lowerBound: 1.0 / 3.0, upperBound: 2.0 / 3.0)
             let previewResult: ProcessingCommandResult
             if scientific {
@@ -6759,13 +6759,13 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                                                                    width: self.parameters.previewWidth)
             }
             try Task.checkCancellation()
-            self.updateProgress(2.0 / 3.0, message: "Mosaic preview")
+            self.updateProgress(2.0 / 3.0, message: self.language == .simplifiedChinese ? "拼接预览已生成" : "Mosaic preview")
 
             progressScope?.update(lowerBound: 2.0 / 3.0, upperBound: 1)
             try await self.commitPreviewAfterHistogramRefresh(previewOutput)
             self.mosaicQualityReport = qualityReport
             self.mosaicQualityReportSourceURL = previewOutput.standardizedFileURL
-            self.updateProgress(1.0, message: "Mosaic histogram")
+            self.updateProgress(1.0, message: self.language == .simplifiedChinese ? "已更新拼接直方图" : "Mosaic histogram")
             var artifactMetrics = ["panels": String(panels.count)]
             artifactMetrics["matches"] = String(qualityReport.matches)
             artifactMetrics["fallbackPanels"] = String(qualityReport.fallbackPanels)
@@ -6805,7 +6805,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         await runJob(title: "Mosaic Preview", kind: .mosaic, outputURL: plannedOutput) {
             let panels = self.mosaicAssets
             guard panels.isEmpty == false else {
-                throw MosaicWorkflowError.noPanels
+                throw PhotonStackAppCore.WorkflowError(self.localized(.mosaicNoPanels))
             }
             let progressScope = ProcessingProgressContext.progressScope
             defer {
@@ -6850,12 +6850,12 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 mosaicResult,
                 expectedPanelCount: panels.count
             )
-            self.updateProgress(0.85, message: "Mosaic preview assembled")
+            self.updateProgress(0.85, message: self.language == .simplifiedChinese ? "预览拼接完成" : "Mosaic preview assembled")
             progressScope?.update(lowerBound: 0.85, upperBound: 1)
             try await self.commitPreviewAfterHistogramRefresh(previewOutput)
             self.mosaicQualityReport = qualityReport
             self.mosaicQualityReportSourceURL = previewOutput.standardizedFileURL
-            self.updateProgress(1.0, message: "Mosaic preview histogram")
+            self.updateProgress(1.0, message: self.language == .simplifiedChinese ? "已更新预览直方图" : "Mosaic preview histogram")
 
             return self.message(for: mosaicResult)
         }
@@ -6877,7 +6877,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         } catch ConsoleCommandError.unclosedQuote {
             errorMessage = localized(.consoleInputUnclosedQuote)
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = processingErrorMessage(error)
         }
     }
 
@@ -7282,7 +7282,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             triggerAutosave()
             return true
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = processingErrorMessage(error)
             return false
         }
     }
@@ -9125,7 +9125,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 let lowerBound = Double(index) / Double(total)
                 let upperBound = Double(index + 1) / Double(total)
                 progressScope?.update(lowerBound: lowerBound, upperBound: upperBound)
-                self.updateProgress(lowerBound, message: operation.kind.rawValue)
+                self.updateProgress(lowerBound, message: self.language.processingOperationName(operation.kind))
                 let output = try await self.applyReplayOperation(operation, input: input, mode: .preview)
                 try Task.checkCancellation()
                 input = output
@@ -9136,7 +9136,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
             let histogramLowerBound = Double(enabledOperations.count) / Double(total)
             progressScope?.update(lowerBound: histogramLowerBound, upperBound: 1)
-            self.updateProgress(histogramLowerBound, message: "Replay histogram")
+            self.updateProgress(histogramLowerBound, message: self.language == .simplifiedChinese ? "更新直方图" : "Replay histogram")
             if appliedCount > 0 || replayPlan.anchorOperationID != nil {
                 try await self.commitPreviewAfterHistogramRefresh(
                     input,
@@ -9148,7 +9148,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 self.editGraphNeedsReplay = false
                 self.triggerAutosave()
             }
-            self.updateProgress(1, message: "Replay complete")
+            self.updateProgress(1, message: self.language == .simplifiedChinese ? "重新处理完成" : "Replay complete")
 
             return log.isEmpty ? self.localized(.noEditOperations) : log.joined(separator: "\n")
         }
@@ -11493,7 +11493,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         var input = first
         for (index, step) in workflow.steps.enumerated() {
             try Task.checkCancellation()
-            onStep(index, step.kind.rawValue)
+            onStep(index, language.processingOperationName(step.kind))
             var values = step.parameters
             if step.deepSkyValues != nil {
                 let schema = try await processingService.deepSkySchema()
@@ -11513,7 +11513,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             input = try await worker.applyReplayOperation(EditOperation(kind: step.kind, parameters: values), input: input, mode: .fullResolutionExport)
         }
         try Task.checkCancellation()
-        onStep(workflow.steps.count, "export")
+        onStep(workflow.steps.count, language.processingOperationName(.export))
         let output = directory.appendingPathComponent("result.tiff")
         _ = try await processingService.convert(input: input, output: output, options: workflow.exportOptions,
                                                rawOptions: workflow.parameters.rawProcessingOptions)
@@ -11541,8 +11541,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                     }
                 }
                 let failed = batch.items.filter { $0.status == .failed }.count
-                if failed > 0 { throw PhotonStackAppCore.WorkflowError("\(failed) 个任务失败，其余结果已保留；请在工作流窗口查看详情。 / Some jobs failed; completed results are retained.") }
-                return "\(batch.items.count) 个工作流任务完成 / Workflow jobs completed"
+                if failed > 0 { throw PhotonStackAppCore.WorkflowError("\(failed) 个任务失败，其余结果已保留；请在工作流窗口查看详情。 / \(failed) jobs failed. Completed results were kept. See the workflow window for details.") }
+                return "\(batch.items.count) 个工作流任务完成 / Completed \(batch.items.count) workflow jobs"
             }
         }
     }
@@ -12868,7 +12868,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 else {
                     return
                 }
-                self.errorMessage = error.localizedDescription
+                self.errorMessage = self.processingErrorMessage(error)
             }
         }
     }
@@ -15592,7 +15592,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         activeProgressJobID = jobID
         isProcessing = true
         canCancel = true
-        updateProgress(0, message: title)
+        updateProgress(0, message: language.processingJobTitle(title))
         errorMessage = nil
 
         do {
@@ -15609,7 +15609,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             if let outputURL {
                 recordValidatedCacheOutput(outputURL)
             }
-            updateProgress(1, message: title)
+            updateProgress(1, message: language.processingJobTitle(title))
             let duration = Date().timeIntervalSince(startedAt) * 1000.0
             let cacheHit = isCacheHitMessage(message)
             let displayMessage = appendPerformanceSummary(to: message, durationMilliseconds: duration, cacheHit: cacheHit)
@@ -15633,7 +15633,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             invalidateCacheReceipt(for: outputURL)
             let message = error.localizedDescription
             if activeProgressJobID == jobID {
-                errorMessage = message
+                errorMessage = processingErrorMessage(error)
             }
             finishJob(id: jobID, status: .failed, message: message, outputURL: outputURL, durationMilliseconds: Date().timeIntervalSince(startedAt) * 1000.0)
         }
@@ -15711,23 +15711,18 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 step: event.step, total: event.total, overall: event.progress, chinese: language == .simplifiedChinese) {
                 return detail
             }
-            let labels = ["calibrate": "校准", "measure": "测量原片", "align": "星点对齐", "assess": "分析筛片",
-                          "sensor-pattern-estimate": "估计传感器固定纹理", "sensor-pattern-apply": "校正原片并对齐",
-                          "stack": "准备合成缓存", "stack-combine": "像素合成与剔除", "crop": "覆盖率裁边", "background": "背景校正",
-                          "align-color-channels": "校正通道彩边", "multiscale-denoise": "多尺度降噪",
-                          "background-denoise": "背景纹理降噪",
-                          "denoise": "结构保护降噪", "develop": "色彩显影", "complete": "完成"]
-            let stage = language == .simplifiedChinese ? (labels[event.stage] ?? event.stage) : event.stage
+            let stage = language.progressStage(event.stage) ?? event.stage
             let percent = Int((min(max(event.progress, 0), 1) * 100).rounded())
             if let step = event.step, let total = event.total, step > 0, total > 0 {
                 return "\(stage) \(step)/\(total) · \(percent)%"
             }
             return "\(stage) · \(percent)%"
         }
+        let stage = language.progressStage(event.stage) ?? "\(event.command) \(event.stage)"
         if let step = event.step, let total = event.total {
-            return "\(event.command) \(event.stage) \(step)/\(total)"
+            return "\(stage) \(step)/\(total)"
         }
-        return "\(event.command) \(event.stage)"
+        return stage
     }
 
     private func updateBatchAggregateProgress(message: String? = nil) {
@@ -15935,26 +15930,7 @@ enum AtomicLocalImageWriterError: LocalizedError {
     case invalidOutput
 
     var errorDescription: String? {
-        "Rendered image output is incomplete or unreadable"
-    }
-}
-
-private enum WorkflowError: LocalizedError {
-    case noLights
-
-    var errorDescription: String? {
-        switch self {
-        case .noLights:
-            return AppLanguage.systemDefault.text(.workflowNoLights)
-        }
-    }
-}
-
-private enum MosaicWorkflowError: LocalizedError {
-    case noPanels
-
-    var errorDescription: String? {
-        AppLanguage.systemDefault.text(.mosaicNoPanels)
+        "生成的图像不完整或无法读取 / Rendered image output is incomplete or unreadable"
     }
 }
 
@@ -15970,7 +15946,7 @@ private enum BatchQueueError: LocalizedError {
     case unsupportedOperation
 
     var errorDescription: String? {
-        "Unsupported batch queue operation"
+        "批处理队列不支持此操作 / Unsupported batch queue operation"
     }
 }
 
@@ -15983,13 +15959,13 @@ private enum LayerStackPreviewError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .noVisibleLayers:
-            return "No visible layers with preview images"
+            return "没有可预览的可见图层 / No visible layers with preview images"
         case let .cannotReadLayer(name):
-            return "Could not read layer image: \(name)"
+            return "无法读取图层图像 / Could not read layer image\n\(name)"
         case let .cannotReadMask(name):
-            return "Could not read mask for layer: \(name)"
+            return "无法读取图层蒙版 / Could not read mask for layer\n\(name)"
         case .cannotRender:
-            return "Could not render layer stack preview"
+            return "无法生成图层合成预览 / Could not render layer stack preview"
         }
     }
 }
@@ -16010,13 +15986,13 @@ private enum MaskEditingError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .cannotReadMask:
-            return "Could not read the layer mask"
+            return "无法读取图层蒙版 / Could not read the layer mask"
         case .cannotRenderMask:
-            return "Could not render the edited layer mask"
+            return "无法生成调整后的蒙版 / Could not render the edited layer mask"
         case .cannotEncodeStrokes:
-            return "Could not save layer mask brush strokes"
+            return "无法保存蒙版笔迹 / Could not save layer mask brush strokes"
         case .cannotDecodeStrokes:
-            return "Could not read saved layer mask brush strokes"
+            return "无法读取已保存的蒙版笔迹 / Could not read saved layer mask brush strokes"
         }
     }
 }

@@ -122,7 +122,7 @@ struct DeepSkyFramePreview: View {
                     referenceURL = other
                 }
             } catch is CancellationError { }
-            catch { if !Task.isCancelled { failure = error.localizedDescription; loading = false } }
+            catch { if !Task.isCancelled { failure = model.processingErrorMessage(error); loading = false } }
         }
     }
 }

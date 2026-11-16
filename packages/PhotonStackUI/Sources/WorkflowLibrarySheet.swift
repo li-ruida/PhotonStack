@@ -34,7 +34,7 @@ struct WorkflowLibrarySheet: View {
                 Spacer()
                 Button(t("关闭", "Close")) { presented = false }.keyboardShortcut(.cancelAction).disabled(busy)
             }
-            Text(t("把当前结果的步骤保存一次，给新的目标文件夹重复使用。原片与当前项目不会被改动。", "Save the steps behind your result and reuse them on new folders. Originals and the open project stay unchanged."))
+            Text(t("把当前处理步骤保存为工作流，可对其他目标重复使用。", "Save the current processing steps to reuse them on other targets."))
                 .foregroundStyle(.secondary)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
@@ -56,6 +56,9 @@ struct WorkflowLibrarySheet: View {
         .padding(22).frame(width: 820, height: 700)
         .interactiveDismissDisabled(busy)
         .task { await load() }
+        .task(id: selected?.combinesFrames) {
+            if selected?.combinesFrames == true { await model.loadDeepSkySchema() }
+        }
         .onChange(of: selection) { _, _ in ready = false; checks = [] }
         .confirmationDialog(t("删除这个已保存的工作流？", "Delete this saved workflow?"), isPresented: $confirmDelete) {
             Button(t("删除工作流", "Delete workflow"), role: .destructive) {
@@ -78,12 +81,12 @@ struct WorkflowLibrarySheet: View {
                         perform { draft = try await model.captureReusableWorkflow(name: name, redetectSelections: redetect) }
                     }.disabled(locked || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                Toggle(t("飞机线 / 云区改为在新照片上自动重新检测（不沿用手工圈选）", "Re-detect trails / clouds on new images instead of reusing manual selections"), isOn: $redetect)
+                Toggle(t("在新照片上重新检测航迹和云雾", "Detect trails and clouds again on new images"), isOn: $redetect)
                     .font(.callout)
                 if let draft {
                     stepSummary(draft)
                     HStack {
-                        Button(t("确认保存工作流", "Save workflow")) {
+                        Button(t("保存工作流", "Save workflow")) {
                             perform {
                                 workflows = try await repository.save(draft)
                                 selection = draft.id
@@ -127,9 +130,18 @@ struct WorkflowLibrarySheet: View {
                 DisclosureGroup("\(index + 1). \(step.title(chinese: chinese))") {
                     ForEach((step.deepSkyValues ?? step.parameters).keys.sorted(), id: \.self) { key in
                         HStack(alignment: .top) {
-                            Text(key).foregroundStyle(.secondary)
+                            let field = model.deepSkySchema?.fields.first { $0.key == key }
+                            Text(field.map { chinese ? $0.chineseLabel : $0.label }
+                                 ?? model.language.parameterTitle(key, kind: step.kind)).foregroundStyle(.secondary)
                             Spacer()
-                            Text((step.deepSkyValues ?? step.parameters)[key] ?? "").textSelection(.enabled)
+                            let value = (step.deepSkyValues ?? step.parameters)[key] ?? ""
+                            if field?.type == "bool" || ["true", "false"].contains(value) {
+                                Text(["on", "true"].contains(value) ? t("开启", "On") : t("关闭", "Off"))
+                            } else if let field, field.type == "choice" {
+                                Text(model.language.deepSkyChoiceTitle(value, field: field))
+                            } else {
+                                Text(model.language.parameterOption(value, key: key, kind: step.kind)).textSelection(.enabled)
+                            }
                         }.font(.caption)
                     }
                 }
@@ -158,13 +170,14 @@ struct WorkflowLibrarySheet: View {
                 Button(t("检查目标", "Check targets")) {
                     perform {
                         let targets = folders
+                        let language = model.language
                         let photoUnit = t("张照片", "photos")
                         let result = await Task.detached {
                             targets.map { folder -> (String, Bool) in
                                 do {
                                     let plan = try WorkflowInputPlan.inspect(folder: folder, workflow: workflow)
                                     return ("✓ \(plan.title): \(plan.lights.count) \(photoUnit)", true)
-                                } catch { return ("✕ \(folder.lastPathComponent): \(error.localizedDescription)", false) }
+                                } catch { return ("✕ \(folder.lastPathComponent): \(language.localizedMessage(error.localizedDescription))", false) }
                             }
                         }.value
                         checks = result.map(\.0)

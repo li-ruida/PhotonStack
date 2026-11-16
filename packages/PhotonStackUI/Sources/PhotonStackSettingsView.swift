@@ -64,8 +64,8 @@ public struct PhotonStackSettingsView: View {
                 )
             } footer: {
                 Text(language == .simplifiedChinese
-                    ? "优先使用你在 PhotonStack 中选择的语言。首次启动会读取 macOS 偏好语言；无法识别时使用中文。"
-                    : "PhotonStack uses your in-app choice first. On first launch it reads the macOS preferred languages and falls back to Chinese when none are supported.")
+                    ? "首次启动时按 macOS 偏好选择中英文，其他语言默认使用中文。"
+                    : "On first launch, PhotonStack uses English or Chinese from your macOS preferences, with Chinese as the fallback.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -102,8 +102,8 @@ public struct PhotonStackSettingsView: View {
                 Label(language == .simplifiedChinese ? "性能" : "Performance", systemImage: "speedometer")
             } footer: {
                 Text(language == .simplifiedChinese
-                    ? "并发数受帧尺寸和可用内存限制。优先 GPU 可加速 RAW 解码、校准、CFA 插值、星点检测、全幅配准和加权 Winsorized 堆栈。设置在下次运行时生效。"
-                    : "Frame size and available memory limit concurrency. Prefer GPU accelerates RAW decoding, calibration, CFA interpolation, star detection, full-frame registration and weighted Winsorized stacking. Changes apply to the next run.")
+                    ? "设置从下次处理起生效。实际并发数取决于图像尺寸和可用内存；运行记录会标明哪些步骤使用了 GPU。"
+                    : "Changes apply to the next run. Image size and available memory limit concurrency. Run details show which stages used the GPU.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

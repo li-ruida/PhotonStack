@@ -34,15 +34,15 @@ public struct WorkflowInputPlan: Identifiable, Codable, Equatable, Sendable {
         var isDirectory: ObjCBool = false
         let hasLights = FileManager.default.fileExists(atPath: lightDirectory.path, isDirectory: &isDirectory) && isDirectory.boolValue
         let lights = try images(in: hasLights ? lightDirectory : folder)
-        guard !lights.isEmpty else { throw WorkflowError("没有可处理照片 / No images: \(folder.lastPathComponent)") }
+        guard !lights.isEmpty else { throw WorkflowError("没有可处理照片 / No images\n\(folder.lastPathComponent)") }
         let minimumFrames = workflow.steps.first?.deepSkyValues == nil ? 2 : 3
         guard !workflow.combinesFrames || lights.count >= minimumFrames else {
-            throw WorkflowError("堆栈至少需要 \(minimumFrames) 张照片 / Not enough frames: \(folder.lastPathComponent)")
+            throw WorkflowError("堆栈至少需要 \(minimumFrames) 张照片 / Stacking requires at least \(minimumFrames) frames\n\(folder.lastPathComponent)")
         }
         var calibration: [WorkflowCalibrationRole: [URL]] = [:]
         for role in workflow.requiredCalibration {
             let files = try images(in: folder.appendingPathComponent(role.rawValue, isDirectory: true))
-            guard !files.isEmpty else { throw WorkflowError("缺少校准帧 / Missing calibration frames: \(role.rawValue)") }
+            guard !files.isEmpty else { throw WorkflowError("缺少校准帧 / Missing calibration frames\n\(role.rawValue)") }
             calibration[role] = files
         }
         let allInputs = lights + calibration.values.flatMap { $0 }
@@ -78,7 +78,7 @@ public struct WorkflowInputPlan: Identifiable, Codable, Equatable, Sendable {
         for role in WorkflowCalibrationRole.allCases {
             let inputs = calibration[role, default: []]
             guard !step.calibration.contains(role) || !inputs.isEmpty else {
-                throw WorkflowError("缺少校准帧 / Missing calibration frames: \(role.rawValue)")
+                throw WorkflowError("缺少校准帧 / Missing calibration frames\n\(role.rawValue)")
             }
             settings.values[role.recipeKey] = inputs.map {
                 "\"" + $0.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""

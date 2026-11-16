@@ -138,7 +138,7 @@ struct EditGraphSection: View {
                                 ForEach(editableParameters) { parameter in
                                     EditOperationParameterControl(
                                         model: model,
-                                        operationID: operation.id,
+                                        operation: operation,
                                         parameter: parameter,
                                         onCommit: replayIfNeeded
                                     )
@@ -168,7 +168,7 @@ struct EditGraphSection: View {
 
 private struct EditOperationParameterControl: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
-    let operationID: EditOperation.ID
+    let operation: EditOperation
     let parameter: EditableEditOperationParameter
     let onCommit: () -> Void
 
@@ -177,12 +177,12 @@ private struct EditOperationParameterControl: View {
 
     init(
         model: PhotonStackWorkspaceModel,
-        operationID: EditOperation.ID,
+        operation: EditOperation,
         parameter: EditableEditOperationParameter,
         onCommit: @escaping () -> Void
     ) {
         self.model = model
-        self.operationID = operationID
+        self.operation = operation
         self.parameter = parameter
         self.onCommit = onCommit
         _draft = State(initialValue: parameter.value)
@@ -190,21 +190,22 @@ private struct EditOperationParameterControl: View {
 
     @ViewBuilder
     var body: some View {
+        let title = model.language.parameterTitle(parameter.key, kind: operation.kind)
         switch parameter.editor {
         case .toggle:
-            Toggle(parameter.key, isOn: toggleBinding)
+            Toggle(title, isOn: toggleBinding)
                 .toggleStyle(.checkbox)
                 .font(.caption2)
         case let .options(values):
-            Picker(parameter.key, selection: optionBinding) {
+            Picker(title, selection: optionBinding) {
                 ForEach(values, id: \.self) { value in
-                    Text(value).tag(value)
+                    Text(model.language.parameterOption(value, key: parameter.key, kind: operation.kind)).tag(value)
                 }
             }
             .pickerStyle(.menu)
             .font(.caption2)
         case .decimal, .integer, .text:
-            TextField(parameter.key, text: $draft)
+            TextField(title, text: $draft)
                 .textFieldStyle(.roundedBorder)
                 .font(.caption2.monospacedDigit())
                 .focused($isFocused)
@@ -224,14 +225,14 @@ private struct EditOperationParameterControl: View {
 
     private var toggleBinding: Binding<Bool> {
         Binding(
-            get: { model.parameterValue(operationID, key: parameter.key) == "true" },
+            get: { model.parameterValue(operation.id, key: parameter.key) == "true" },
             set: { commit(String($0)) }
         )
     }
 
     private var optionBinding: Binding<String> {
         Binding(
-            get: { model.parameterValue(operationID, key: parameter.key) },
+            get: { model.parameterValue(operation.id, key: parameter.key) },
             set: { value in
                 commit(value)
             }
@@ -240,13 +241,13 @@ private struct EditOperationParameterControl: View {
 
     private func commitDraft() {
         commit(draft)
-        draft = model.parameterValue(operationID, key: parameter.key)
+        draft = model.parameterValue(operation.id, key: parameter.key)
     }
 
     private func commit(_ value: String) {
-        let previousValue = model.parameterValue(operationID, key: parameter.key)
-        if model.updateEditOperationParameter(operationID, key: parameter.key, value: value),
-           model.parameterValue(operationID, key: parameter.key) != previousValue {
+        let previousValue = model.parameterValue(operation.id, key: parameter.key)
+        if model.updateEditOperationParameter(operation.id, key: parameter.key, value: value),
+           model.parameterValue(operation.id, key: parameter.key) != previousValue {
             onCommit()
         }
     }

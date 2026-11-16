@@ -34,9 +34,9 @@ struct DeepSkyPreflightView: View {
             VStack(alignment: .leading, spacing: 6) {
                 if let plan = currentPlan {
                     HStack(spacing: 20) {
-                        metric(chinese ? "已统计输入体积" : "Counted source bytes", value: bytes(plan.sourceBytes))
+                        metric(chinese ? "已统计的原片大小" : "Source files checked", value: bytes(plan.sourceBytes))
                         metric(chinese ? "临时文件估算" : "Temporary estimate", value: bytes(plan.temporaryBytes))
-                        metric(chinese ? "保留产物估算" : "Products estimate", value: bytes(plan.productBytes))
+                        metric(chinese ? "结果文件估算" : "Estimated output size", value: bytes(plan.productBytes))
                         metric(chinese ? "磁盘可用" : "Disk available", value: bytes(plan.availableBytes))
                     }
                     Text(chinese
@@ -52,7 +52,7 @@ struct DeepSkyPreflightView: View {
                             LazyVStack(alignment: .leading, spacing: 4) {
                                 ForEach(Array(plan.issues.enumerated()), id: \.offset) { _, issue in
                                     Text(issueText(issue)).foregroundStyle(.orange).lineLimit(2)
-                                        .textSelection(.enabled).help(issue.path + "\n" + issue.message)
+                                        .textSelection(.enabled).help(issue.path + "\n" + issueText(issue))
                                 }
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }.frame(maxHeight: 92)
@@ -62,7 +62,7 @@ struct DeepSkyPreflightView: View {
                         : "Read \(plan.inspectedCount) / \(plan.lightCount + plan.calibrationCount) headers; capacity is a snapshot from this check.")
                         .foregroundStyle(.secondary)
                     Text(chinese
-                        ? "覆盖分析、堆栈及后期全流程，非单独分析或复用母版的需求。按全部亮场、未裁切尺寸，含 10% 余量及 64 MiB 保留。文件头检查不代表像素解码或校准匹配已通过；实际占用可能变化。"
+                        ? "覆盖分析、堆栈及后期全流程，非单独分析或复用母片的需求。按全部亮场、未裁切尺寸，含 10% 余量及 64 MiB 保留。文件头检查不代表像素解码或校准匹配已通过；实际占用可能变化。"
                         : "Covers analysis, stacking and finishing, not analysis alone or master reuse. Uses all lights and uncropped dimensions, with 10% headroom and a 64 MiB reserve. Headers do not verify pixel decoding or calibration compatibility; actual usage can vary.")
                         .foregroundStyle(.secondary)
                 } else if let error, !checking, completedRequest == request {
@@ -104,7 +104,7 @@ struct DeepSkyPreflightView: View {
                 // A replacement task owns the loading state.
             } catch {
                 guard !Task.isCancelled else { return }
-                self.error = chinese ? "暂时无法估算资源：\(error.localizedDescription)" : "Resource estimate unavailable: \(error.localizedDescription)"
+                self.error = chinese ? "暂时无法估算资源：\(model.processingErrorMessage(error))" : "Resource estimate unavailable: \(model.processingErrorMessage(error))"
                 completedRequest = request; checking = false
             }
         }

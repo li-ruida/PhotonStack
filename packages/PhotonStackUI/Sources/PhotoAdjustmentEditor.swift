@@ -137,7 +137,7 @@ struct PhotoAdjustmentEditor: View {
                 HStack {
                     Button(chinese ? "重置" : "Reset") { draft.cancelPicker(); draft.settings = PhotoAdjustments() }
                         .buttonStyle(.borderless)
-                    Toggle(chinese ? "看原效果" : "Before", isOn: $showBefore)
+                    Toggle(chinese ? "查看调整前" : "Before", isOn: $showBefore)
                         .toggleStyle(.button)
                     Spacer()
                     Button(chinese ? "应用调整" : "Apply edits") {
@@ -187,13 +187,9 @@ struct PhotoAdjustmentEditor: View {
                 } else {
                     sectionTitle(chinese ? "明暗" : "Light")
                     adjustmentRows([.exposure, .contrast, .highlights, .shadows, .blackPoint, .whitePoint])
-                    HStack {
-                        Toggle(chinese ? "欠曝（蓝）" : "Shadows (blue)", isOn: $warnShadows)
-                            .accessibilityIdentifier("finish.warn-shadows")
-                            .help(chinese ? "三个通道均达到黑场" : "All three channels clip to black")
-                        Toggle(chinese ? "过曝（红）" : "Highlights (red)", isOn: $warnHighlights)
-                            .accessibilityIdentifier("finish.warn-highlights")
-                            .help(chinese ? "任一通道达到白场" : "Any channel clips to white")
+                    ViewThatFits(in: .horizontal) {
+                        HStack { clippingToggles }.fixedSize(horizontal: true, vertical: false)
+                        VStack(alignment: .leading, spacing: 4) { clippingToggles }
                     }.toggleStyle(.checkbox)
                     sectionTitle(chinese ? "色彩" : "Color")
                     HStack {
@@ -221,14 +217,14 @@ struct PhotoAdjustmentEditor: View {
                     }
                     if draft.picking {
                         let prompt = draft.sampleRejected
-                            ? (chinese ? "该处过暗、已剪切或透明，请重选中性区域。" : "Sample too dark, clipped or transparent. Choose another neutral area.")
+                            ? (chinese ? "此处太暗、亮度溢出或透明。请另选一处中性灰。" : "Sample too dark, clipped or transparent. Choose another neutral area.")
                             : (chinese ? "请点画布中的中性灰区域（5 × 5 像素）。" : "Click a neutral gray area on the canvas (5 × 5 pixels).")
                         Text(draft.sampleError ?? prompt).font(.caption)
                     }
                     adjustmentRows([.warmth, .tint, .saturation, .vibrance])
                 }
                 if !draft.settings.isNeutral {
-                    Text(chinese ? "当前为试调，应用后可导出。" : "Previewing edits. Apply to include them in export.")
+                    Text(chinese ? "要将预览中的修改导出，请先点“应用调整”。" : "Choose Apply edits before exporting.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 PhotoPreviewError(preview: model.photoPreview)
@@ -259,6 +255,16 @@ struct PhotoAdjustmentEditor: View {
         .onChange(of: composition) { _, value in if value { draft.cancelPicker() } }
         .onChange(of: showBefore) { _, value in if value { draft.cancelPicker() } }
         .onDisappear { draft.cancelPicker(); model.photoPreview.clear() }
+    }
+
+    @ViewBuilder
+    private var clippingToggles: some View {
+        Toggle(chinese ? "标记纯黑（蓝）" : "Mark clipped blacks (blue)", isOn: $warnShadows)
+            .accessibilityIdentifier("finish.warn-shadows")
+            .help(chinese ? "蓝色标出调整后红、绿、蓝三个通道都变黑的像素。仅在预览中显示。" : "Show blue where all three channels clip to black after adjustments. Preview only.")
+        Toggle(chinese ? "标记高光溢出（红）" : "Mark clipped highlights (red)", isOn: $warnHighlights)
+            .accessibilityIdentifier("finish.warn-highlights")
+            .help(chinese ? "红色标出调整后任一通道达到最大亮度的像素。仅在预览中显示。" : "Show red where any channel reaches maximum brightness after adjustments. Preview only.")
     }
 
     private func sectionTitle(_ title: String) -> some View {

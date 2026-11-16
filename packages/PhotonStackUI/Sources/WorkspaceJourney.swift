@@ -208,8 +208,8 @@ struct WorkspaceJourneyBar: View {
     }
 
     private func statusTitle(_ state: WorkspaceJourneyState) -> String {
-        if model.hasActiveProcessing { return chinese ? "正在处理，请稍候" : "Processing…" }
-        if state.step == .finish { return chinese ? "调整当前图像，满意后导出" : "Finish the current image, then export" }
+        if model.hasActiveProcessing { return chinese ? "正在处理…" : "Processing…" }
+        if state.step == .finish { return chinese ? "调整亮度、色彩与细节" : "Adjust brightness, color and detail" }
         return chinese ? "已导入 \(state.lightCount) 张亮场 · \(calibrationCount) 张校准帧" : "\(state.lightCount) lights · \(calibrationCount) calibration frames"
     }
 
@@ -220,11 +220,11 @@ struct WorkspaceJourneyBar: View {
         if state.step == .finish {
             if model.editGraphNeedsReplay { return model.localized(.editGraphNeedsReplay) }
             if model.latestDeepSkyResultURL != nil && !state.resultCurrent {
-                return chinese ? "注意：素材或处理参数已变化，当前成片仍是上次结果。可返回筛片与堆栈更新。" : "Inputs or settings changed; this is the previous result. Return to the workbench to update it."
+                return chinese ? "当前显示上次成片。素材或参数已变更，请重新筛片并堆栈。" : "Inputs or settings changed; this is the previous result. Review and stack again to update it."
             }
-            return chinese ? "右侧调整亮度、色彩与细节；下方可对比和撤销。导出成片与保存项目是两件事。" : "Adjust brightness, color and detail on the right. Compare or undo below. Export an image; save a project to resume editing."
+            return chinese ? "导出可保存成片；要保留处理历史，请保存项目。" : "Export to save the image. Save the project to keep your edit history."
         }
         if state.lightCount < 3 { return chinese ? "堆栈至少需要 3 张同一目标的亮场；已有成片可直接进入后期。" : "Stacking needs at least 3 lights of the same target. An existing master can go straight to finishing." }
-        return chinese ? "下一步检查星点、噪声与对齐质量。暗场 / 平场 / 偏置可在素材栏设置，不必为了开始而补齐。" : "Next, assess stars, noise and alignment. Assign optional dark, flat and bias frames in the sidebar."
+        return chinese ? "下一步检查星点、噪声与对齐质量。如有暗场、平场或偏置帧，可在素材栏指定。" : "Next, assess stars, noise and alignment. Assign optional dark, flat and bias frames in the sidebar."
     }
 }

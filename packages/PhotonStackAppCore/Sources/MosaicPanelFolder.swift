@@ -68,7 +68,7 @@ public struct MosaicPanelFolder: Codable, Equatable, Sendable {
                 found = [direct]
             }
             guard !found.isEmpty else {
-                throw WorkflowError("没有找到天区照片 / No sky panel images: \(directory.path)")
+                throw WorkflowError("没有找到天区照片 / No sky panel images\n\(directory.path)")
             }
             groups += found.filter { seen.insert($0.directory).inserted }
         }

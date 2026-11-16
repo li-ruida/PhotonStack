@@ -102,12 +102,12 @@ public enum DeepSkyRecipeError: Error, LocalizedError {
     case unsupportedVersion, unknownSetting, invalidText, invalidReport, inputsChanged, masterChanged
     public var errorDescription: String? {
         switch self {
-        case .unsupportedVersion: "Unsupported deep-sky recipe version."
-        case .unknownSetting: "The recipe contains a setting this engine does not support."
-        case .invalidText: "Recipe values cannot contain newlines or NUL characters."
-        case .invalidReport: "The engine returned an incomplete deep-sky report."
-        case .inputsChanged: "原片已变化，请重新分析并堆栈。Source files changed; analyze and stack again."
-        case .masterChanged: "线性母片已变化，不能继续复用；请重新堆栈。Linear master changed; rebuild the stack before reprocessing."
+        case .unsupportedVersion: "不支持此深空配方版本。 / Unsupported deep-sky recipe version."
+        case .unknownSetting: "此配方包含当前引擎不支持的设置。 / The recipe contains a setting this engine does not support."
+        case .invalidText: "配方参数不能包含换行符或空字符。 / Recipe values cannot contain newlines or NUL characters."
+        case .invalidReport: "深空处理报告不完整。 / The engine returned an incomplete deep-sky report."
+        case .inputsChanged: "原片已变化，请重新分析并堆栈。 / Source files changed; analyze and stack again."
+        case .masterChanged: "线性母片已变化，不能继续复用；请重新堆栈。 / Linear master changed; rebuild the stack before reprocessing."
         }
     }
 }

@@ -75,6 +75,23 @@ int main() {
         options.acceptedGroups = labels;
         const auto grouped = Stacker().stack(paths, options);
         unchanged(plain, grouped); pool(grouped);
+        auto weightsOptions = options;
+        weightsOptions.collectAcceptedWeights = true;
+        weightsOptions.acceptedGroups.clear();
+        const auto weighted = Stacker().stack(paths, weightsOptions);
+        unchanged(plain, weighted);
+        for (std::size_t p = 0; p < grouped.image.pixelCount(); ++p) {
+            for (unsigned c = 0; c < 3; ++c) {
+                const auto i = p * 4 + c;
+                require(std::abs(weighted.acceptedWeights.pixels[i] -
+                    grouped.acceptedGroupWeights[0].pixels[i] - grouped.acceptedGroupWeights[1].pixels[i]) < 2e-6);
+            }
+            require(weighted.acceptedWeights.pixels[p * 4 + 3] == plain.image.pixels[p * 4 + 3]);
+        }
+        weightsOptions.combineWorkers = 8;
+        const auto parallelWeights = Stacker().stack(paths, weightsOptions);
+        unchanged(weighted, parallelWeights);
+        require(weighted.acceptedWeights.pixels == parallelWeights.acceptedWeights.pixels);
         for (unsigned g = 0; g < 2; ++g) {
             require(grouped.acceptedGroupWeights[g].pixels[3] == 0);
             require(grouped.acceptedGroupImages[g].pixels[5 * 4] == -20);

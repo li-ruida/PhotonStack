@@ -1044,7 +1044,7 @@ void recordAcceptedGroups(const std::vector<WeightedValue>& values, const PixelR
 void processRobustRange(const std::vector<float>& tileData, std::size_t frameCount, std::size_t tilePixels,
                        std::uint16_t channels, std::size_t outputPixelOffset, const StackOptions& options,
                        const std::vector<std::size_t>& inputOrder, ImageBuffer& output,
-                       StackResult* report, StackResult* counters, ImageBuffer* noise, StackResult* groups,
+                       StackResult* report, StackResult* counters, ImageBuffer* noise, StackResult* groups, ImageBuffer* acceptedWeights,
                        std::size_t begin, std::size_t end, const float* centers) {
     const auto tileSamples = tilePixels * channels;
     std::vector<WeightedValue> values;
@@ -1092,6 +1092,13 @@ void processRobustRange(const std::vector<float>& tileData, std::size_t frameCou
                 output.pixels[outputOffset + channel] = robustStackValue(values, scratch, retained, unitSamples, options, rejected,
                     centers ? centers + 2 * (pixel * 3 + channel) : nullptr);
                 if (groups) recordAcceptedGroups(values, rejected, options, inputOrder, *groups, noiseOffset + channel);
+                if (acceptedWeights) {
+                    double kept = 0;
+                    for (const auto& v : values)
+                        if (v.value >= rejected.lowerBound && v.value <= rejected.upperBound) kept += v.weight;
+                    if (kept == 0) for (const auto& v : values) kept += v.weight;
+                    acceptedWeights->pixels[outputOffset + channel] = float(kept);
+                }
                 if (noise) {
                     halves[0].clear(); halves[1].clear();
                     for (const auto& v : values) halves[inputOrder[v.frame] % 2].push_back(v);
@@ -1129,6 +1136,8 @@ void processRobustRange(const std::vector<float>& tileData, std::size_t frameCou
             groups->acceptedGroupImages[group].pixels[noiseOffset + 3] = valid ? 1 : 0;
             groups->acceptedGroupWeights[group].pixels[noiseOffset + 3] = valid ? 1 : 0;
         }
+        if (acceptedWeights) setCoverageAlpha(*acceptedWeights, outputPixelOffset + pixel,
+                         static_cast<float>(coverageSum / totalFrameWeight));
         setCoverageAlpha(output, outputPixelOffset + pixel,
                          static_cast<float>(coverageSum / totalFrameWeight));
         if (report) {
@@ -1141,7 +1150,7 @@ void processRobustRange(const std::vector<float>& tileData, std::size_t frameCou
 void processRobustTile(const std::vector<float>& tileData, std::size_t frameCount, std::size_t tilePixels,
                        std::uint16_t channels, std::size_t outputPixelOffset, const StackOptions& options,
                        const std::vector<std::size_t>& inputOrder, ImageBuffer& output,
-                       StackResult* report, ImageBuffer* noise, StackResult* groups) {
+                       StackResult* report, ImageBuffer* noise, StackResult* groups, ImageBuffer* acceptedWeights) {
     constexpr std::size_t automaticWorkerLimit = 8;
     constexpr std::size_t manualWorkerLimit = 16;
     const auto hardware = std::max<std::size_t>(1, std::thread::hardware_concurrency());
@@ -1173,7 +1182,7 @@ void processRobustTile(const std::vector<float>& tileData, std::size_t frameCoun
                         const auto first = pixel++;
                         while (pixel < tilePixels && reduced[12 * pixel + 3] < 0) ++pixel;
                         processRobustRange(tileData, frameCount, tilePixels, channels, outputPixelOffset, options,
-                                           inputOrder, output, report, report, nullptr, nullptr, first, pixel, centers.data());
+                                           inputOrder, output, report, report, nullptr, nullptr, nullptr, first, pixel, centers.data());
                         continue;
                     }
                     const auto offset = (outputPixelOffset + pixel) * 4;
@@ -1195,7 +1204,7 @@ void processRobustTile(const std::vector<float>& tileData, std::size_t frameCoun
     const float* bounds = centers.empty() ? nullptr : centers.data();
     if (workers == 1) {
         processRobustRange(tileData, frameCount, tilePixels, channels, outputPixelOffset, options,
-                           inputOrder, output, report, report, noise, groups, 0, tilePixels, bounds);
+                           inputOrder, output, report, report, noise, groups, acceptedWeights, 0, tilePixels, bounds);
         return;
     }
     // Pixel ranges are disjoint; frame traversal and floating-point reduction
@@ -1212,7 +1221,7 @@ void processRobustTile(const std::vector<float>& tileData, std::size_t frameCoun
         const detail::StageScope scope(ctx);
         try {
             processRobustRange(tileData, frameCount, tilePixels, channels, outputPixelOffset, options,
-                               inputOrder, output, report, report ? &counters[worker] : nullptr, noise, groups,
+                               inputOrder, output, report, report ? &counters[worker] : nullptr, noise, groups, acceptedWeights,
                                tilePixels * worker / workers, tilePixels * (worker + 1) / workers, bounds);
         } catch (...) {
             failures[worker] = std::current_exception();
@@ -1351,6 +1360,7 @@ StackResult stackCachedRobustFrames(const std::vector<std::filesystem::path>& pa
     };
 
     std::vector<float> tileData;
+    if (options.collectAcceptedWeights) metrics.acceptedWeights = output;
     if (!options.acceptedGroups.empty()) {
         if (output.colorEncoding != ColorEncoding::Linear || (output.channels != 3 && output.channels != 4))
             return stackError("ArgumentInvalid", "Accepted groups require linear RGB inputs");
@@ -1415,7 +1425,8 @@ StackResult stackCachedRobustFrames(const std::vector<std::filesystem::path>& pa
                           startPixel, options, inputOrder, output,
                           options.collectRejectionMaps ? &metrics : nullptr,
                           options.collectNoiseDiagnostic ? &metrics.noiseDiagnostic : nullptr,
-                          options.acceptedGroups.empty() ? nullptr : &metrics);
+                          options.acceptedGroups.empty() ? nullptr : &metrics,
+                          options.collectAcceptedWeights ? &metrics.acceptedWeights : nullptr);
         const auto completedRows = static_cast<std::uint32_t>((startPixel + pixelCount) / output.width);
         const auto previousRows = static_cast<std::uint32_t>(startPixel / output.width);
         const auto interval = std::max<std::uint32_t>(1, output.height / 100);
@@ -1625,6 +1636,9 @@ StackResult streamRobustFiles(const std::vector<std::filesystem::path>& inputs, 
 static StackResult stackInputs(const std::vector<std::filesystem::path>& inputs, const StackOptions& requestedOptions,
                                const std::vector<detail::RegisteredFrame>& registered) {
     StackOptions options = requestedOptions;
+    if (options.collectAcceptedWeights && (inputs.size() < 2 || options.method != StackMethod::SigmaClip ||
+                                          options.fitsDecodeMode != FitsDecodeMode::Scientific))
+        return stackError("ArgumentInvalid", "Accepted weights require scientific Sigma stacking");
     if (!options.acceptedGroups.empty()) {
         if (options.method != StackMethod::SigmaClip || options.fitsDecodeMode != FitsDecodeMode::Scientific ||
             options.acceptedGroups.size() != inputs.size() ||

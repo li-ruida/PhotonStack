@@ -31,6 +31,7 @@ enum AdvancedTool: String, CaseIterable {
 @MainActor
 final class AdvancedToolSettings: ObservableObject {
     let starLayers = StarLayerSession()
+    let narrowband = NarrowbandSession()
     @Published var tool: AdvancedTool = .finishing
     @Published var backgroundModel = "grid"
     @Published var backgroundMode = "subtract"
@@ -75,7 +76,7 @@ struct AdvancedProcessingSection: View {
             case .starLayers:
                 StarLayersControl(model: model, session: settings.starLayers)
             case .narrowband:
-                NarrowbandControl(model: model)
+                NarrowbandControl(model: model, session: settings.narrowband)
             case .finishing:
                 VStack(alignment: .leading, spacing: 10) {
                     AstroDevelopControl(model: model)

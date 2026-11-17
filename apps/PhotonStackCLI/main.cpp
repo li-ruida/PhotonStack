@@ -289,6 +289,8 @@ void printUsage() {
               << "  photonstack local-contrast --input <image> --output <image> [--amount 0.25] [--radius 8] [--protect-structure on|off] [--fine-radius 6] [--star-chroma 1] [--continuum-curve 0:0,0.5:0.6,1:1]\n"
               << "  photonstack protect-reconstruction --input <linear.fits> --reference <direct.fits> --mask <weights.fits> --output <protected.fits> [--background-sigma 8] [--amount 1]\n"
               << "  photonstack narrowband-extract --input <Ha-OIII-CFA.fits> --output-dir <new-directory>\n"
+              << "  photonstack narrowband-replay --recipe recipe.txt --output-dir <new-directory> [--green-ha <0..1>]\n"
+              << "  photonstack narrowband-inspect --recipe recipe.txt\n"
               << "  photonstack narrowband-stack --output-dir <new-directory> <CFA.fits>...\n"
               << "  photonstack narrowband-compose --ha <Ha.fits> --oiii <OIII.fits> --green-ha <0..1> --output-dir <new-directory>\n"
               << "  photonstack frequency-stack --plan <prepared.psfreq> --output <linear.fits> [--threads 1]\n"
@@ -7059,7 +7061,7 @@ int runCommandImpl(const std::vector<std::string>& args) {
         try { return runStarLayers(args); }
         catch (const std::exception& error) { printError("StarLayersFailed", error.what()); return 1; }
     }
-    if (args[0] == "narrowband-extract" || args[0] == "narrowband-compose" || args[0] == "narrowband-stack") {
+    if (args[0] == "narrowband-extract" || args[0] == "narrowband-compose" || args[0] == "narrowband-stack" || args[0] == "narrowband-replay" || args[0] == "narrowband-inspect") {
         try { return runNarrowband(args); }
         catch (const std::exception& error) { printError("NarrowbandFailed", error.what()); return 1; }
     }

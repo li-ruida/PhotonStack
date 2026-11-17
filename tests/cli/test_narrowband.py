@@ -1,5 +1,6 @@
 """Independent FITS fixtures and physical-sample oracle for CFA line extraction."""
 import math
+import json
 import random
 from pathlib import Path
 import struct
@@ -44,6 +45,9 @@ class Extraction(unittest.TestCase):
                         subprocess.run([CLI, "narrowband-extract", "--input", source, "--output-dir", dest],
                                        check=True, capture_output=True)
                         ha, oxygen = plane(dest / "Ha.fits"), plane(dest / "OIII.fits")
+                        hv, ov = plane(dest / "Ha-valid.fits"), plane(dest / "OIII-valid.fits")
+                        self.assertEqual(hv, tuple(float(math.isfinite(v)) for v in ha))
+                        self.assertEqual(ov, tuple(float(math.isfinite(v)) for v in oxygen))
                         for cell in range(4):
                             samples = [(pattern[((y+oy)%2)*2 + (x+ox)%2], values[5*y+x]*2-31)
                                        for y in range(2*(cell//2), 2*(cell//2)+2)
@@ -81,6 +85,21 @@ class Extraction(unittest.TestCase):
             def values(path, count):
                 return struct.unpack_from(f">{count}f", path.read_bytes(), 2880)
             size = width*height
+            hw = values(stack / "Ha-weight.fits", size)
+            ow = values(stack / "OIII-weight.fits", size)
+            coverage = values(stack / "geometric-coverage.fits", size)
+            self.assertTrue(all(0 <= v <= 3 for v in hw + ow))
+            self.assertTrue(all(0 <= v <= 1 for v in coverage))
+            for y in range(5,height-5):
+                for x in range(5,width-5):
+                    k=y*width+x
+                    self.assertAlmostEqual(hw[k],3,delta=1e-5)
+                    self.assertAlmostEqual(ow[k],3,delta=1e-5)
+                    self.assertAlmostEqual(coverage[k],1,delta=1e-5)
+            repeated = root / "repeated-stack"
+            subprocess.run([CLI,"narrowband-replay","--recipe",stack / "recipe.txt","--output-dir",repeated],check=True,capture_output=True)
+            for name in ["Ha.fits","OIII.fits","HOO.fits","Ha-weight.fits","OIII-weight.fits","geometric-coverage.fits"]:
+                self.assertEqual((stack/name).read_bytes(),(repeated/name).read_bytes())
             ha, oxygen = (values(stack / name, size) for name in ("Ha.fits", "OIII.fits"))
             # Check registered photometric values in the fully covered field.
             for y in range(5,height-5):
@@ -97,6 +116,36 @@ class Extraction(unittest.TestCase):
                     self.assertEqual(rgb[k], ha[k])
                     self.assertAlmostEqual(rgb[size+k], 0.25*ha[k]+0.75*oxygen[k], delta=0.00005)
                     self.assertEqual(rgb[2*size+k], oxygen[k])
+
+    def test_recipe_source_and_result_protection_and_invalid_hoo_mask(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);source=root/'source with spaces.fit';write_source(source,"RGGB",0,0,list(range(25)))
+            dest=root/'lines'
+            subprocess.run([CLI,"narrowband-extract","--input",source,"--output-dir",dest],check=True,capture_output=True)
+            inspected=subprocess.run([CLI,"narrowband-inspect","--recipe",dest/'recipe.txt'],check=True,capture_output=True,text=True)
+            report=json.loads(inspected.stdout);self.assertEqual(report['operation'],'extract')
+            duplicate=root/'repeated';subprocess.run([CLI,"narrowband-replay","--recipe",dest/'recipe.txt',"--output-dir",duplicate],check=True,capture_output=True)
+            for name in report['outputs']:self.assertEqual((dest/name).read_bytes(),(duplicate/name).read_bytes())
+            self.assertNotEqual(subprocess.run([CLI,"narrowband-replay","--recipe",dest/'recipe.txt',"--output-dir",duplicate],capture_output=True).returncode,0)
+            original=source.read_bytes();source.write_bytes(original[:-1]+b'x')
+            self.assertNotEqual(subprocess.run([CLI,"narrowband-replay","--recipe",dest/'recipe.txt',"--output-dir",root/'changed'],capture_output=True).returncode,0)
+            self.assertFalse((root/'changed').exists());source.write_bytes(original)
+            ha=dest/'Ha.fits';data=ha.read_bytes();ha.write_bytes(data[:-1]+b'x')
+            self.assertNotEqual(subprocess.run([CLI,"narrowband-inspect","--recipe",dest/'recipe.txt'],capture_output=True).returncode,0)
+            ha.write_bytes(data)
+            # Independent invalid masks: only one emission line is invalid at each of two pixels.
+            raw=bytearray(ha.read_bytes());struct.pack_into('>f',raw,2880,float('nan'));ha.write_bytes(raw)
+            oxygen=dest/'OIII.fits';raw=bytearray(oxygen.read_bytes());struct.pack_into('>f',raw,2884,float('nan'));oxygen.write_bytes(raw)
+            mixed=root/'mixed';subprocess.run([CLI,"narrowband-compose","--ha",ha,"--oiii",oxygen,"--green-ha","0.25","--output-dir",mixed],check=True,capture_output=True)
+            self.assertEqual(plane(mixed/'validity.fits'),(0,0,1,1))
+            rgba=struct.unpack_from('>16f',(mixed/'HOO.fits').read_bytes(),2880)
+            self.assertTrue(all(math.isfinite(v) for v in rgba));self.assertEqual(rgba[12:],(0,0,1,1))
+            for c in range(3):self.assertEqual(rgba[c*4:c*4+2],(0,0))
+            again=root/'mixed-again';subprocess.run([CLI,"narrowband-replay","--recipe",mixed/'recipe.txt',"--output-dir",again],check=True,capture_output=True)
+            self.assertEqual((mixed/'HOO.fits').read_bytes(),(again/'HOO.fits').read_bytes())
+            changedmix=root/'green';subprocess.run([CLI,"narrowband-replay","--recipe",mixed/'recipe.txt',"--green-ha","0.75","--output-dir",changedmix],check=True,capture_output=True)
+            actual=struct.unpack_from('>16f',(changedmix/'HOO.fits').read_bytes(),2880)
+            self.assertAlmostEqual(actual[6],.75*actual[2]+.25*actual[10],places=5)
 
     def test_invalid_input_and_existing_output(self):
         with tempfile.TemporaryDirectory() as tmp:

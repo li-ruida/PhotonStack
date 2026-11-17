@@ -21,6 +21,9 @@ struct StackResult {
     // Winsorized mode counts bounded samples; median/average do not reject samples.
     ImageBuffer rejectionLow;
     ImageBuffer rejectionHigh;
+    // Sigma-only sum of accepted (frame weight * resampling coverage), per color.
+    // Alpha, if present, retains pre-clipping geometric coverage fraction.
+    ImageBuffer acceptedWeights;
     // Optional alternating-input half-difference in master units, scaled by
     // accepted weighted variance moments. RGBA: alpha 1 means >=3 accepted
     // samples in each half for every channel; alpha 0 means unavailable.
@@ -123,6 +126,7 @@ struct StackOptions {
     // Requires alignment. Input weights still correspond only to inputs.
     std::filesystem::path alignmentReference;
     bool collectRejectionMaps = false;
+    bool collectAcceptedWeights = false;
     // SigmaClip only, >=6 distinct inputs. Does not modify the master/rejection
     // result. Splits by ORIGINAL input index parity, regardless of cache order.
     bool collectNoiseDiagnostic = false;

@@ -22,13 +22,17 @@ struct FitsSensorIdentity {
     bool sameAcquisition(const FitsSensorIdentity& other) const;
 };
 
+enum class DualBandSampling { CellAverage, RedGrid };
+
 struct DualBandPlanes {
     ImageBuffer hydrogen, oxygen;
 };
 
 // Estimates H-alpha and OIII from one linear H-alpha/OIII Bayer exposure.
-// Each sample represents one complete 2x2 sensor cell in stored row order.
-DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCalibration* calibration = nullptr);
+// RedGrid samples both lines at the red photosite of each complete 2x2 cell.
+// CellAverage preserves the historical three-non-red-samples estimate.
+DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCalibration* calibration = nullptr,
+                                  DualBandSampling sampling = DualBandSampling::RedGrid);
 
 class FitsCodec {
   public:

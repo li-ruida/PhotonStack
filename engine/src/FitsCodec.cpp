@@ -584,7 +584,9 @@ ImageBuffer readCfaSensor(const std::filesystem::path& path) {
     return result;
 }
 
-DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCalibration* calibration) {
+DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCalibration* calibration, DualBandSampling sampling) {
+    if (sampling != DualBandSampling::CellAverage && sampling != DualBandSampling::RedGrid)
+        throw std::invalid_argument("Unsupported dual-band sampling mode");
     if (calibration) calibration->validate(inspectCfaSensor(path));
     std::ifstream stream(path, std::ios::binary);
     if (!stream) throw std::runtime_error("Cannot open CFA FITS input");
@@ -626,6 +628,39 @@ DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCa
         image->channels = 1;
         image->format = PixelFormat::Float32Gray;
         image->pixels.resize(image->pixelCount());
+    }
+    if (sampling == DualBandSampling::RedGrid) {
+        // Three rows suffice to interpolate G1, G2 and B symmetrically at each
+        // red site. Each green contributes half its two neighbors; blue uses
+        // four diagonal neighbors. Their equal mean preserves the original
+        // 2:1 green/blue DC response, with zero spatial first moment.
+        const auto missing = std::numeric_limits<float>::quiet_NaN();
+        std::fill(result.oxygen.pixels.begin(), result.oxygen.pixels.end(), missing);
+        std::vector<float> rows(std::size_t(desc->width) * 3, missing);
+        const unsigned rx = red & 1U, ry = red >> 1;
+        const auto status = forEachPhysicalSample(stream, header.dataOffset, samples, bytesPerSample(desc->bitpix),
+            desc->bitpix, *scale, *zero, [&](std::size_t pixel, float value) {
+                const auto x = pixel % desc->width, y = pixel / desc->width;
+                if (calibration) value = calibration->apply(pixel, value);
+                if (!std::isfinite(value)) value = missing;
+                rows[(y % 3) * desc->width + x] = value;
+                if (x % 2 == rx && y % 2 == ry && x / 2 < width && y / 2 < height)
+                    result.hydrogen.pixels[y / 2 * width + x / 2] = value;
+                if (x + 1 != desc->width || y < 2) return;
+                const auto cy = y - 1;
+                if (cy % 2 != ry || cy / 2 >= height) return;
+                const float* above = rows.data() + ((cy - 1) % 3) * desc->width;
+                const float* center = rows.data() + (cy % 3) * desc->width;
+                const float* below = rows.data() + ((cy + 1) % 3) * desc->width;
+                for (std::size_t cx = rx; cx / 2 < width; cx += 2) {
+                    if (cx == 0 || cx + 1 >= desc->width) continue;
+                    const double green = double(center[cx - 1]) + center[cx + 1] + above[cx] + below[cx];
+                    const double blue = double(above[cx - 1]) + above[cx + 1] + below[cx - 1] + below[cx + 1];
+                    result.oxygen.pixels[cy / 2 * width + cx / 2] = static_cast<float>((2 * green + blue) / 12);
+                }
+            });
+        if (status != SampleStreamResult::Success) throw std::runtime_error("Could not read CFA samples");
+        return result;
     }
     // Keep only one row of double accumulators; signed faint signals and
     // finite values near Float32.max must survive the three-sample mean.

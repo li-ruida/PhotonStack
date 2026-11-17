@@ -22,6 +22,16 @@ struct NarrowbandCalibrationReport: Decodable, Equatable {
     }
 }
 
+enum NarrowbandSampling: String, CaseIterable {
+    case redGrid = "red-grid", cellAverage = "cell-average"
+    func title(chinese: Bool) -> String {
+        switch self {
+        case .redGrid: chinese ? "同位置采样" : "Common red-site grid"
+        case .cellAverage: chinese ? "像素格均值（旧配方）" : "Cell average (legacy)"
+        }
+    }
+}
+
 struct NarrowbandReport: Decodable, Equatable {
     var type, command, operation: String
     var directory: String
@@ -29,9 +39,13 @@ struct NarrowbandReport: Decodable, Equatable {
     var frames: Int
     var outputs: [String]
     var calibration: NarrowbandCalibrationReport?
+    var sampling: String?
+    var effectiveSampling: String { sampling ?? (operation == "compose" ? "provided" : "cell-average") }
+    var extractionSampling: NarrowbandSampling? { NarrowbandSampling(rawValue: effectiveSampling) }
     var isValid: Bool {
         type == "complete" && command == "narrowband-" + operation && ["extract", "stack", "compose"].contains(operation) &&
         directory.hasPrefix("/") && greenHydrogen.isFinite && (0...1).contains(greenHydrogen) && frames > 0 &&
+        (operation == "compose" ? effectiveSampling == "provided" : extractionSampling != nil) &&
         (calibration == nil || (operation != "compose" && calibration?.isUsable == true)) &&
         !outputs.isEmpty && Set(outputs).count == outputs.count && outputs.allSatisfy {
             ["Ha.fits", "OIII.fits", "HOO.fits", "Ha-valid.fits", "OIII-valid.fits", "Ha-weight.fits",
@@ -42,9 +56,11 @@ struct NarrowbandReport: Decodable, Equatable {
 @MainActor final class NarrowbandSession: ObservableObject {
     @Published private(set) var report: NarrowbandReport?
     @Published var greenHydrogen: Double = 0
+    @Published var sampling: NarrowbandSampling = .redGrid
     @Published var useCalibration = false
     @Published var calibration = NarrowbandCalibrationReport()
     var canCalibrate: Bool { !useCalibration || calibration.isUsable }
+    var extractionArguments: [String] { ["--sampling", sampling.rawValue] + calibrationArguments }
     var calibrationArguments: [String] { useCalibration ? calibration.arguments : [] }
     var directory: URL? { report.map { URL(fileURLWithPath: $0.directory, isDirectory: true) } }
     var recipe: URL? { directory?.appendingPathComponent("recipe.txt") }
@@ -62,6 +78,7 @@ struct NarrowbandReport: Decodable, Equatable {
         report = decoded; greenHydrogen = decoded.greenHydrogen
         calibration = decoded.calibration ?? NarrowbandCalibrationReport()
         useCalibration = decoded.calibration != nil
+        sampling = decoded.extractionSampling ?? .redGrid
         return directory.appendingPathComponent(decoded.outputs.contains("HOO.fits") ? "HOO.fits" : "Ha.fits")
     }
     func run(_ arguments: [String], output: URL, using service: any ProcessingService) async throws -> URL {
@@ -73,6 +90,7 @@ struct NarrowbandReport: Decodable, Equatable {
         guard let recipe, let report else { throw ProcessingServiceError.invalidArguments("Open a narrowband result first.") }
         var args = ["narrowband-replay", "--recipe", recipe.path, "--output-dir", output.path]
         if report.operation == "compose" { args += ["--green-ha", String(greenHydrogen)] }
+        else { args += ["--sampling", sampling.rawValue] }
         return try await run(args, output: output, using: service)
     }
     func remix(output: URL, using service: any ProcessingService) async throws -> URL {
@@ -91,8 +109,8 @@ struct NarrowbandReport: Decodable, Equatable {
             throw ProcessingServiceError.invalidArguments("Unknown narrowband product.")
         }
         let fraction = greenHydrogen
-        let pending = calibration, enabled = useCalibration
-        defer { greenHydrogen = fraction; calibration = pending; useCalibration = enabled }
+        let pending = calibration, enabled = useCalibration, pendingSampling = sampling
+        defer { greenHydrogen = fraction; calibration = pending; useCalibration = enabled; sampling = pendingSampling }
         _ = try await open(directory, using: service)
         return directory.appendingPathComponent(name)
     }

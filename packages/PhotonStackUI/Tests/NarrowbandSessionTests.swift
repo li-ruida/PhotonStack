@@ -115,3 +115,43 @@ func narrowbandCalibrationRestoresMastersAndPreservesPendingChoices() async thro
     options.bias = options.flat
     #expect(!options.isUsable)
 }
+
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil)) @MainActor
+func narrowbandSamplingRestoresLegacyAndSupportsExplicitGridUpgrade() async throws {
+    let cli = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"]))
+    let service = CLIProcessingService(executableURL: cli)
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("NarrowbandSampling-\(UUID())", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("source.fits")
+    _ = try writeDualBandFixture(source)
+    let session = NarrowbandSession()
+    #expect(session.sampling == .redGrid)
+    session.sampling = .cellAverage
+    let old = root.appendingPathComponent("old", isDirectory: true)
+    _ = try await session.run(["narrowband-extract", "--input", source.path, "--output-dir", old.path] + session.extractionArguments,
+                               output: old, using: service)
+    let legacyBytes = try Data(contentsOf: old.appendingPathComponent("OIII.fits"))
+    let recipe = old.appendingPathComponent("recipe.txt")
+    let version3 = try String(contentsOf: recipe)
+    let version2 = version3.replacingOccurrences(of: "PhotonStack-Narrowband-3", with: "PhotonStack-Narrowband-2")
+        .split(separator: "\n").filter { !$0.hasPrefix("sampling ") }.joined(separator: "\n") + "\n"
+    try version2.write(to: recipe, atomically: true, encoding: .utf8)
+    let restored = NarrowbandSession()
+    _ = try await restored.open(old, using: service)
+    #expect(restored.sampling == .cellAverage)
+    let same = root.appendingPathComponent("same", isDirectory: true)
+    _ = try await restored.replay(output: same, using: service)
+    #expect(try Data(contentsOf: same.appendingPathComponent("OIII.fits")) == legacyBytes)
+    restored.sampling = .redGrid
+    _ = try await restored.verifiedOutput("Ha.fits", using: service)
+    #expect(restored.sampling == .redGrid)
+    let upgraded = root.appendingPathComponent("upgraded", isDirectory: true)
+    _ = try await restored.replay(output: upgraded, using: service)
+    #expect(restored.report?.sampling == "red-grid")
+    #expect(try Data(contentsOf: upgraded.appendingPathComponent("OIII.fits")) != legacyBytes)
+    let reopened = NarrowbandSession()
+    _ = try await reopened.open(upgraded, using: service)
+    #expect(reopened.sampling == .redGrid)
+}

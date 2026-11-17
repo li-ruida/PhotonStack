@@ -53,6 +53,8 @@ if(Python3_Interpreter_FOUND)
     "${CMAKE_CURRENT_SOURCE_DIR}/test_star_layers.py" "$<TARGET_FILE:photonstack>")
   add_test(NAME photonstack_wcs_mosaic COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/test_wcs_mosaic.py" "$<TARGET_FILE:photonstack>")
+  add_test(NAME photonstack_narrowband_sampling COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_narrowband_sampling.py" "$<TARGET_FILE:photonstack>")
   add_test(NAME photonstack_narrowband_extraction COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/test_narrowband.py" "$<TARGET_FILE:photonstack>")
 endif()

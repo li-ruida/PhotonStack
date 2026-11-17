@@ -84,19 +84,22 @@ void save(const fs::path& directory, const std::vector<std::pair<const char*, co
         throw;
     }
 }
-ImageReadResult decodeForStack(const fs::path& path, const CfaCalibration* calibration) {
+ImageReadResult decodeForStack(const fs::path& path, const CfaCalibration* calibration, DualBandSampling sampling) {
     ImageReadResult result;
     try {
-        const auto planes = readDualBandPlanes(path, calibration);
+        const auto planes = readDualBandPlanes(path, calibration, sampling);
         auto& rgba = result.image;
         rgba.width = planes.hydrogen.width;
         rgba.height = planes.hydrogen.height;
         rgba.pixels.resize(rgba.sampleCount());
         for (std::size_t i = 0; i < rgba.pixelCount(); ++i) {
             const float h = planes.hydrogen.pixels[i], o = planes.oxygen.pixels[i];
-            rgba.pixels[4 * i] = h;
-            rgba.pixels[4 * i + 1] = rgba.pixels[4 * i + 2] = o;
-            rgba.pixels[4 * i + 3] = std::isfinite(h) && std::isfinite(o) ? 1 : 0;
+            const bool valid = std::isfinite(h) && std::isfinite(o);
+            // Registration requires finite storage even for masked samples.
+            // Preserve missing support in alpha, never as unmasked black data.
+            rgba.pixels[4 * i] = valid ? h : 0;
+            rgba.pixels[4 * i + 1] = rgba.pixels[4 * i + 2] = valid ? o : 0;
+            rgba.pixels[4 * i + 3] = valid ? 1 : 0;
         }
         result.ok = true;
         result.backend = ImageReadBackend::Fits;
@@ -113,7 +116,8 @@ void stackLines(const NarrowbandRecipe& recipe, const fs::path& directory, const
     StackOptions options;
     options.alignSimilarity = true;
     options.method = StackMethod::SigmaClip;
-    options.readFrame = [calibration](const auto& path) { return decodeForStack(path, calibration); };
+    const auto sampling = narrowbandSampling(recipe.sampling);
+    options.readFrame = [calibration, sampling](const auto& path) { return decodeForStack(path, calibration, sampling); };
     options.collectAcceptedWeights = true;
     const auto result = Stacker().stack(inputs, options);
     if (!result.ok)
@@ -150,7 +154,13 @@ int runNarrowband(const std::vector<std::string>& args) {
             throw std::invalid_argument("Green-channel H-alpha fraction must be between 0 and 1");
         return value;
     };
+    bool samplingSpecified = false;
     const auto calibrationOption = [&](const std::string& option, const std::string& value) {
+        if (option == "--sampling") {
+            if (samplingSpecified) throw std::invalid_argument("Duplicate sampling option");
+            narrowbandSampling(value); recipe.sampling = value; samplingSpecified = true;
+            return true;
+        }
         if (option == "--bias" || option == "--dark" || option == "--flat") {
             if (!recipe.calibration.emplace(option.substr(2), NarrowbandFile{fs::canonical(value), {}}).second)
                 throw std::invalid_argument("Duplicate calibration master");
@@ -189,9 +199,13 @@ int runNarrowband(const std::vector<std::string>& args) {
         if (!values.contains("--output-dir")) throw std::invalid_argument("Specify --output-dir");
         directory = values.at("--output-dir");
         if (args[0] == "narrowband-replay") {
-            if (!values.contains("--recipe") || values.size() != (values.contains("--green-ha") ? 3U : 2U))
-                throw std::invalid_argument("Expected --recipe, --output-dir and optional --green-ha");
+            if (!values.contains("--recipe") || values.size() != 2U + values.contains("--green-ha") + values.contains("--sampling"))
+                throw std::invalid_argument("Expected --recipe, --output-dir and optional --green-ha or --sampling");
             recipe = readNarrowbandRecipe(values.at("--recipe"), false);
+            if (values.contains("--sampling")) {
+                if (recipe.operation == "compose") throw std::invalid_argument("Sampling can only change during CFA extraction or stacking");
+                narrowbandSampling(values.at("--sampling")); recipe.sampling = values.at("--sampling");
+            }
             if (values.contains("--green-ha")) {
                 if (recipe.operation != "compose") throw std::invalid_argument("Green mixing requires a compose recipe");
                 recipe.green = parseFraction(values.at("--green-ha"));
@@ -202,7 +216,7 @@ int runNarrowband(const std::vector<std::string>& args) {
         } else {
             if (values.size() != 4 || !values.contains("--ha") || !values.contains("--oiii") || !values.contains("--green-ha"))
                 throw std::invalid_argument("Expected --ha, --oiii, --green-ha and --output-dir");
-            recipe.operation = "compose"; recipe.green = parseFraction(values.at("--green-ha"));
+            recipe.operation = "compose"; recipe.sampling = "provided"; recipe.green = parseFraction(values.at("--green-ha"));
             recipe.inputs = {{fs::canonical(values.at("--ha")), {}}, {fs::canonical(values.at("--oiii")), {}}};
         }
     }
@@ -234,7 +248,7 @@ int runNarrowband(const std::vector<std::string>& args) {
     const auto* prepared = calibration ? &*calibration : nullptr;
     if (recipe.operation == "stack") stackLines(recipe, directory, prepared);
     else if (recipe.operation == "extract") {
-        const auto planes = readDualBandPlanes(recipe.inputs[0].path, prepared);
+        const auto planes = readDualBandPlanes(recipe.inputs[0].path, prepared, narrowbandSampling(recipe.sampling));
         const auto haValid = scalarPlane(planes.hydrogen, 0, true), oxygenValid = scalarPlane(planes.oxygen, 0, true);
         save(directory, {{"Ha.fits", &planes.hydrogen}, {"OIII.fits", &planes.oxygen},
                          {"Ha-valid.fits", &haValid}, {"OIII-valid.fits", &oxygenValid}}, recipe);

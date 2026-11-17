@@ -43,7 +43,7 @@ class Extraction(unittest.TestCase):
                     with self.subTest(pattern=pattern, ox=ox, oy=oy):
                         dest = root / f"{pattern}-{ox}-{oy}"
                         write_source(source, pattern, ox, oy, values)
-                        subprocess.run([CLI, "narrowband-extract", "--input", source, "--output-dir", dest],
+                        subprocess.run([CLI, "narrowband-extract", "--input", source, "--output-dir", dest, "--sampling", "cell-average"],
                                        check=True, capture_output=True)
                         ha, oxygen = plane(dest / "Ha.fits"), plane(dest / "OIII.fits")
                         hv, ov = plane(dest / "Ha-valid.fits"), plane(dest / "OIII-valid.fits")
@@ -82,7 +82,7 @@ class Extraction(unittest.TestCase):
                 write_source(source, "RGGB", 0, 0, samples, 2*width, 2*height)
                 frames.append(source)
             stack = root / "stack"
-            subprocess.run([CLI, "narrowband-stack", "--output-dir", stack, *frames], check=True)
+            subprocess.run([CLI, "narrowband-stack", "--output-dir", stack, *frames, "--sampling", "cell-average"], check=True)
             def values(path, count):
                 return struct.unpack_from(f">{count}f", path.read_bytes(), 2880)
             size = width*height
@@ -122,7 +122,7 @@ class Extraction(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);source=root/'source with spaces.fit';write_source(source,"RGGB",0,0,list(range(25)))
             dest=root/'lines'
-            subprocess.run([CLI,"narrowband-extract","--input",source,"--output-dir",dest],check=True,capture_output=True)
+            subprocess.run([CLI,"narrowband-extract","--input",source,"--output-dir",dest,"--sampling","cell-average"],check=True,capture_output=True)
             inspected=subprocess.run([CLI,"narrowband-inspect","--recipe",dest/'recipe.txt'],check=True,capture_output=True,text=True)
             report=json.loads(inspected.stdout);self.assertEqual(report['operation'],'extract')
             duplicate=root/'repeated';subprocess.run([CLI,"narrowband-replay","--recipe",dest/'recipe.txt',"--output-dir",duplicate],check=True,capture_output=True)
@@ -152,7 +152,7 @@ class Extraction(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             source, dest = root / "input.fit", root / "lines"
-            command = [CLI, "narrowband-extract", "--input", source, "--output-dir", dest]
+            command = [CLI, "narrowband-extract", "--input", source, "--output-dir", dest, "--sampling", "cell-average"]
             write_source(source, "RRRR", 0, 0, list(range(25)))
             self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
             self.assertFalse(dest.exists())
@@ -166,6 +166,9 @@ class Extraction(unittest.TestCase):
 
 class SensorCalibration(unittest.TestCase):
     def run_cli(self, *args, ok=True):
+        # These established calibration fixtures describe the legacy cell mean.
+        if args[0] in ('narrowband-extract','narrowband-stack') and '--sampling' not in args:
+            args = (*args,'--sampling','cell-average')
         result = subprocess.run([CLI, *map(str, args)], capture_output=True, text=True)
         if ok:
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -300,7 +303,7 @@ class SensorCalibration(unittest.TestCase):
             self.run_cli('narrowband-extract','--input',src,'--output-dir',out)
             recipe=out/'recipe.txt'
             lines=recipe.read_text().splitlines(); lines[0]='PhotonStack-Narrowband-1'
-            recipe.write_text('\n'.join(line for line in lines if not line.startswith(('dark-bias','flat-bias')))+'\n')
+            recipe.write_text('\n'.join(line for line in lines if not line.startswith(('dark-bias','flat-bias','sampling')))+'\n')
             result=self.run_cli('narrowband-inspect','--recipe',recipe)
             self.assertIsNone(result['calibration'])
             self.run_cli('narrowband-replay','--recipe',recipe,'--output-dir',root/'again')

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Inject known sensor defects into read-only real CFA images and check recovery.
+Uses legacy cell-average sampling to reproduce the recorded calibration baseline.
 Requires NumPy and Astropy. All generated files must go to a new directory.
 """
 import argparse
@@ -57,7 +58,7 @@ def main():
     metrics = {}
     def run(label, command):
         started = time.perf_counter()
-        result = subprocess.run(['/usr/bin/time', '-l', str(args.cli), *map(str,command)], capture_output=True, text=True)
+        result = subprocess.run(['/usr/bin/time', '-l', str(args.cli), command[0], '--sampling', 'cell-average', *map(str,command[1:])], capture_output=True, text=True)
         (args.output / (label+'.log')).write_text(result.stderr)
         if result.returncode: raise RuntimeError(result.stderr)
         metrics[label+'_seconds'] = time.perf_counter()-started

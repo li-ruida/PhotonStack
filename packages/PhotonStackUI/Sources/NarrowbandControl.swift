@@ -36,11 +36,20 @@ struct NarrowbandControl: View {
                 Text(zh ? "选中一张 Hα/OⅢ 双窄带拜耳 FITS。每个完整的 2×2 像素格生成一个 Hα 和一个 OⅢ 样本。"
                      : "Select an Hα/OⅢ dual-band Bayer FITS. Each complete 2×2 cell yields one sample per line.")
                     .font(.caption)
+                Picker(zh ? "通带采样" : "Line sampling", selection: $session.sampling) {
+                    ForEach(NarrowbandSampling.allCases, id: \.self) { mode in Text(mode.title(chinese: zh)).tag(mode) }
+                }.accessibilityIdentifier("narrowband.sampling")
+                Text(session.sampling == .redGrid
+                     ? (zh ? "Hα 保留红像素值，OⅢ 对称插值到同一位置。边缘不足处标为无效，星点宽度可能变化。"
+                        : "Hα retains red samples; OⅢ is interpolated symmetrically to the same sites. Unsupported edges are masked; star width may change.")
+                     : (zh ? "保留旧式像素格均值。OⅢ 的采样中心与 Hα 不同。"
+                        : "Preserve the historical cell average. Its OⅢ sampling center differs from Hα."))
+                    .font(.caption2).foregroundStyle(.secondary)
                 NarrowbandCalibrationControl(session: session, chinese: zh)
                 Button(zh ? "提取并保存两张 FITS…" : "Extract and save both FITS…") {
                     guard let asset = model.selectedAsset, let dest = chooseOutput(asset.originalURL.deletingPathExtension().lastPathComponent) else { return }
                     model.startNarrowbandJob { service in
-                        try await session.run(["narrowband-extract", "--input", asset.originalURL.path, "--output-dir", dest.path] + session.calibrationArguments,
+                        try await session.run(["narrowband-extract", "--input", asset.originalURL.path, "--output-dir", dest.path] + session.extractionArguments,
                                               output: dest, using: service)
                     }
                 }.disabled(model.selectedAsset?.kind != .fits || !session.canCalibrate).accessibilityIdentifier("narrowband.extract")
@@ -60,7 +69,7 @@ struct NarrowbandControl: View {
                     }
                     guard let dest = chooseOutput("HOO-stack") else { return }
                     model.startNarrowbandJob { service in
-                        try await session.run(["narrowband-stack", "--output-dir", dest.path] + session.calibrationArguments + frames.map(\.path),
+                        try await session.run(["narrowband-stack", "--output-dir", dest.path] + session.extractionArguments + frames.map(\.path),
                                               output: dest, using: service)
                     }
                 }.disabled(!session.canCalibrate).accessibilityIdentifier("narrowband.stack")
@@ -74,6 +83,10 @@ struct NarrowbandControl: View {
             if let report = session.report {
                 Text(zh ? "已保存配方 · \(report.frames) 个输入" : "Recipe saved · \(report.frames) inputs")
                     .font(.caption).foregroundStyle(.secondary)
+                if let mode = report.extractionSampling {
+                    Text((zh ? "结果采样：" : "Result sampling: ") + mode.title(chinese: zh))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 HStack {
                     ForEach(report.outputs.filter { ["Ha.fits", "OIII.fits", "HOO.fits"].contains($0) }, id: \.self) { name in
                         Button(name.replacingOccurrences(of: ".fits", with: "")) {

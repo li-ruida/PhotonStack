@@ -3,6 +3,7 @@
 #include <cmath>
 #include <map>
 #include "photonstack/Calibrator.hpp"
+#include "photonstack/FitsCodec.hpp"
 #include <fstream>
 #include <iomanip>
 #include <set>
@@ -14,11 +15,17 @@ namespace photonstack::cli {
 struct NarrowbandFile { std::filesystem::path path; std::string sha; };
 struct NarrowbandRecipe {
     std::string operation;
+    std::string sampling = "red-grid";
     double green = 0;
     std::vector<NarrowbandFile> inputs, outputs;
     std::map<std::string, NarrowbandFile> calibration;
     std::string darkBiasState = "unknown", flatBiasState = "unknown";
 };
+inline DualBandSampling narrowbandSampling(const std::string& value) {
+    if (value == "red-grid") return DualBandSampling::RedGrid;
+    if (value == "cell-average") return DualBandSampling::CellAverage;
+    throw std::invalid_argument("Sampling must be red-grid or cell-average");
+}
 inline bool narrowbandSHA(const std::string& value) {
     return value.size() == 64 && value.find_first_not_of("0123456789abcdef") == std::string::npos;
 }
@@ -39,6 +46,9 @@ inline void validateNarrowbandRecipe(const NarrowbandRecipe& r) {
         !((r.operation == "extract" && r.inputs.size() == 1) ||
           (r.operation == "compose" && r.inputs.size() == 2) || (r.operation == "stack" && r.inputs.size() >= 3)))
         throw std::invalid_argument("Invalid narrowband recipe operation or input count");
+    if (r.operation == "compose") {
+        if (r.sampling != "provided") throw std::invalid_argument("Composition uses the supplied line grids");
+    } else narrowbandSampling(r.sampling);
     std::set<std::filesystem::path> paths;
     for (const auto& f : r.inputs)
         if (!f.path.is_absolute() || !narrowbandSHA(f.sha) || !paths.insert(f.path.lexically_normal()).second)
@@ -76,13 +86,21 @@ inline void validateNarrowbandRecipe(const NarrowbandRecipe& r) {
 }
 inline NarrowbandRecipe readNarrowbandRecipe(const std::filesystem::path& path, bool verifyOutputs) {
     std::ifstream in(path); std::string token; NarrowbandRecipe r;
-    if (!(in >> token) || (token != "PhotonStack-Narrowband-1" && token != "PhotonStack-Narrowband-2"))
+    if (!(in >> token) || (token != "PhotonStack-Narrowband-1" && token != "PhotonStack-Narrowband-2" && token != "PhotonStack-Narrowband-3"))
         throw std::invalid_argument("Unsupported narrowband recipe");
-    const bool version2 = token == "PhotonStack-Narrowband-2";
+    const bool version3 = token == "PhotonStack-Narrowband-3";
+    const bool version2 = token != "PhotonStack-Narrowband-1";
+    bool samplingRead = false;
     std::set<std::string> states;
     if (!(in >> token) || token != "operation" || !(in >> std::quoted(r.operation))) throw std::invalid_argument("Missing recipe operation");
     if (!(in >> token) || token != "green-ha" || !(in >> r.green)) throw std::invalid_argument("Missing HOO mapping");
+    r.sampling = r.operation == "compose" ? "provided" : "cell-average";
     while (in >> token) {
+        if (version3 && token == "sampling") {
+            if (samplingRead || !(in >> std::quoted(r.sampling))) throw std::invalid_argument("Missing or duplicate sampling mode");
+            samplingRead = true;
+            continue;
+        }
         if (version2 && (token == "dark-bias" || token == "flat-bias")) {
             if (!states.insert(token).second) throw std::invalid_argument("Duplicate calibration state");
             auto& state = token == "dark-bias" ? r.darkBiasState : r.flatBiasState;
@@ -103,6 +121,7 @@ inline NarrowbandRecipe readNarrowbandRecipe(const std::filesystem::path& path, 
         if (r.inputs.size() > 100000 || r.outputs.size() > 16) throw std::invalid_argument("Recipe exceeds supported size");
     }
     if (!in.eof()) throw std::invalid_argument("Cannot read narrowband recipe");
+    if (version3 && !samplingRead) throw std::invalid_argument("Version 3 recipe requires a sampling mode");
     validateNarrowbandRecipe(r); verifyNarrowbandInputs(r);
     if (verifyOutputs) for (const auto& f : r.outputs)
         if (fileSHA256(path.parent_path() / f.path) != f.sha) throw std::runtime_error("Narrowband result changed: " + f.path.string());
@@ -111,7 +130,8 @@ inline NarrowbandRecipe readNarrowbandRecipe(const std::filesystem::path& path, 
 inline void writeNarrowbandRecipe(const std::filesystem::path& path, const NarrowbandRecipe& r) {
     validateNarrowbandRecipe(r);
     std::ofstream out(path);
-    out << "PhotonStack-Narrowband-2\noperation " << std::quoted(r.operation) << "\ngreen-ha " << std::setprecision(17) << r.green << '\n';
+    out << "PhotonStack-Narrowband-3\noperation " << std::quoted(r.operation) << "\ngreen-ha " << std::setprecision(17) << r.green << '\n';
+    out << "sampling " << std::quoted(r.sampling) << '\n';
     for (const auto& f : r.inputs) out << "input " << std::quoted(f.path.string()) << ' ' << f.sha << '\n';
     for (const auto& f : r.outputs) out << "output " << std::quoted(f.path.string()) << ' ' << f.sha << '\n';
     for (const auto& [role, f] : r.calibration)
@@ -133,7 +153,7 @@ inline void printNarrowbandRecipe(std::ostream& out, const NarrowbandRecipe& r, 
         << ",\"directory\":" << narrowbandJSON(std::filesystem::absolute(directory).string())
         << ",\"greenHydrogen\":" << std::setprecision(17) << r.green << ",\"frames\":" << r.inputs.size() << ",\"outputs\":[";
     for (std::size_t i = 0; i < r.outputs.size(); ++i) { if (i) out << ','; out << narrowbandJSON(r.outputs[i].path.string()); }
-    out << "],\"calibration\":";
+    out << "],\"sampling\":" << narrowbandJSON(r.sampling) << ",\"calibration\":";
     if (r.calibration.empty()) out << "null";
     else {
         out << '{';

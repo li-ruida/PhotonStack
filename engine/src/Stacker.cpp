@@ -411,8 +411,11 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
     readOptions.fits.debayer = options.debayerFits;
     readOptions.fits.demosaic = options.fitsDemosaic;
     readOptions.fits.cfaInterpolationGains = options.cfaInterpolationGains;
+    const auto readFrame = [&](const std::filesystem::path& path) {
+        return options.readFrame ? options.readFrame(path) : codec.read(path, readOptions);
+    };
     progress.report(StackProgressStage::Reading, 0.0, 1);
-    auto referenceResult = codec.read(referencePath, readOptions);
+    auto referenceResult = readFrame(referencePath);
     if (!referenceResult.ok) {
         return stackError(referenceResult.errorCode,
                           "Failed to read " + referencePath.string() + ": " + referenceResult.message);
@@ -487,7 +490,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
         const double readEnd = frameStart + frameSpan * 0.08;
         const double alignmentEnd = frameStart + frameSpan * 0.45;
         progress.report(StackProgressStage::Reading, frameStart, processedFrames);
-        auto readResult = codec.read(inputs[index], readOptions);
+        auto readResult = readFrame(inputs[index]);
         if (!readResult.ok) {
             return stackError(readResult.errorCode,
                               "Failed to read " + inputs[index].string() + ": " + readResult.message);
@@ -1456,10 +1459,13 @@ StackResult streamRobustFiles(const std::vector<std::filesystem::path>& inputs, 
     readOptions.fits.debayer = options.debayerFits;
     readOptions.fits.demosaic = options.fitsDemosaic;
     readOptions.fits.cfaInterpolationGains = options.cfaInterpolationGains;
+    const auto readFrame = [&](const std::filesystem::path& path) {
+        return options.readFrame ? options.readFrame(path) : codec.read(path, readOptions);
+    };
     const auto referenceInputIndex = inputOrder.front();
     const auto& referencePath = externalReference ? options.alignmentReference : inputs[referenceInputIndex];
     progress.report(StackProgressStage::Reading, 0.0, 1);
-    auto referenceResult = codec.read(referencePath, readOptions);
+    auto referenceResult = readFrame(referencePath);
     if (!referenceResult.ok) {
         return stackError(referenceResult.errorCode,
                           "Failed to read " + referencePath.string() + ": " + referenceResult.message);
@@ -1526,7 +1532,7 @@ StackResult streamRobustFiles(const std::vector<std::filesystem::path>& inputs, 
         const double readEnd = frameStart + frameSpan * 0.08;
         const double alignmentEnd = frameStart + frameSpan * 0.45;
         progress.report(StackProgressStage::Reading, frameStart, frameNumber);
-        auto readResult = codec.read(inputs[inputIndex], readOptions);
+        auto readResult = readFrame(inputs[inputIndex]);
         if (!readResult.ok) {
             return stackError(readResult.errorCode,
                               "Failed to read " + inputs[inputIndex].string() + ": " + readResult.message);

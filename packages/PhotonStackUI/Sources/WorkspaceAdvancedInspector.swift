@@ -9,10 +9,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum AdvancedTool: String, CaseIterable {
-    case finishing, background, clouds, normalize, color, trails, stars, deconvolve, drizzle
+    case finishing, narrowband, background, clouds, normalize, color, trails, stars, deconvolve, drizzle
 
     func title(chinese: Bool) -> String {
         switch self {
+        case .narrowband: chinese ? "双窄带与 HOO" : "Dual band & HOO"
         case .finishing: chinese ? "色彩与显示修整" : "Display finishing"
         case .background: chinese ? "背景校正" : "Background"
         case .clouds: chinese ? "云雾" : "Clouds"
@@ -68,6 +69,8 @@ struct AdvancedProcessingSection: View {
                 }
             }
             switch settings.tool {
+            case .narrowband:
+                NarrowbandControl(model: model)
             case .finishing:
                 VStack(alignment: .leading, spacing: 10) {
                     AstroDevelopControl(model: model)

@@ -6861,6 +6861,19 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
+    func startNarrowband(arguments: [String], directory: URL, outputName: String) {
+        let output = directory.appendingPathComponent(outputName)
+        let title = language == .simplifiedChinese ? "双窄带处理" : "Narrowband processing"
+        launch {
+            await self.runJob(title: title, kind: .export, outputURL: output) {
+                let result = try await self.processingService.runCLI(arguments: arguments)
+                try Task.checkCancellation()
+                NSWorkspace.shared.activateFileViewerSelecting([output])
+                return self.message(for: result)
+            }
+        }
+    }
+
     public func runConsoleCommand(_ text: String) async {
         do {
             let arguments = try parseConsoleCommand(text)

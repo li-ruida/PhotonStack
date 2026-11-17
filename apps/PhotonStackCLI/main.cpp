@@ -18,6 +18,7 @@
 #include <type_traits>
 #include <vector>
 #include "FrequencyStackCommand.hpp"
+#include "NarrowbandCommand.hpp"
 #include "DeepSkyCommand.hpp"
 
 #include "photonstack/ArtifactTrailRemover.hpp"
@@ -284,6 +285,9 @@ void printUsage() {
                  "[--channel rgb|red|green|blue|luminance] [--preserve-gamut on|off]\n"
               << "  photonstack local-contrast --input <image> --output <image> [--amount 0.25] [--radius 8] [--protect-structure on|off] [--fine-radius 6] [--star-chroma 1] [--continuum-curve 0:0,0.5:0.6,1:1]\n"
               << "  photonstack protect-reconstruction --input <linear.fits> --reference <direct.fits> --mask <weights.fits> --output <protected.fits> [--background-sigma 8] [--amount 1]\n"
+              << "  photonstack narrowband-extract --input <Ha-OIII-CFA.fits> --output-dir <new-directory>\n"
+              << "  photonstack narrowband-stack --output-dir <new-directory> <CFA.fits>...\n"
+              << "  photonstack narrowband-compose --ha <Ha.fits> --oiii <OIII.fits> --green-ha <0..1> --output-dir <new-directory>\n"
               << "  photonstack frequency-stack --plan <prepared.psfreq> --output <linear.fits> [--threads 1]\n"
               << "  photonstack denoise --input <image> --output <image> [--amount 0.5] [--chroma-amount 0.5] "
                  "[--radius 1]\n"
@@ -7016,6 +7020,10 @@ int runCommandImpl(const std::vector<std::string>& args) {
     }
     if (args[0] == "protect-reconstruction") {
         return protectReconstruction(std::vector<std::string>(args.begin() + 1, args.end()));
+    }
+    if (args[0] == "narrowband-extract" || args[0] == "narrowband-compose" || args[0] == "narrowband-stack") {
+        try { return runNarrowband(args); }
+        catch (const std::exception& error) { printError("NarrowbandFailed", error.what()); return 1; }
     }
     if (args[0] == "frequency-stack") {
         try { return runFrequencyStack(std::vector<std::string>(args.begin() + 1, args.end())); }

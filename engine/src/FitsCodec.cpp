@@ -441,6 +441,69 @@ bool FitsSensorIdentity::sameAcquisition(const FitsSensorIdentity& b) const {
         bayer == b.bayer && xOffset == b.xOffset && yOffset == b.yOffset && exposure == b.exposure && gain == b.gain;
 }
 
+DualBandPlanes readDualBandPlanes(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) throw std::runtime_error("Cannot open CFA FITS input");
+    const auto header = parseHeader(stream);
+    if (!header.ok) throw std::runtime_error(header.message);
+    const auto desc = imageDescription(header);
+    if (!desc || desc->channels != 1 || desc->width < 2 || desc->height < 2)
+        throw std::runtime_error("Dual-band extraction requires a single CFA plane of at least 2x2 pixels");
+    const auto tag = header.values.find("BAYERPAT");
+    std::string pattern = tag == header.values.end() ? "" : tag->second;
+    std::transform(pattern.begin(), pattern.end(), pattern.begin(), [](unsigned char c) { return std::toupper(c); });
+    if (pattern != "RGGB" && pattern != "BGGR" && pattern != "GBRG" && pattern != "GRBG")
+        throw std::runtime_error("Missing or unsupported Bayer pattern");
+    const auto phase = [&](const char* key) -> unsigned {
+        if (!header.values.contains(key)) return 0;
+        const auto value = integerValue(header, key);
+        if (!value) throw std::runtime_error("Invalid CFA offset");
+        return static_cast<unsigned>(*value) & 1U;
+    };
+    const unsigned red = unsigned(pattern.find('R')) ^ phase("XBAYROFF") ^ (phase("YBAYROFF") << 1);
+    const auto scale = floatingValue(header, "BSCALE", 1), zero = floatingValue(header, "BZERO", 0);
+    if (!scale || !zero) throw std::runtime_error("Invalid FITS physical scale");
+    if (header.values.contains("BLANK") && desc->bitpix > 0)
+        throw std::runtime_error("Integer FITS with BLANK requires a validity mask before extraction");
+    const auto profile = header.values.find("PSCOLOR");
+    if (profile != header.values.end() && profile->second != "Linear" && profile->second != "LINEAR-SRGB")
+        throw std::runtime_error("Dual-band extraction requires linear sensor data");
+    const auto fileSize = std::filesystem::file_size(path);
+    std::size_t samples = 0, bytes = 0;
+    if (!checkedMultiply(desc->width, desc->height, samples) ||
+        !checkedMultiply(samples, bytesPerSample(desc->bitpix), bytes) ||
+        header.dataOffset > fileSize || fileSize - header.dataOffset < bytes)
+        throw std::runtime_error("FITS data section is truncated or too large");
+    DualBandPlanes result;
+    const auto width = desc->width / 2, height = desc->height / 2;
+    for (auto* image : {&result.hydrogen, &result.oxygen}) {
+        image->width = width;
+        image->height = height;
+        image->channels = 1;
+        image->format = PixelFormat::Float32Gray;
+        image->pixels.resize(image->pixelCount());
+    }
+    // Keep only one row of double accumulators; signed faint signals and
+    // finite values near Float32.max must survive the three-sample mean.
+    std::vector<double> sums(width);
+    const auto status = forEachPhysicalSample(stream, header.dataOffset, samples, bytesPerSample(desc->bitpix),
+        desc->bitpix, *scale, *zero, [&](std::size_t pixel, float value) {
+            const auto x = pixel % desc->width, y = pixel / desc->width;
+            if (x / 2 >= width || y / 2 >= height) return;
+            const auto cell = y / 2 * width + x / 2;
+            const unsigned colorPhase = unsigned(2 * (y % 2) + x % 2);
+            if (!std::isfinite(value)) value = std::numeric_limits<float>::quiet_NaN();
+            if (colorPhase == red) result.hydrogen.pixels[cell] = value;
+            else sums[x / 2] += value;
+            if (colorPhase == 3) {
+                result.oxygen.pixels[cell] = static_cast<float>(sums[x / 2] / 3.0);
+                sums[x / 2] = 0;
+            }
+        });
+    if (status != SampleStreamResult::Success) throw std::runtime_error("Could not read CFA samples");
+    return result;
+}
+
 FitsSensorIdentity FitsCodec::inspectSensor(const std::filesystem::path& path) const {
     FitsSensorIdentity result;
     const auto fail = [&](const char* message) {

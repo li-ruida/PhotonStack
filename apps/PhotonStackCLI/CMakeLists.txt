@@ -1,5 +1,6 @@
 add_executable(photonstack
   main.cpp
+  NarrowbandCommand.cpp
   FrequencyStackCommand.cpp
   DeepSkyCommand.cpp
   DeepSkyPreflight.cpp

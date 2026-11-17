@@ -20,6 +20,14 @@ struct FitsSensorIdentity {
     bool sameAcquisition(const FitsSensorIdentity& other) const;
 };
 
+struct DualBandPlanes {
+    ImageBuffer hydrogen, oxygen;
+};
+
+// Estimates H-alpha and OIII from one linear H-alpha/OIII Bayer exposure.
+// Each sample represents one complete 2x2 sensor cell in stored row order.
+DualBandPlanes readDualBandPlanes(const std::filesystem::path& path);
+
 class FitsCodec {
   public:
     InspectResult inspect(const std::filesystem::path& path) const;

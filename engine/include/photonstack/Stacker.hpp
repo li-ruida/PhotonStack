@@ -147,6 +147,9 @@ struct StackOptions {
     // Optional owner-managed parent for transient cache directories.
     std::filesystem::path temporaryDirectory;
     StackProgressCallback progress;
+    // Optional scientific input decoder. Both the alignment reference and science
+    // frames go through the same decoder, including the cached-combine path.
+    std::function<ImageReadResult(const std::filesystem::path&)> readFrame;
     // Optional synchronous notification after an input is safely accumulated or
     // its complete internal cache is closed. Index is in ORIGINAL input order;
     // the input file will not be read again. The caller may release only files

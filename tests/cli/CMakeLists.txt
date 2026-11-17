@@ -43,6 +43,8 @@ add_test(NAME photonstack_deep_sky_preflight_cli_tests COMMAND ${CMAKE_COMMAND}
 
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
+  add_test(NAME photonstack_star_layers COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_star_layers.py" "$<TARGET_FILE:photonstack>")
   add_test(NAME photonstack_wcs_mosaic COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/test_wcs_mosaic.py" "$<TARGET_FILE:photonstack>")
   add_test(NAME photonstack_narrowband_extraction COMMAND "${Python3_EXECUTABLE}"

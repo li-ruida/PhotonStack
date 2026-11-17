@@ -12,14 +12,17 @@ private struct AtomicOutputTransaction: Sendable {
     let isDirectory: Bool
     let requiresNewDestination: Bool
 
-    init?(arguments: [String], workingDirectory: URL) {
+    init?(arguments: [String], workingDirectory: URL, externalOutputIndex: Int? = nil) {
         // The shared workflow owns a new directory and stores absolute paths in
         // its durable report. Moving a staging directory would invalidate that
         // report and discard the reviewable failure diagnostics.
-        if arguments.first == "deep-sky" { return nil }
+        if externalOutputIndex == nil && arguments.first == "deep-sky" { return nil }
         let outputIndex: Int
         let isDirectory: Bool
-        if let index = arguments.firstIndex(of: "--output"),
+        if let externalOutputIndex, arguments.indices.contains(externalOutputIndex) {
+            outputIndex = externalOutputIndex - 1
+            isDirectory = false
+        } else if let index = arguments.firstIndex(of: "--output"),
            arguments.indices.contains(index + 1) {
             outputIndex = index
             isDirectory = false
@@ -49,12 +52,15 @@ private struct AtomicOutputTransaction: Sendable {
         self.temporaryURL = temporaryURL
         self.processArguments = processArguments
         self.isDirectory = isDirectory
-        self.requiresNewDestination = arguments.first == "frequency-stack" || arguments.first == "suppress-grid"
+        self.requiresNewDestination = externalOutputIndex != nil || arguments.first == "star-layers" || arguments.first == "frequency-stack" || arguments.first == "suppress-grid"
     }
 
     func commit() throws {
         if isDirectory,
            FileManager.default.fileExists(atPath: destinationURL.path) {
+            if requiresNewDestination {
+                throw ProcessingServiceError.outputCommitFailed(path: destinationURL.path, reason: "Output already exists")
+            }
             let result = temporaryURL.withUnsafeFileSystemRepresentation { temporaryPath in
                 destinationURL.withUnsafeFileSystemRepresentation { destinationPath in
                     guard let temporaryPath, let destinationPath else {
@@ -198,8 +204,20 @@ private final class ProcessBox: @unchecked Sendable {
 public final class CLIProcessingService: ProcessingService {
     public let executableURL: URL
 
-    public init(executableURL: URL) {
+    private let workingDirectoryURL: URL?
+
+    public init(executableURL: URL, workingDirectoryURL: URL? = nil) {
         self.executableURL = executableURL
+        self.workingDirectoryURL = workingDirectoryURL
+    }
+
+    /// Run a user-selected image tool directly, with a staged, validated output.
+    /// Placeholders are expanded by ExternalImageTool; no shell is involved.
+    public func runExternalImage(arguments: [String], outputIndex: Int) async throws -> ProcessingCommandResult {
+        guard arguments.indices.contains(outputIndex) else {
+            throw ProcessingServiceError.invalidArguments("Invalid external output argument")
+        }
+        return try await run(arguments, externalOutputIndex: outputIndex)
     }
 
     public static func makeDefault(fileManager: FileManager = .default) -> any ProcessingService {
@@ -892,15 +910,16 @@ public final class CLIProcessingService: ProcessingService {
         ]
     }
 
-    private func run(_ arguments: [String]) async throws -> ProcessingCommandResult {
+    private func run(_ arguments: [String], externalOutputIndex: Int? = nil) async throws -> ProcessingCommandResult {
         let processBox = ProcessBox()
         let startedAt = Date()
         let progressJobID = ProcessingProgressContext.jobID
         let progressScope = ProcessingProgressContext.progressScope
-        let workingDirectory = executableURL.deletingLastPathComponent()
+        let workingDirectory = workingDirectoryURL ?? executableURL.deletingLastPathComponent()
         let outputTransaction = AtomicOutputTransaction(
             arguments: arguments,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            externalOutputIndex: externalOutputIndex
         )
         let processArguments = outputTransaction?.processArguments ?? arguments
 
@@ -979,7 +998,7 @@ public final class CLIProcessingService: ProcessingService {
                                 maximumBytes: ProcessOutputAccumulator.standardOutputLimit
                             ))
                         } else if process.terminationStatus == 0 {
-                            if let expectedOutput = Self.expectedOutput(in: processArguments) {
+                            if let expectedOutput = externalOutputIndex.map({ (path: processArguments[$0], isDirectory: false) }) ?? Self.expectedOutput(in: processArguments) {
                                 let outputPath = outputTransaction?.destinationURL.path ?? expectedOutput.path
                                 switch Self.validateOutput(expectedOutput, relativeTo: workingDirectory) {
                                 case .valid:

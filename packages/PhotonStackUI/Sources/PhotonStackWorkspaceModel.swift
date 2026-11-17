@@ -6863,6 +6863,35 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
+    func startStarLayerJob(_ operation: @escaping @MainActor (any ProcessingService) async throws -> URL) {
+        launch {
+            await self.runJob(title: self.language == .simplifiedChinese ? "星云与恒星分层" : "Star layers", kind: .export) {
+                let output = try await operation(self.processingService)
+                try Task.checkCancellation()
+                self.project.addAssets(from: [output], role: .other)
+                if let asset = self.project.assets.first(where: { $0.originalURL == output }) {
+                    self.selectSource(output, owner: asset)
+                }
+                try await self.commitPreviewAfterHistogramRefresh(output)
+                return output.path
+            }
+        }
+    }
+
+    func showStarLayer(_ url: URL) {
+        guard !hasActiveProcessing else { return }
+        launch {
+            do {
+                self.project.addAssets(from: [url], role: .other)
+                if let asset = self.project.assets.first(where: { $0.originalURL == url }) {
+                    self.selectSource(url, owner: asset)
+                }
+                try await self.commitPreviewAfterHistogramRefresh(url)
+            }
+            catch { self.errorMessage = self.processingErrorMessage(error) }
+        }
+    }
+
     func startNarrowband(arguments: [String], directory: URL, outputName: String) {
         let output = directory.appendingPathComponent(outputName)
         let title = language == .simplifiedChinese ? "双窄带处理" : "Narrowband processing"

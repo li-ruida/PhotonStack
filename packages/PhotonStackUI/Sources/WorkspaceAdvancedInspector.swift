@@ -9,10 +9,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum AdvancedTool: String, CaseIterable {
-    case finishing, narrowband, background, clouds, normalize, color, trails, stars, deconvolve, drizzle
+    case finishing, narrowband, starLayers, background, clouds, normalize, color, trails, stars, deconvolve, drizzle
 
     func title(chinese: Bool) -> String {
         switch self {
+        case .starLayers: chinese ? "星云与恒星分层" : "Nebula & star layers"
         case .narrowband: chinese ? "双窄带与 HOO" : "Dual band & HOO"
         case .finishing: chinese ? "色彩与显示修整" : "Display finishing"
         case .background: chinese ? "背景校正" : "Background"
@@ -29,6 +30,7 @@ enum AdvancedTool: String, CaseIterable {
 
 @MainActor
 final class AdvancedToolSettings: ObservableObject {
+    let starLayers = StarLayerSession()
     @Published var tool: AdvancedTool = .finishing
     @Published var backgroundModel = "grid"
     @Published var backgroundMode = "subtract"
@@ -69,6 +71,8 @@ struct AdvancedProcessingSection: View {
                 }
             }
             switch settings.tool {
+            case .starLayers:
+                StarLayersControl(model: model, session: settings.starLayers)
             case .narrowband:
                 NarrowbandControl(model: model)
             case .finishing:

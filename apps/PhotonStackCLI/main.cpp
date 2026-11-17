@@ -19,6 +19,7 @@
 #include <vector>
 #include "FrequencyStackCommand.hpp"
 #include "NarrowbandCommand.hpp"
+#include "StarLayersCommand.hpp"
 #include "DeepSkyCommand.hpp"
 
 #include "photonstack/ArtifactTrailRemover.hpp"
@@ -305,6 +306,9 @@ void printUsage() {
                  "[--raw-white-balance camera|auto|daylight|manual] [--raw-exposure-bias stops] "
                  "[--raw-temperature kelvin] [--raw-tint value] [--raw-black-value value] "
                  "[--raw-black-level camera|auto|manual] [--raw-demosaic fast|high] <image>...\n"
+              << "  photonstack star-layers split --input developed.tiff --starless starless.tiff --output-dir <new-directory>\n"
+              << "  photonstack star-layers render --layers <directory> --output-dir <new-directory> "
+                 "[--stars-ev 0] [--nebula-ev 0] [--nebula-gamma 1] [--stars-saturation 1] [--nebula-saturation 1]\n"
               << "  photonstack mosaic --output <image> [--overlap-pixels 0] [--projection planar|cylindrical] "
                  "[--layout horizontal|grid] [--columns 2] [--alignment manual|auto|wcs] "
                  "[--blend average|feather|multiband] [--exposure-match on|off] [--preview-width 1200] "
@@ -7036,6 +7040,10 @@ int runCommandImpl(const std::vector<std::string>& args) {
     }
     if (args[0] == "protect-reconstruction") {
         return protectReconstruction(std::vector<std::string>(args.begin() + 1, args.end()));
+    }
+    if (args[0] == "star-layers") {
+        try { return runStarLayers(args); }
+        catch (const std::exception& error) { printError("StarLayersFailed", error.what()); return 1; }
     }
     if (args[0] == "narrowband-extract" || args[0] == "narrowband-compose" || args[0] == "narrowband-stack") {
         try { return runNarrowband(args); }

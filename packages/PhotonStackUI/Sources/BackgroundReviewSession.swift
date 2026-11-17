@@ -21,7 +21,10 @@ struct BackgroundReviewPoint: Codable, Equatable, Sendable, Identifiable {
     }
 }
 struct BackgroundReviewRecipe: Codable, Equatable, Sendable {
-    var version = 1
+    var version = 2
+    var model = "polynomial"
+    var rbfSmoothing = 0.001
+    var rbfRejectOutliers = true
     var source: URL
     var sourceSHA: String
     var width: Int
@@ -31,13 +34,42 @@ struct BackgroundReviewRecipe: Codable, Equatable, Sendable {
     var preserveBrightness = true
     var samples: [BackgroundReviewPoint]
     var isValid: Bool {
-        version == 1 && source.isFileURL && sourceSHA.count == 64 &&
+        version == 2 && ["polynomial", "rbf"].contains(model) &&
+        rbfSmoothing.isFinite && (0...1).contains(rbfSmoothing) && source.isFileURL && sourceSHA.count == 64 &&
         sourceSHA.allSatisfy(\.isHexDigit) && width >= 16 && height >= 16 &&
         (1...4).contains(degree) && strength.isFinite && (0...1).contains(strength) && samples.count <= 4096 && Set(samples.map(\.id)).count == samples.count &&
         samples.allSatisfy {
             $0.x.isFinite && $0.y.isFinite && $0.x >= 0 && $0.y >= 0 &&
             $0.x < Double(width) && $0.y < Double(height) && (1...64).contains($0.radius)
         }
+    }
+}
+extension BackgroundReviewRecipe {
+    enum CodingKeys: String, CodingKey {
+        case version, model, rbfSmoothing, rbfRejectOutliers, source, sourceSHA, width, height
+        case degree, strength, preserveBrightness, samples
+    }
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        let oldVersion = try box.decode(Int.self, forKey: .version)
+        guard oldVersion == 1 || oldVersion == 2 else {
+            throw DecodingError.dataCorruptedError(forKey: .version, in: box, debugDescription: "Unsupported background recipe version.")
+        }
+        if oldVersion == 2 {
+            model = try box.decode(String.self, forKey: .model)
+            rbfSmoothing = try box.decode(Double.self, forKey: .rbfSmoothing)
+            rbfRejectOutliers = try box.decode(Bool.self, forKey: .rbfRejectOutliers)
+        } else if box.contains(.model) || box.contains(.rbfSmoothing) || box.contains(.rbfRejectOutliers) {
+            throw DecodingError.dataCorruptedError(forKey: .version, in: box, debugDescription: "RBF requires recipe version 2.")
+        }
+        version = 2
+        source = try box.decode(URL.self, forKey: .source)
+        sourceSHA = try box.decode(String.self, forKey: .sourceSHA)
+        width = try box.decode(Int.self, forKey: .width); height = try box.decode(Int.self, forKey: .height)
+        degree = try box.decode(Int.self, forKey: .degree)
+        strength = try box.decode(Double.self, forKey: .strength)
+        preserveBrightness = try box.decode(Bool.self, forKey: .preserveBrightness)
+        samples = try box.decode([BackgroundReviewPoint].self, forKey: .samples)
     }
 }
 struct BackgroundReviewReport: Decodable {
@@ -47,11 +79,14 @@ struct BackgroundReviewReport: Decodable {
         var enabled: Bool
         var status: String
         var measured: [Double], fitted: [Double], used: [Bool]
+        var validationResidual: [Double]?
         var point: BackgroundReviewPoint { .init(x: x, y: y, radius: radius, enabled: enabled) }
     }
     var width: Int, height: Int
     var sourceSHA: String
     var residualRMS: [Double]
+    var validationRMS: [Double]?
+    var model: String?
     var wcsPreserved: Bool
     var samples: [Measurement]
 }
@@ -115,13 +150,20 @@ final class BackgroundReviewSession: ObservableObject {
             let file = root.appendingPathComponent("samples-\(UUID()).txt")
             sampleFile = file
             try rows.write(to: file, atomically: true, encoding: .utf8)
-            args += ["--samples", file.path, "--degree", String(requested.degree), "--strength", String(requested.strength),
+            args += ["--model", requested.model, "--samples", file.path, "--degree", String(requested.degree), "--strength", String(requested.strength),
                      "--preserve-brightness", requested.preserveBrightness ? "on" : "off", "--expected-sha", requested.sourceSHA]
+        }
+        if let requested, requested.model == "rbf" {
+            args += ["--rbf-smoothing", String(requested.rbfSmoothing),
+                     "--rbf-reject", requested.rbfRejectOutliers ? "on" : "off"]
         }
         if inspect { args += ["--inspect-only", "on"] }
         _ = try await service.runCLI(arguments: args)
         try Task.checkCancellation()
         let report = try JSONDecoder().decode(BackgroundReviewReport.self, from: Data(contentsOf: directory.appendingPathComponent("report.json")))
+        if let requested, (report.model ?? "polynomial") != requested.model {
+            throw ProcessingServiceError.invalidArguments("The processing tool did not use the requested background model.")
+        }
         if let requested, (requested.width != report.width || requested.height != report.height) {
             throw ProcessingServiceError.invalidArguments("The recipe dimensions differ from the source image.")
         }

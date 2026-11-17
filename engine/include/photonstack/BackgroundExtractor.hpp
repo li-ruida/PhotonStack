@@ -46,6 +46,8 @@ struct BackgroundSampleMeasurement {
     BackgroundSamplePoint point;
     std::array<double, 3> measured{}, fitted{};
     std::array<bool, 3> used{};
+    // RBF leave-one-out residual for retained samples; prediction residual for rejected samples.
+    std::array<double, 3> validationResidual{};
     std::string status;
 };
 
@@ -61,13 +63,20 @@ struct BackgroundPolynomialOptions {
     std::vector<BackgroundExclusionEllipse> exclusions;
 };
 
+struct BackgroundRBFOptions {
+    // Shared sky sampling and correction options; polynomial degree is unused.
+    BackgroundPolynomialOptions sampling;
+    double smoothing = 0.001;
+    bool rejectOutliers = true;
+};
+
 struct BackgroundExtractionResult {
     bool ok = false;
     ImageBuffer image;
     // Allocated only when requested. Difference is input minus corrected output.
     ImageBuffer modelImage, differenceImage;
     std::vector<BackgroundSampleMeasurement> measurements;
-    std::array<double, 3> residualRMS{};
+    std::array<double, 3> residualRMS{}, validationRMS{};
     float background = 0.0F;
     std::vector<float> backgroundGrid;
     std::uint32_t gridColumns = 0;
@@ -82,6 +91,7 @@ class BackgroundExtractor {
   public:
     BackgroundExtractionResult extractPolynomial(const ImageBuffer& image,
                                                  const BackgroundPolynomialOptions& options) const;
+    BackgroundExtractionResult extractRBF(const ImageBuffer& image, const BackgroundRBFOptions& options) const;
     BackgroundExtractionResult extractGlobal(const ImageBuffer& image,
                                              const BackgroundExtractionOptions& options) const;
     BackgroundExtractionResult extractGrid(const ImageBuffer& image, const BackgroundGridOptions& options) const;

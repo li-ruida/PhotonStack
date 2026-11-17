@@ -35,10 +35,15 @@ func backgroundReviewRecipeRoundTripAndSourceProtection() async throws {
     #expect(session.recipe?.samples.count == 96)
     session.recipe?.samples[20].enabled = false
     session.recipe?.strength = 0.6
+    session.recipe?.model = "rbf"
+    session.recipe?.rbfSmoothing = 0.002
+    session.recipe?.rbfRejectOutliers = false
     let inspectionDirectory = try #require(session.output)
     try await session.evaluate(inspect: false)
     #expect(!FileManager.default.fileExists(atPath: inspectionDirectory.path))
     #expect(session.isCurrent)
+    #expect(session.report?.model == "rbf")
+    #expect(session.report?.validationRMS?.count == 3)
     let rendered = try #require(session.output)
     let expected = try Data(contentsOf: rendered.appendingPathComponent("corrected.fits"))
     let recipeFile = root.appendingPathComponent("recipe.json")
@@ -98,4 +103,42 @@ func backgroundPointBindingsSurviveDeletionAndDoNotRetarget() {
     session.resetGrid()
     field.wrappedValue = 99
     #expect(session.recipe?.samples.first?.x != 99)
+}
+
+@Test @MainActor
+func backgroundReviewLegacyPolynomialRecipeMigratesWithoutChangingItsSettings() throws {
+    let recipe = BackgroundReviewRecipe(source: URL(fileURLWithPath: "/tmp/old-master.fits"),
+        sourceSHA: String(repeating: "b", count: 64), width: 200, height: 180,
+        degree: 3, strength: 0.63, preserveBrightness: false, samples: [.init(x: 20, y: 30)])
+    let encoded = try JSONEncoder().encode(recipe)
+    var legacy = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    legacy["version"] = 1
+    for name in ["model", "rbfSmoothing", "rbfRejectOutliers"] { legacy.removeValue(forKey: name) }
+    let restored = try JSONDecoder().decode(BackgroundReviewRecipe.self, from: JSONSerialization.data(withJSONObject: legacy))
+    #expect(restored == recipe)
+    #expect(restored.version == 2 && restored.model == "polynomial")
+    var invalid = legacy; invalid["model"] = "rbf"
+    do {
+        _ = try JSONDecoder().decode(BackgroundReviewRecipe.self, from: JSONSerialization.data(withJSONObject: invalid))
+        Issue.record("Version 1 must not silently apply an RBF recipe as polynomial")
+    } catch {}
+    invalid = legacy; invalid["version"] = 2
+    do {
+        _ = try JSONDecoder().decode(BackgroundReviewRecipe.self, from: JSONSerialization.data(withJSONObject: invalid))
+        Issue.record("Version 2 requires explicit model settings")
+    } catch {}
+}
+
+@Test @MainActor
+func backgroundRBFRecipeRejectsUnknownModelAndInvalidSmoothing() {
+    var recipe = BackgroundReviewRecipe(source: URL(fileURLWithPath: "/tmp/source.fits"),
+        sourceSHA: String(repeating: "a", count: 64), width: 160, height: 120, samples: [])
+    recipe.model = "rbf"; recipe.rbfSmoothing = 0
+    #expect(recipe.isValid)
+    recipe.rbfSmoothing = .nan
+    #expect(!recipe.isValid)
+    recipe.rbfSmoothing = 1.01
+    #expect(!recipe.isValid)
+    recipe.rbfSmoothing = 0.001; recipe.model = "unknown"
+    #expect(!recipe.isValid)
 }

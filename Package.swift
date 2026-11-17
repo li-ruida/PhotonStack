@@ -37,6 +37,8 @@ let package = Package(
                 "src/BackgroundExtractor.cpp",
                 "src/BackgroundDenoiser.cpp",
                 "src/BackgroundPolynomial.cpp",
+                "src/BackgroundSamples.cpp",
+                "src/BackgroundRBF.cpp",
                 "src/Calibrator.cpp",
                 "src/CfaDrizzle.cpp",
                 "src/CloudRemoval.cpp",

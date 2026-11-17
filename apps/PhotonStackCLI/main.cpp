@@ -307,7 +307,7 @@ void printUsage() {
                  "[--raw-white-balance camera|auto|daylight|manual] [--raw-exposure-bias stops] "
                  "[--raw-temperature kelvin] [--raw-tint value] [--raw-black-value value] "
                  "[--raw-black-level camera|auto|manual] [--raw-demosaic fast|high] <image>...\n"
-              << "  photonstack background-review --input <master> --output-dir <new-directory> [--samples points.txt] [--degree 2] [--strength 0.35] [--preserve-brightness on|off] [--inspect-only on|off] [--expected-sha sha256]\n"
+              << "  photonstack background-review --input <master> --output-dir <new-directory> [--samples points.txt] [--model polynomial|rbf] [--degree 2] [--rbf-smoothing 0.001] [--rbf-reject on|off] [--strength 0.35] [--preserve-brightness on|off] [--inspect-only on|off] [--expected-sha sha256]\n"
               << "  photonstack star-layers split --input developed.tiff --starless starless.tiff --output-dir <new-directory>\n"
               << "  photonstack star-layers render --layers <directory> --output-dir <new-directory> "
                  "[--stars-ev 0] [--nebula-ev 0] [--nebula-gamma 1] [--stars-saturation 1] [--nebula-saturation 1]\n"

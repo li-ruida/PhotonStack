@@ -14,6 +14,8 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument("source",type=Path);p.add_argument("samples",type=Path)
     p.add_argument("--cli",required=True,type=Path);p.add_argument("--output-dir",required=True,type=Path)
+    p.add_argument("--model",choices=["polynomial","rbf"],default="polynomial")
+    p.add_argument("--rbf-smoothing",type=float,default=.001)
     args=p.parse_args();root=args.output_dir;root.mkdir()
     before=hashlib.sha256(args.source.read_bytes()).hexdigest()
     with fits.open(args.source,memmap=False) as hdus:
@@ -33,13 +35,15 @@ def main():
     for name,path in (("baseline",args.source),("injected",root/"injected.fits")):
         command=[str(args.cli),"background-review","--input",str(path),"--samples",str(args.samples),
                  "--output-dir",str(root/name),"--degree","2","--strength","1","--preserve-brightness","off"]
+        command += ["--model",args.model]
+        if args.model=="rbf":command += ["--rbf-smoothing",str(args.rbf_smoothing)]
         subprocess.run(command,check=True,capture_output=True)
     before_model=fits.getdata(root/"baseline/model.fits")[:3]
     after_model=fits.getdata(root/"injected/model.fits")[:3]
     error=(after_model-before_model-gradient)[:,coverage]
     rms=np.sqrt(np.mean(error.astype(float)**2,axis=1))
     p95=np.percentile(np.abs(error),95,axis=1)
-    result=dict(amplitude=amplitude,modelRecoveryRMS=rms.tolist(),modelRecoveryP95=p95.tolist(),
+    result=dict(model=args.model,amplitude=amplitude,modelRecoveryRMS=rms.tolist(),modelRecoveryP95=p95.tolist(),
         rmsFractionOfInjectedAmplitude=(rms/amplitude).tolist(),sourceSHA=before)
     assert np.max(rms/amplitude)<.02,result
     assert hashlib.sha256(args.source.read_bytes()).hexdigest()==before

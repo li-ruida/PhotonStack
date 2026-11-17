@@ -50,14 +50,37 @@ struct BackgroundReviewView: View {
                         selectedSample
                         Divider()
                         if session.recipe != nil {
-                            Picker(zh ? "多项式阶数" : "Polynomial degree", selection: field(\.degree, fallback: 2)) {
-                                ForEach(1...4, id: \.self) { Text("\($0)").tag($0) }
+                            Picker(zh ? "模型" : "Model", selection: field(\.model, fallback: "polynomial")) {
+                                Text(zh ? "多项式" : "Polynomial").tag("polynomial")
+                                Text("RBF").tag("rbf")
+                            }.accessibilityIdentifier("background.model")
+                            if session.recipe?.model == "rbf" {
+                                HStack {
+                                    Text(zh ? "平滑 λ" : "Smoothing λ").font(.caption)
+                                    Slider(value: Binding(
+                                        get: { log10(max(1e-6, session.recipe?.rbfSmoothing ?? 0.001)) },
+                                        set: { session.recipe?.rbfSmoothing = pow(10, $0) }), in: -6...0)
+                                        .accessibilityLabel(zh ? "RBF 平滑（对数）" : "RBF smoothing (logarithmic)")
+                                    TextField("λ", value: field(\.rbfSmoothing, fallback: 0.001),
+                                              format: .number.precision(.fractionLength(0...6)))
+                                        .frame(width: 76).textFieldStyle(.roundedBorder)
+                                        .accessibilityIdentifier("background.rbf-smoothing")
+                                }
+                                Toggle(zh ? "剔除留出检查异常点" : "Reject leave-one-out outliers",
+                                       isOn: field(\.rbfRejectOutliers, fallback: true))
+                                Text(zh ? "平滑值越大越接近整体平面；0 会经过所有采用点。低平滑可能过拟合，需避开目标。最多 512 个有效采样点。"
+                                     : "More smoothing approaches a plane; 0 interpolates retained points. Low smoothing may overfit. Avoid targets. Maximum 512 valid samples.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                Picker(zh ? "多项式阶数" : "Polynomial degree", selection: field(\.degree, fallback: 2)) {
+                                    ForEach(1...4, id: \.self) { Text("\($0)").tag($0) }
+                                }
                             }
                             ParameterSlider(title: zh ? "校正强度" : "Strength",
                                             value: field(\.strength, fallback: 0.35), range: 0...1)
                             Toggle(zh ? "保留背景中值" : "Preserve background median",
                                    isOn: field(\.preserveBrightness, fallback: true))
-                            Text(zh ? "\(session.recipe?.samples.filter(\.enabled).count ?? 0) 个启用采样点；至少 12 个，且不少于系数数量的两倍。"
+                            Text(zh ? "\(session.recipe?.samples.filter(\.enabled).count ?? 0) 个启用采样点；至少 12 个。多项式还需不少于系数数量的两倍。"
                                  : "\(session.recipe?.samples.filter(\.enabled).count ?? 0) enabled samples; at least 12 and twice the number of coefficients.")
                                 .font(.caption)
                         }
@@ -69,6 +92,11 @@ struct BackgroundReviewView: View {
                             Text(zh ? "拟合残差 RMS（线性 R/G/B）" : "Fit residual RMS (linear R/G/B)").font(.caption)
                             Text(report.residualRMS.map { String(format: "%.4g", $0) }.joined(separator: " / "))
                                 .font(.system(.caption, design: .monospaced))
+                            if session.renderedRecipe?.model == "rbf", let values = report.validationRMS {
+                                Text(zh ? "留出预测 RMS（R/G/B）" : "Leave-one-out RMS (R/G/B)").font(.caption)
+                                Text(values.map { String(format: "%.4g", $0) }.joined(separator: " / "))
+                                    .font(.system(.caption, design: .monospaced))
+                            }
                             if !session.isCurrent {
                                 Text(zh ? "参数或采样已更改，预览待更新。" : "Settings or samples changed; update the preview.")
                                     .font(.caption).foregroundStyle(.orange)
@@ -168,6 +196,10 @@ struct BackgroundReviewView: View {
                         .font(.caption2).monospacedDigit()
                     Text((zh ? "拟合 " : "Model ") + point.fitted.map { String(format: "%.4g", $0) }.joined(separator: " / "))
                         .font(.caption2).monospacedDigit()
+                    if session.renderedRecipe?.model == "rbf", let errors = point.validationResidual {
+                        Text((zh ? "留出 / 剔除后残差 " : "Held-out residual ") + errors.map { String(format: "%.4g", $0) }.joined(separator: " / "))
+                            .font(.caption2).monospacedDigit()
+                    }
                     Text((zh ? "采用通道 " : "Used channels ") + zip(["R", "G", "B"], point.used).filter { $0.1 }.map { $0.0 }.joined(separator: ", "))
                         .font(.caption2)
                 }

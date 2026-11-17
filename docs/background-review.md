@@ -48,4 +48,21 @@ CLI 输出 corrected.fits、model.fits、difference.fits、report.json 和仅供
 - 使用 NumPy / Astropy 独立核对像素、采样和坐标：[复验脚本](../tools/scripts/qa/background_review_validation.py)。
 - 向真实 FITS 注入已知渐变并检查恢复误差：[注入脚本](../tools/scripts/qa/background_gradient_injection.py)。这个测试验证加入的梯度恢复，不把真实星云背景当作已知真值。
 
-当前可检查的模型为多项式减法。RBF 背景模型、拼接接缝两侧的独立亮度报告，以及自动识别不可采样区域仍待补齐。
+## RBF 背景模型
+
+模型选择器支持多项式和 RBF。RBF 使用带一次多项式项的薄板样条，可拟合更局部的平滑渐变；需要 12–512 个有效、非共线采样点。重复像素位置会被拒绝，不会自动丢弃超出上限的采样点。
+
+平滑参数范围为 0–1，默认 0.001；坐标按图像最长边归一化。参数越小，模型越贴合采样，0 表示插值，因此必须避免把星云或星系结构当作背景。数值定义参见 [SciPy RBFInterpolator](https://docs.scipy.org/doc/scipy/reference/generated/scipy.interpolate.RBFInterpolator.html)。
+
+RBF 默认启用留出残差异常点剔除。留出残差来自暂时移除该点后对其位置的预测，区别于拟合残差；它能提示污染采样，但不能证明目标结构受到保护。模型、校正图和差图仍需人工检查。
+
+~~~sh
+photonstack background-review \
+  --input master.fits --output-dir new-rbf-review \
+  --samples sky-points.txt --model rbf --rbf-smoothing 0.001 \
+  --rbf-reject on --strength 0.35 --preserve-brightness on
+~~~
+
+新保存的配方使用版本 2，明确记录模型和平滑参数；旧版多项式配方可读取并保持原参数。RBF 对每个输出像素直接求值，使用 CPU 并行处理。独立数值参考和异常输入检查可运行 `ctest --test-dir build/release -R photonstack_background_rbf --output-on-failure`。
+
+拼接接缝两侧的独立亮度报告，以及自动识别不可采样区域仍待补齐。

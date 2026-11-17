@@ -95,7 +95,8 @@ int runBackgroundReview(const std::vector<std::string>& args) {
     for (std::size_t i = 1; i < args.size(); i += 2) {
         if (i + 1 >= args.size() ||
             !std::set<std::string>{"--input", "--output-dir", "--samples", "--degree", "--strength",
-                                   "--preserve-brightness", "--expected-sha", "--inspect-only"}
+                                   "--preserve-brightness", "--expected-sha", "--inspect-only", "--model",
+                                   "--rbf-smoothing", "--rbf-reject"}
                  .contains(args[i]) ||
             !opts.emplace(args[i], args[i + 1]).second)
             throw std::invalid_argument("Unknown, duplicate or incomplete review option");
@@ -105,6 +106,15 @@ int runBackgroundReview(const std::vector<std::string>& args) {
     const auto value = [&](const char* key, const char* initial) {
         return opts.contains(key) ? opts.at(key) : std::string(initial);
     };
+    const auto model = value("--model", "polynomial");
+    if (model != "polynomial" && model != "rbf")
+        throw std::invalid_argument("--model must be polynomial or rbf");
+    const double smoothing = parse(value("--rbf-smoothing", "0.001"), 0, 1);
+    const auto reject = value("--rbf-reject", "on");
+    if (reject != "on" && reject != "off")
+        throw std::invalid_argument("--rbf-reject requires on or off");
+    if (model == "polynomial" && (opts.contains("--rbf-smoothing") || opts.contains("--rbf-reject")))
+        throw std::invalid_argument("RBF options require --model rbf");
     BackgroundPolynomialOptions opt;
     opt.degree = unsigned(parse(value("--degree", "2"), 1, 4));
     if (parse(value("--degree", "2"), 1, 4) != opt.degree)
@@ -185,7 +195,14 @@ int runBackgroundReview(const std::vector<std::string>& args) {
             result.measurements.push_back(m);
         }
     } else {
-        result = BackgroundExtractor().extractPolynomial(im, opt);
+        if (model == "rbf") {
+            BackgroundRBFOptions rbf;
+            rbf.sampling = opt;
+            rbf.smoothing = smoothing;
+            rbf.rejectOutliers = reject == "on";
+            result = BackgroundExtractor().extractRBF(im, rbf);
+        } else
+            result = BackgroundExtractor().extractPolynomial(im, opt);
         if (!result.ok)
             throw std::invalid_argument(result.errorCode + ": " + result.message);
     }
@@ -219,12 +236,15 @@ int runBackgroundReview(const std::vector<std::string>& args) {
         preview(result.differenceImage, out.path / "difference.tiff", 0, extent, 2);
     }
     std::ofstream report(out.path / "report.json");
-    report << std::setprecision(17) << "{\"version\":1,\"width\":" << im.width << ",\"height\":" << im.height
+    report << std::setprecision(17) << "{\"version\":2,\"width\":" << im.width << ",\"height\":" << im.height
            << ",\"sourceSHA\":\"" << sha << "\",\"degree\":" << opt.degree
            << ",\"strength\":" << opt.extraction.strength
            << ",\"preserveBrightness\":" << (opt.extraction.preserveBrightness ? "true" : "false")
            << ",\"wcsPreserved\":" << (wcsPreserved ? "true" : "false") << ",\"residualRMS\":";
     array(report, result.residualRMS);
+    report << ",\"model\":\"" << model << "\",\"rbfSmoothing\":" << smoothing
+           << ",\"rbfRejectOutliers\":" << (reject == "on" ? "true" : "false") << ",\"validationRMS\":";
+    array(report, result.validationRMS);
     report << ",\"samples\":[";
     for (std::size_t i = 0; i < result.measurements.size(); ++i) {
         if (i)
@@ -237,6 +257,8 @@ int runBackgroundReview(const std::vector<std::string>& args) {
         array(report, m.measured);
         report << ",\"fitted\":";
         array(report, m.fitted);
+        report << ",\"validationResidual\":";
+        array(report, m.validationResidual);
         report << ",\"used\":[" << (m.used[0] ? "true" : "false") << "," << (m.used[1] ? "true" : "false") << ","
                << (m.used[2] ? "true" : "false") << "]}";
     }

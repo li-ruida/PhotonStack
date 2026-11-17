@@ -1,5 +1,6 @@
 add_executable(photonstack
   main.cpp
+  BackgroundReviewCommand.cpp
   StarLayersCommand.cpp
   NarrowbandCommand.cpp
   FrequencyStackCommand.cpp

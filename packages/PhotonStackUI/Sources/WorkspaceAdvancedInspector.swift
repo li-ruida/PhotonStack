@@ -62,6 +62,7 @@ struct AdvancedProcessingSection: View {
     @Binding var parameters: ProcessingParameters
     @ObservedObject var settings: AdvancedToolSettings
     private var chinese: Bool { model.language == .simplifiedChinese }
+    @State private var backgroundReview = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -85,6 +86,14 @@ struct AdvancedProcessingSection: View {
                 .buttonStyle(.bordered)
 
             case .background:
+                Button(chinese ? "背景采样与模型…" : "Review background samples…") { backgroundReview = true }
+                    .disabled(model.currentInputURL == nil || model.hasActiveProcessing)
+                    .accessibilityIdentifier("background.open-review")
+                    .sheet(isPresented: $backgroundReview) {
+                        if let input = model.currentInputURL {
+                            BackgroundReviewView(model: model, input: input)
+                        }
+                    }
                 Picker(model.localized(.backgroundModel), selection: $settings.backgroundModel) {
                     Text(model.localized(.globalModel)).tag("global")
                     Text(model.localized(.gridModel)).tag("grid")

@@ -21,6 +21,7 @@
 #include <new>
 #include <optional>
 #include <sstream>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -1057,7 +1058,7 @@ ImageReadResult detail::readAnalysisFits(const std::filesystem::path& path, cons
 }
 
 ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesystem::path& path,
-                                  const TanGrid* sky) const {
+                                  const TanGrid* sky, const std::vector<SipTerm>* distortion) const {
     if (image.empty() || image.channels == 0 || image.channels > 4 || image.pixels.size() != image.sampleCount()) {
         return writeError("ImageBufferInvalid", "Image buffer must be non-empty Float32 data with 1 to 4 channels");
     }
@@ -1081,8 +1082,8 @@ ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesyste
                 value << std::uppercase << std::setprecision(16) << n;
                 appendCard(header, makeCard(key, value.str()));
             };
-            for (auto [key, value] : {std::pair{"CTYPE1", "'RA---TAN'"},
-                                      {"CTYPE2", "'DEC--TAN'"},
+            for (auto [key, value] : {std::pair{"CTYPE1", distortion && !distortion->empty() ? "'RA---TAN-SIP'" : "'RA---TAN'"},
+                                      {"CTYPE2", distortion && !distortion->empty() ? "'DEC--TAN-SIP'" : "'DEC--TAN'"},
                                       {"CUNIT1", "'deg'"},
                                       {"CUNIT2", "'deg'"},
                                       {"RADESYS", "'ICRS'"}})
@@ -1095,6 +1096,19 @@ ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesyste
             put("CD1_2", sky->cd[1]);
             put("CD2_1", sky->cd[2]);
             put("CD2_2", sky->cd[3]);
+            if (distortion && !distortion->empty()) {
+                unsigned order=2;
+                std::set<std::pair<unsigned,unsigned>> powers;
+                for (const auto& t:*distortion) {
+                    if(t.i>5||t.j>5||t.i+t.j<2||t.i+t.j>5||!std::isfinite(t.a)||!std::isfinite(t.b)||
+                       !powers.emplace(t.i,t.j).second)
+                        return writeError("WCSInvalid","SIP terms must be unique finite terms of total degree 2...5");
+                    order=std::max(order,t.i+t.j);
+                    put(("A_"+std::to_string(t.i)+"_"+std::to_string(t.j)).c_str(),t.a);
+                    put(("B_"+std::to_string(t.i)+"_"+std::to_string(t.j)).c_str(),t.b);
+                }
+                put("A_ORDER",order);put("B_ORDER",order);
+            }
             if (image.channels != 1)
                 put("CD3_3", 1);
         }

@@ -55,7 +55,7 @@ struct StarLayersControl: View {
                     Text(zh ? "恒星" : "Stars").tag("stars-preview.tiff")
                 }.pickerStyle(.segmented).accessibilityIdentifier("star-layers.view")
                     .onChange(of: session.display) { _, _ in
-                        if let preview = session.preview { model.showStarLayer(preview) }
+                        if let preview = session.preview { model.showDerivedImage(preview) }
                     }
                 ParameterSlider(title: zh ? "星云曝光" : "Nebula exposure", value: $session.settings.nebulaEV, range: -4...4)
                 ParameterSlider(title: zh ? "星云拉伸" : "Nebula stretch", value: $session.settings.nebulaGamma, range: 0.25...4)

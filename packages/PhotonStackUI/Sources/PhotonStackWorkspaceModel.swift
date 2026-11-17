@@ -6878,7 +6878,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
-    func showStarLayer(_ url: URL) {
+    func showDerivedImage(_ url: URL) {
         guard !hasActiveProcessing else { return }
         launch {
             do {

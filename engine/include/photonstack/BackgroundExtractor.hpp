@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -22,7 +23,7 @@ struct BackgroundExtractionOptions {
 };
 
 struct BackgroundExclusionEllipse {
-    float x=0, y=0, major=1, minor=1, angleDegrees=0;
+    float x = 0, y = 0, major = 1, minor = 1, angleDegrees = 0;
 };
 struct BackgroundGridOptions {
     BackgroundExtractionOptions extraction;
@@ -35,18 +36,38 @@ struct BackgroundGridOptions {
     std::vector<BackgroundExclusionEllipse> exclusions;
 };
 
+struct BackgroundSamplePoint {
+    // Zero-based pixel centers in the decoded image (same orientation as previews).
+    double x = 0, y = 0;
+    std::uint32_t radius = 4;
+    bool enabled = true;
+};
+struct BackgroundSampleMeasurement {
+    BackgroundSamplePoint point;
+    std::array<double, 3> measured{}, fitted{};
+    std::array<bool, 3> used{};
+    std::string status;
+};
+
 struct BackgroundPolynomialOptions {
     BackgroundExtractionOptions extraction;
-    std::uint32_t columns=32, rows=48;
+    std::uint32_t columns = 32, rows = 48;
     // Total degree, not degree per axis. Two retains the historical quadratic;
     // higher orders need well-distributed sky samples and target exclusions.
-    std::uint32_t degree=2;
+    std::uint32_t degree = 2;
+    bool manualSamples = false;
+    bool diagnostics = false;
+    std::vector<BackgroundSamplePoint> samples;
     std::vector<BackgroundExclusionEllipse> exclusions;
 };
 
 struct BackgroundExtractionResult {
     bool ok = false;
     ImageBuffer image;
+    // Allocated only when requested. Difference is input minus corrected output.
+    ImageBuffer modelImage, differenceImage;
+    std::vector<BackgroundSampleMeasurement> measurements;
+    std::array<double, 3> residualRMS{};
     float background = 0.0F;
     std::vector<float> backgroundGrid;
     std::uint32_t gridColumns = 0;
@@ -59,7 +80,8 @@ struct BackgroundExtractionResult {
 
 class BackgroundExtractor {
   public:
-    BackgroundExtractionResult extractPolynomial(const ImageBuffer& image, const BackgroundPolynomialOptions& options) const;
+    BackgroundExtractionResult extractPolynomial(const ImageBuffer& image,
+                                                 const BackgroundPolynomialOptions& options) const;
     BackgroundExtractionResult extractGlobal(const ImageBuffer& image,
                                              const BackgroundExtractionOptions& options) const;
     BackgroundExtractionResult extractGrid(const ImageBuffer& image, const BackgroundGridOptions& options) const;

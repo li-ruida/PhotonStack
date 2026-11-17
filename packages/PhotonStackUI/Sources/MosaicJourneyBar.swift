@@ -161,6 +161,9 @@ struct MosaicJourneyBar: View {
             if model.latestMosaicOperation != nil {
                 return chinese ? "天区或拼接设置已变化，请重新检查配准预览。" : "The panels or stitch settings have changed. Check the alignment again."
             }
+            if model.parameters.mosaicAlignment == .wcs {
+                return chinese ? "读取 FITS 母片的天球坐标，并检查重叠区域的星点残差。" : "Project solved FITS masters and check the common-star residuals."
+            }
             return chinese ? "预览会分别堆栈各区原片，并用共同星点对齐相邻天区。" : "Preview stacks each panel and aligns adjacent panels using shared stars."
         case .build:
             if products.result {

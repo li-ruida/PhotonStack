@@ -41,6 +41,8 @@ public struct MosaicPlacementReport: Codable, Identifiable, Equatable, Sendable 
 }
 
 public struct MosaicQualityReport: Codable, Equatable, Sendable {
+    public var wcsMedianPixels: Double? = nil
+    public var wcsP95Pixels: Double? = nil
     public var autoAligned: Bool
     public var matches: Int
     public var fallbackPanels: Int
@@ -1513,7 +1515,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         project.mosaicWorkflow = enabled
         if enabled {
             project.regroupMosaicLightSequences()
-            parameters.mosaicAlignment = .auto
+            if parameters.mosaicAlignment == .manual { parameters.mosaicAlignment = .auto }
         } else if isShowingMosaicPreview || isShowingMosaicResult ||
                     (canvasMode == .sourcePreview && previewURL.map { selectedAsset?.mosaicFolder?.frames.contains($0) == true } == true) {
             showSelectedOriginal()
@@ -3612,7 +3614,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             setRole(.mosaic, for: asset)
         }
         project.regroupMosaicLightSequences()
-        if firstPanelImport && !mosaicAssets.isEmpty && parameters.mosaicAlignment != .auto {
+        if firstPanelImport && !mosaicAssets.isEmpty && parameters.mosaicAlignment == .manual {
             var updated = parameters
             updated.mosaicAlignment = .auto
             setProcessingParameters(updated)
@@ -10809,6 +10811,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         let defaults = ProcessingParameters()
         var normalized = value
 
+        if normalized.mosaicAlignment == .wcs { normalized.mosaicProjection = .planar }
         normalized.previewWidth = min(max(value.previewWidth, 320), 4096)
         normalized.stretchTargetBackground = normalizedFinite(
             value.stretchTargetBackground,

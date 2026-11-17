@@ -1,8 +1,10 @@
 #pragma once
 
+#include "photonstack/SkyProjection.hpp"
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -25,6 +27,7 @@ enum class MosaicLayout {
 enum class MosaicAlignment {
     Manual,
     Auto,
+    Wcs,
 };
 
 enum class MosaicBlendMode {
@@ -38,6 +41,7 @@ enum class MosaicTransformModel {
     Translation,
     Similarity,
     Affine,
+    Wcs,
 };
 
 enum class MosaicProgressStage {
@@ -68,6 +72,7 @@ struct MosaicResidualKnot {
 };
 
 struct MosaicPlacement {
+    std::optional<SkyProjection> sky;
     // Piecewise-linear residual in canvas pixels along the common sky strip.
     std::vector<MosaicResidualKnot> residuals;
     bool residualAlongY = true;
@@ -108,6 +113,8 @@ struct MosaicOptions {
 struct MosaicResult {
     bool ok = false;
     ImageBuffer image;
+    std::optional<TanGrid> outputGrid;
+    std::optional<double> wcsMedian, wcsP95; // full resolution reference pixels
     std::vector<MosaicPlacement> placements;
     bool usedAutoAlignment = false;
     std::size_t matchedPairs = 0;

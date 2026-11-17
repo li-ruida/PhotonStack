@@ -50,35 +50,37 @@ struct MosaicSection: View {
                 .disabled(!model.canImportAssetsImmediately || !model.canModifyProcessingConfiguration)
             }
 
-            Stepper(
-                "\(model.localized(.overlapPixels)) \(parameters.mosaicOverlapPixels)",
-                value: $parameters.mosaicOverlapPixels,
-                in: 0...4096,
-                step: 8
-            )
-
-            Picker(model.localized(.mosaicProjection), selection: $parameters.mosaicProjection) {
-                ForEach(MosaicProjection.allCases) { projection in
-                    Text(model.mosaicProjectionName(projection))
-                        .tag(projection)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            Picker(model.localized(.mosaicLayout), selection: $parameters.mosaicLayout) {
-                ForEach(MosaicLayoutMode.allCases) { layout in
-                    Text(model.mosaicLayoutName(layout))
-                        .tag(layout)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            if parameters.mosaicLayout == .grid {
+            if parameters.mosaicAlignment != .wcs {
                 Stepper(
-                    "\(model.localized(.mosaicColumns)) \(parameters.mosaicColumns)",
-                    value: $parameters.mosaicColumns,
-                    in: 1...12
+                    "\(model.localized(.overlapPixels)) \(parameters.mosaicOverlapPixels)",
+                    value: $parameters.mosaicOverlapPixels,
+                    in: 0...4096,
+                    step: 8
                 )
+
+                Picker(model.localized(.mosaicProjection), selection: $parameters.mosaicProjection) {
+                    ForEach(MosaicProjection.allCases) { projection in
+                        Text(model.mosaicProjectionName(projection))
+                            .tag(projection)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Picker(model.localized(.mosaicLayout), selection: $parameters.mosaicLayout) {
+                    ForEach(MosaicLayoutMode.allCases) { layout in
+                        Text(model.mosaicLayoutName(layout))
+                            .tag(layout)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if parameters.mosaicLayout == .grid {
+                    Stepper(
+                        "\(model.localized(.mosaicColumns)) \(parameters.mosaicColumns)",
+                        value: $parameters.mosaicColumns,
+                        in: 1...12
+                    )
+                }
             }
 
             Picker(model.localized(.mosaicAlignment), selection: $parameters.mosaicAlignment) {
@@ -88,6 +90,7 @@ struct MosaicSection: View {
                 }
             }
             .pickerStyle(.segmented)
+            .accessibilityIdentifier("mosaic.alignment")
 
             Picker(model.localized(.mosaicBlend), selection: $parameters.mosaicBlendMode) {
                 ForEach(MosaicBlendMode.allCases) { blendMode in
@@ -111,16 +114,18 @@ struct MosaicSection: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Button {
-                    if let suggestedOverlap = plan.suggestedOverlapPixels {
-                        parameters.mosaicOverlapPixels = suggestedOverlap
+                if parameters.mosaicAlignment != .wcs {
+                    Button {
+                        if let suggestedOverlap = plan.suggestedOverlapPixels {
+                            parameters.mosaicOverlapPixels = suggestedOverlap
+                        }
+                    } label: {
+                        Label(model.localized(.estimateOverlap), systemImage: "wand.and.stars")
+                            .frame(maxWidth: .infinity)
                     }
-                } label: {
-                    Label(model.localized(.estimateOverlap), systemImage: "wand.and.stars")
-                        .frame(maxWidth: .infinity)
+                    .buttonStyle(.bordered)
+                    .disabled(plan.suggestedOverlapPixels == nil || model.isProcessing)
                 }
-                .buttonStyle(.bordered)
-                .disabled(plan.suggestedOverlapPixels == nil || model.isProcessing)
 
                 if parameters.mosaicAlignment == .manual {
                     VStack(alignment: .leading, spacing: 4) {
@@ -150,6 +155,11 @@ struct MosaicSection: View {
 
                     MosaicLayoutPreviewView(plan: plan)
                         .frame(height: 72)
+                } else if parameters.mosaicAlignment == .wcs {
+                    Text(model.language == .simplifiedChinese
+                         ? "请导入带 TAN 或 TAN-SIP 解算的 FITS 母片。预览会检查共同星点，线性成片保留天球坐标。"
+                         : "Import solved TAN or TAN-SIP FITS masters. Preview checks common stars; the linear mosaic retains sky coordinates.")
+                        .font(.caption).foregroundStyle(.secondary)
                 } else {
                     Text(model.language == .simplifiedChinese
                         ? "根据重叠天区的共同星点定位并合成。面板需要有重叠区域。"
@@ -257,9 +267,19 @@ private struct MosaicQualityReportView: View {
             }
 
             HStack {
-                Text(report.autoAligned ? model.mosaicAlignmentName(.auto) : model.mosaicAlignmentName(.manual))
+                Text(model.mosaicAlignmentName(report.placements.first?.model == "wcs" ? .wcs : report.autoAligned ? .auto : .manual))
                 Spacer()
                 Text(report.exposureMatched ? model.localized(.mosaicExposureMatch) : report.blend)
+            }
+
+            if report.placements.first?.model == "wcs" {
+                if let median = report.wcsMedianPixels, let p95 = report.wcsP95Pixels {
+                    Text(model.language == .simplifiedChinese
+                         ? "星点残差：中位数 \(median.formatted(.number.precision(.fractionLength(2)))) · P95 \(p95.formatted(.number.precision(.fractionLength(2)))) 像素"
+                         : "Star residuals: median \(median.formatted(.number.precision(.fractionLength(2)))) · P95 \(p95.formatted(.number.precision(.fractionLength(2)))) px")
+                } else {
+                    Text(model.language == .simplifiedChinese ? "仅根据坐标定位，共同星点不足以复核。" : "Placed by WCS; too few common stars to verify.")
+                }
             }
 
             ForEach(report.placements.prefix(4)) { placement in
@@ -289,6 +309,7 @@ private struct MosaicQualityReportView: View {
 
     private func transformName(_ value: String) -> String {
         switch value {
+        case "wcs": return "WCS"
         case "translation":
             return model.alignmentMethodName(.translation)
         case "similarity":

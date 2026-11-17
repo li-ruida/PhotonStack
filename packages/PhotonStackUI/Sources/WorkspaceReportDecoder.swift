@@ -249,6 +249,8 @@ enum WorkspaceReportDecoder {
         }
 
         return MosaicQualityReport(
+            wcsMedianPixels: jsonFiniteDouble(object["wcsMedianPixels"]),
+            wcsP95Pixels: jsonFiniteDouble(object["wcsP95Pixels"]),
             autoAligned: autoAligned,
             matches: matches,
             fallbackPanels: fallbackPanels,

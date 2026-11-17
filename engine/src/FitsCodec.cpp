@@ -431,6 +431,82 @@ float normalizeForDisplay(float value, const SampleRange& range) {
 
 } // namespace
 
+SolvedPanel readSolvedPanel(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    const auto header = parseHeader(file);
+    if (!header.ok)
+        throw std::runtime_error(header.message);
+    const auto& h = header.values;
+    auto value = [&](const std::string& key) { return h.contains(key) ? h.at(key) : std::string(); };
+    auto number = [&](const std::string& key) {
+        auto v = value(key);
+        std::replace(v.begin(), v.end(), 'D', 'E');
+        std::size_t end = 0;
+        try {
+            const auto n = std::stod(v, &end);
+            if (end == v.size() && std::isfinite(n))
+                return n;
+        } catch (const std::exception&) {
+        }
+        throw std::runtime_error("Missing or invalid WCS keyword: " + key);
+    };
+    const bool sip = value("CTYPE1") == "RA---TAN-SIP" && value("CTYPE2") == "DEC--TAN-SIP";
+    if (!sip && !(value("CTYPE1") == "RA---TAN" && value("CTYPE2") == "DEC--TAN"))
+        throw std::runtime_error("A solved RA/DEC TAN or TAN-SIP FITS panel is required");
+    if ((!value("RADESYS").empty() && value("RADESYS") != "ICRS") || h.contains("RADECSYS") || h.contains("EQUINOX") ||
+        (h.contains("LONPOLE") && number("LONPOLE") != 180) ||
+        (h.contains("LATPOLE") && std::abs(number("LATPOLE")) > 90))
+        throw std::runtime_error("Only ICRS with standard celestial pole orientation is supported");
+    for (auto key : {"CUNIT1", "CUNIT2"})
+        if (h.contains(key) && value(key) != "deg")
+            throw std::runtime_error("Expected WCS units in degrees");
+    for (const auto& [key, v] : h)
+        if (key.starts_with("PV1_") || key.starts_with("PV2_") || key.starts_with("CPDIS") || key.starts_with("D2IM") ||
+            key.starts_with("CROTA") || (!sip && (key == "A_ORDER" || key == "B_ORDER")))
+            throw std::runtime_error("Unsupported WCS distortion or rotation: " + key);
+    // A color cube may have an independent channel axis, but a coupled
+    // celestial/spectral matrix cannot be represented by one 2D projection.
+    for (auto key : {"CD1_3", "CD2_3", "CD3_1", "CD3_2", "PC1_3", "PC2_3", "PC3_1", "PC3_2"})
+        if (h.contains(key) && number(key) != 0)
+            throw std::runtime_error("Coupled cube WCS is unsupported");
+    SolvedPanel panel{};
+    auto& g = panel.grid;
+    g.x = number("CRPIX1");
+    g.y = number("CRPIX2");
+    g.ra = number("CRVAL1");
+    g.dec = number("CRVAL2");
+    if (std::abs(g.dec) >= 90)
+        throw std::runtime_error("Unsupported tangent-point declination");
+    const bool cd = h.contains("CD1_1") || h.contains("CD1_2") || h.contains("CD2_1") || h.contains("CD2_2");
+    for (int i = 0; i < 2; ++i)
+        for (int j = 0; j < 2; ++j) {
+            auto suffix = std::to_string(i + 1) + "_" + std::to_string(j + 1);
+            if (cd && h.contains("PC" + suffix))
+                throw std::runtime_error("Conflicting CD and PC matrices");
+            g.cd[2 * i + j] = cd ? (h.contains("CD" + suffix) ? number("CD" + suffix) : 0)
+                                 : number("CDELT" + std::to_string(i + 1)) *
+                                       (h.contains("PC" + suffix) ? number("PC" + suffix) : double(i == j));
+        }
+    if (std::abs(g.cd[0] * g.cd[3] - g.cd[1] * g.cd[2]) < 1e-18)
+        throw std::runtime_error("Singular WCS pixel scale");
+    if (sip) {
+        const auto a = number("A_ORDER"), b = number("B_ORDER");
+        if (a < 2 || b < 2 || a > 5 || b > 5 || a != std::floor(a) || b != std::floor(b))
+            throw std::runtime_error("Supported SIP polynomial orders are 2 through 5");
+        for (unsigned i = 0; i <= std::max(a, b); ++i)
+            for (unsigned j = 0; i + j <= std::max(a, b); ++j) {
+                auto suffix = "_" + std::to_string(i) + "_" + std::to_string(j);
+                auto ca = h.contains("A" + suffix) ? number("A" + suffix) : 0;
+                auto cb = h.contains("B" + suffix) ? number("B" + suffix) : 0;
+                if ((ca && i + j > a) || (cb && i + j > b))
+                    throw std::runtime_error("Invalid SIP coefficient degree");
+                if (ca || cb)
+                    panel.distortion.push_back({i, j, ca, cb});
+            }
+    }
+    return panel;
+}
+
 bool isFitsPath(const std::filesystem::path& path) {
     const auto extension = lowercaseExtension(path);
     return extension == ".fits" || extension == ".fit" || extension == ".fts";
@@ -980,7 +1056,8 @@ ImageReadResult detail::readAnalysisFits(const std::filesystem::path& path, cons
     return result;
 }
 
-ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesystem::path& path) const {
+ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesystem::path& path,
+                                  const TanGrid* sky) const {
     if (image.empty() || image.channels == 0 || image.channels > 4 || image.pixels.size() != image.sampleCount()) {
         return writeError("ImageBufferInvalid", "Image buffer must be non-empty Float32 data with 1 to 4 channels");
     }
@@ -998,6 +1075,29 @@ ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesyste
         appendCard(header, makeCard("BSCALE", "1.0"));
         appendCard(header, makeCard("BZERO", "0.0"));
         appendCard(header, makeCard("PSCOLOR", "'LINEAR-SRGB'"));
+        if (sky) {
+            auto put = [&](const char* key, double n) {
+                std::ostringstream value;
+                value << std::uppercase << std::setprecision(16) << n;
+                appendCard(header, makeCard(key, value.str()));
+            };
+            for (auto [key, value] : {std::pair{"CTYPE1", "'RA---TAN'"},
+                                      {"CTYPE2", "'DEC--TAN'"},
+                                      {"CUNIT1", "'deg'"},
+                                      {"CUNIT2", "'deg'"},
+                                      {"RADESYS", "'ICRS'"}})
+                appendCard(header, makeCard(key, value));
+            put("CRPIX1", sky->x);
+            put("CRPIX2", sky->y);
+            put("CRVAL1", sky->ra);
+            put("CRVAL2", sky->dec);
+            put("CD1_1", sky->cd[0]);
+            put("CD1_2", sky->cd[1]);
+            put("CD2_1", sky->cd[2]);
+            put("CD2_2", sky->cd[3]);
+            if (image.channels != 1)
+                put("CD3_3", 1);
+        }
         appendCard(header, makeEndCard());
         header.resize(((header.size() + kFitsBlockSize - 1) / kFitsBlockSize) * kFitsBlockSize, ' ');
     } catch (const std::bad_alloc&) {

@@ -2249,6 +2249,7 @@ public enum MosaicLayoutMode: String, Codable, CaseIterable, Equatable, Identifi
 public enum MosaicAlignmentMode: String, Codable, CaseIterable, Equatable, Identifiable, Sendable {
     case manual
     case auto
+    case wcs
 
     public var id: String {
         rawValue

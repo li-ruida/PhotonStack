@@ -49,6 +49,7 @@ add_library(photonstack_engine STATIC
   src/MasterFrameBuilder.cpp
   src/MeteorLayerComposer.cpp
   src/MosaicBuilder.cpp
+  src/SkyProjection.cpp
   src/NoiseReducer.cpp
   src/NonlocalDenoiser.cpp
   src/MultiscaleDenoiser.cpp

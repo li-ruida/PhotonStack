@@ -14,10 +14,12 @@
 #include <string>
 #include <vector>
 
+#include "photonstack/FitsCodec.hpp"
 #include "photonstack/ImageCodec.hpp"
 #include "photonstack/ImageResizer.hpp"
-#include "photonstack/Registration.hpp"
 #include "photonstack/ParallelRanges.hpp"
+#include "photonstack/Registration.hpp"
+#include "photonstack/StarDetector.hpp"
 
 #include "StraightAlphaSampling.hpp"
 
@@ -56,6 +58,7 @@ bool validMosaicOptions(const MosaicOptions& options) {
     }();
     const auto validAlignment = [&] {
         switch (options.alignment) {
+        case MosaicAlignment::Wcs:
         case MosaicAlignment::Manual:
         case MosaicAlignment::Auto:
             return true;
@@ -259,6 +262,10 @@ MosaicPoint localResidual(const MosaicPlacement& p, float x, float y) {
 }
 
 MosaicPoint transformPoint(const MosaicPlacement& placement, float x, float y) {
+    if (placement.sky) {
+        const auto p = placement.sky->toCanvas(x, y);
+        return {static_cast<float>(p.x + placement.x), static_cast<float>(p.y + placement.y)};
+    }
     const auto residual = localResidual(placement, x, y);
     return {
         .x = residual.x + placement.a * x + placement.b * y + placement.x,
@@ -267,6 +274,13 @@ MosaicPoint transformPoint(const MosaicPlacement& placement, float x, float y) {
 }
 
 bool inverseTransformPoint(const MosaicPlacement& placement, float x, float y, MosaicPoint& point) {
+    if (placement.sky) {
+        const auto p = placement.sky->toPanel(x - placement.x, y - placement.y);
+        if (!(std::abs(p.x) < 1.e8 && std::abs(p.y) < 1.e8))
+            return false;
+        point = {static_cast<float>(p.x), static_cast<float>(p.y)};
+        return true;
+    }
     const float determinant = placement.a * placement.d - placement.b * placement.c;
     if (!std::isfinite(determinant) || std::fabs(determinant) <= 1.0e-8F) {
         return false;
@@ -307,6 +321,26 @@ MosaicBounds transformedBounds(const ImageBuffer& image, const MosaicPlacement& 
         bounds.minY = std::min(bounds.minY, corner.y);
         bounds.maxX = std::max(bounds.maxX, corner.x);
         bounds.maxY = std::max(bounds.maxY, corner.y);
+    }
+    if (placement.sky) {
+        auto include = [&](float x, float y) {
+            auto p = transformPoint(placement, x, y);
+            if (!(std::abs(p.x) < 1.e8 && std::abs(p.y) < 1.e8))
+                throw std::runtime_error("Panel extends outside the reference tangent plane");
+            bounds.minX = std::min(bounds.minX, p.x);
+            bounds.maxX = std::max(bounds.maxX, p.x);
+            bounds.minY = std::min(bounds.minY, p.y);
+            bounds.maxY = std::max(bounds.maxY, p.y);
+        };
+        // SIP edges are curved; an extremum can lie between the four corners.
+        for (unsigned x = 0; x < image.width; ++x) {
+            include(x, 0);
+            include(x, maxLocalY);
+        }
+        for (unsigned y = 0; y < image.height; ++y) {
+            include(0, y);
+            include(maxLocalX, y);
+        }
     }
     for (const auto& knot : placement.residuals) {
         for (float edge : {0.f, placement.residualAlongY ? maxLocalX : maxLocalY}) {
@@ -1507,6 +1541,93 @@ MosaicResult composeMultiband(
     }
 }
 
+// The solutions determine the geometry. These independent detections only check it:
+// compare unmodified star centroids with reciprocal neighbours in the common plane.
+struct SkyCheck {
+    std::size_t pairs = 0;
+    std::vector<double> residuals;
+};
+SkyCheck checkSolvedStars(const std::vector<ImageBuffer>& images, std::vector<MosaicPlacement>& placements,
+                          double scale) {
+    SkyCheck quality;
+    if (images.size() < 2)
+        return quality;
+    struct Sample {
+        Star star;
+        SkyPoint pixel;
+    };
+    std::vector<std::vector<Sample>> catalogs(images.size());
+    for (std::size_t i = 0; i < images.size(); ++i) {
+        StarDetectionOptions options;
+        options.maxStars = 1500;
+        options.minPeak = 0;
+        options.border = 5;
+        auto detected = StarDetector{}.detect(images[i], options);
+        if (!detected.ok)
+            throw std::runtime_error(detected.message);
+        for (const auto& s : detected.stars) {
+            const auto p = placements[i].sky->toCanvas(s.x, s.y);
+            if (std::isfinite(p.x) && std::isfinite(p.y))
+                catalogs[i].push_back({s, p});
+        }
+    }
+    for (std::size_t i = 1; i < images.size(); ++i)
+        for (std::size_t j = 0; j < i; ++j) {
+            const auto& a = catalogs[i];
+            const auto& b = catalogs[j];
+            auto overlapping = [&](const auto& catalog, std::size_t panel) {
+                std::vector<std::size_t> ids;
+                for (std::size_t k = 0; k < catalog.size(); ++k) {
+                    const auto p = placements[panel].sky->toPanel(catalog[k].pixel.x, catalog[k].pixel.y);
+                    if (p.x >= 5 && p.y >= 5 && p.x + 5 < images[panel].width && p.y + 5 < images[panel].height)
+                        ids.push_back(k);
+                }
+                return ids;
+            };
+            const auto ia = overlapping(a, j), ib = overlapping(b, i);
+            const double radius2 = 64 * scale * scale;
+            std::vector<double> da(ia.size(), radius2), db(ib.size(), radius2);
+            std::vector<std::size_t> ab(ia.size(), ib.size()), ba(ib.size(), ia.size());
+            for (std::size_t u = 0; u < ia.size(); ++u)
+                for (std::size_t v = 0; v < ib.size(); ++v) {
+                    auto p = a[ia[u]].pixel, q = b[ib[v]].pixel;
+                    const double dx = p.x - q.x, dy = p.y - q.y, d = dx * dx + dy * dy;
+                    if (d < da[u]) {
+                        da[u] = d;
+                        ab[u] = v;
+                    }
+                    if (d < db[v]) {
+                        db[v] = d;
+                        ba[v] = u;
+                    }
+                }
+            std::vector<double> distances;
+            std::vector<std::array<float, 2>> stars;
+            for (std::size_t u = 0; u < ia.size(); ++u) {
+                if (ab[u] == ib.size() || ba[ab[u]] != u)
+                    continue;
+                distances.push_back(std::sqrt(da[u]) / scale);
+                stars.push_back({a[ia[u]].star.x, a[ia[u]].star.y});
+            }
+            std::sort(distances.begin(), distances.end());
+            if (distances.size() < 6) {
+                if (std::min(ia.size(), ib.size()) >= 24)
+                    throw std::runtime_error("WCS predicts a populated overlap without enough common stars; check "
+                                             "solutions or use star alignment");
+                continue;
+            }
+            if (distances[distances.size() / 2] > 1.8 || distances[std::size_t(.95 * (distances.size() - 1))] > 4)
+                throw std::runtime_error("Common stars disagree with the WCS; check solutions or use star alignment");
+            quality.pairs += distances.size();
+            quality.residuals.insert(quality.residuals.end(), distances.begin(), distances.end());
+            placements[i].matches += distances.size();
+            ++placements[i].referenceCount;
+            placements[i].alignmentStars.insert(placements[i].alignmentStars.end(), stars.begin(), stars.end());
+        }
+    std::sort(quality.residuals.begin(), quality.residuals.end());
+    return quality;
+}
+
 MosaicResult composeMosaic(
     const std::vector<ImageBuffer>& images,
     std::vector<MosaicPlacement> placements,
@@ -1543,6 +1664,8 @@ MosaicResult composeMosaic(
         outputHeight >= static_cast<float>(std::numeric_limits<std::uint32_t>::max())) {
         return mosaicError("ImageDimensionsInvalid", "Mosaic output dimensions exceed the supported limit");
     }
+    if (options.alignment == MosaicAlignment::Wcs && double(outputWidth) * outputHeight > 128.0 * 1024 * 1024)
+        return mosaicError("MosaicWcsCanvasTooLarge", "Solved panels require a canvas larger than 128 megapixels");
     const auto width = static_cast<std::uint32_t>(outputWidth);
     const auto height = static_cast<std::uint32_t>(outputHeight);
     for (auto& placement : placements) {
@@ -1740,6 +1863,20 @@ MosaicResult MosaicBuilder::stitchHorizontal(const std::vector<std::filesystem::
     if (!validMosaicOptions(options)) {
         return mosaicError("ArgumentInvalid", "Mosaic options are invalid");
     }
+    std::vector<SolvedPanel> solutions;
+    if (options.alignment == MosaicAlignment::Wcs) {
+        if (options.projection != MosaicProjection::Planar)
+            return mosaicError("ArgumentInvalid", "WCS mosaics require a tangent-plane projection");
+        for (const auto& path : inputs) {
+            try {
+                if (!isFitsPath(path))
+                    throw std::runtime_error("Expected a solved FITS panel");
+                solutions.push_back(readSolvedPanel(path));
+            } catch (const std::exception& e) {
+                return mosaicError("MosaicWcsInvalid", path.filename().string() + ": " + e.what());
+            }
+        }
+    }
     std::vector<ImageBuffer> images;
     MosaicProgressReporter progress(options, inputs.size());
     const auto loadResult = loadInputs(inputs, options.fitsDecodeMode, images, progress);
@@ -1748,6 +1885,58 @@ MosaicResult MosaicBuilder::stitchHorizontal(const std::vector<std::filesystem::
     }
 
     try {
+        if (options.alignment == MosaicAlignment::Wcs) {
+            TanGrid grid = solutions.front().grid;
+            const auto widest = std::max_element(images.begin(), images.end(), [](const auto& a, const auto& b) {
+                                    return a.width < b.width;
+                                })->width;
+            const double scale = options.previewWidth ? std::min(1., double(options.previewWidth) / widest) : 1.;
+            grid.x = (grid.x - .5) * scale + .5;
+            grid.y = (grid.y - .5) * scale + .5;
+            for (auto& cd : grid.cd)
+                cd /= scale;
+            std::vector<MosaicPlacement> placements(images.size());
+            std::vector<std::size_t> order(images.size());
+            std::iota(order.begin(), order.end(), 0);
+            for (std::size_t i = 0; i < images.size(); ++i) {
+                placements[i].sky.emplace(solutions[i], grid);
+                placements[i].transformModel = MosaicTransformModel::Wcs;
+                for (int u = 0; u <= 8; ++u)
+                    for (int v = 0; v <= 8; ++v) {
+                        const double x = (images[i].width - 1.) * u / 8., y = (images[i].height - 1.) * v / 8.;
+                        const auto p = placements[i].sky->toCanvas(x, y);
+                        const auto q = placements[i].sky->toPanel(p.x, p.y);
+                        if (!(std::hypot(x - q.x, y - q.y) < 1.e-4))
+                            throw std::runtime_error("Non-invertible WCS in " + inputs[i].filename().string());
+                    }
+            }
+            progress.report(MosaicProgressStage::Projecting, 0.24, images.size());
+            const auto quality = checkSolvedStars(images, placements, scale);
+            progress.report(MosaicProgressStage::Aligning, 0.44, images.size());
+            auto result = composeMosaic(images, std::move(placements), order, options, progress);
+            if (result.ok) {
+                grid.x += result.placements.front().x;
+                grid.y += result.placements.front().y;
+                result.outputGrid = grid;
+                result.matchedPairs = quality.pairs;
+                if (!quality.residuals.empty()) {
+                    result.wcsMedian = quality.residuals[quality.residuals.size() / 2];
+                    result.wcsP95 = quality.residuals[std::size_t(.95 * (quality.residuals.size() - 1))];
+                }
+                for (auto& p : result.placements) {
+                    // JSON affine fields describe the local linearization at the panel origin only.
+                    const auto o = p.sky->toCanvas(0, 0), x = p.sky->toCanvas(1, 0), y = p.sky->toCanvas(0, 1);
+                    p.a = x.x - o.x;
+                    p.b = y.x - o.x;
+                    p.c = x.y - o.y;
+                    p.d = y.y - o.y;
+                    p.dx = p.x += o.x;
+                    p.dy = p.y += o.y;
+                    p.sky.reset();
+                }
+            }
+            return result;
+        }
         MosaicOptions effectiveOptions = options;
         std::uint32_t sourceWidest = 0;
         std::uint32_t workingWidest = 0;
@@ -1824,6 +2013,8 @@ MosaicResult MosaicBuilder::stitchHorizontal(const std::vector<std::filesystem::
         return result;
     } catch (const std::bad_alloc&) {
         return mosaicError("MemoryAllocationFailed", "Unable to allocate the mosaic preview");
+    } catch (const std::runtime_error& e) {
+        return mosaicError("MosaicWcsInvalid", e.what());
     } catch (const std::length_error&) {
         return mosaicError("MemoryAllocationFailed", "Unable to allocate the mosaic preview");
     }
@@ -1834,6 +2025,8 @@ MosaicResult MosaicBuilder::stitchHorizontal(const std::vector<ImageBuffer>& ima
     if (!validMosaicOptions(options)) {
         return mosaicError("ArgumentInvalid", "Mosaic options are invalid");
     }
+    if (options.alignment == MosaicAlignment::Wcs)
+        return mosaicError("MosaicWcsInvalid", "WCS mode requires solved FITS files");
     if (images.empty()) {
         return mosaicError("InputMissing", "At least one input image is required");
     }

@@ -306,7 +306,7 @@ void printUsage() {
                  "[--raw-temperature kelvin] [--raw-tint value] [--raw-black-value value] "
                  "[--raw-black-level camera|auto|manual] [--raw-demosaic fast|high] <image>...\n"
               << "  photonstack mosaic --output <image> [--overlap-pixels 0] [--projection planar|cylindrical] "
-                 "[--layout horizontal|grid] [--columns 2] [--alignment manual|auto] "
+                 "[--layout horizontal|grid] [--columns 2] [--alignment manual|auto|wcs] "
                  "[--blend average|feather|multiband] [--exposure-match on|off] [--preview-width 1200] "
                  "[--alignment-width 2000] <image>...\n"
               << "  photonstack register --reference <image> --moving <image> --output <image> "
@@ -2829,17 +2829,19 @@ int buildMosaic(const std::vector<std::string>& args) {
             }
         } else if (arg == "--alignment") {
             if (i + 1 >= args.size()) {
-                printError("ArgumentMissing", "--alignment requires manual or auto");
+                printError("ArgumentMissing", "--alignment requires manual, auto or wcs");
                 return 1;
             }
             explicitAlignment = true;
             const auto alignment = args[++i];
             if (alignment == "manual") {
                 options.alignment = photonstack::MosaicAlignment::Manual;
+            } else if (alignment == "wcs") {
+                options.alignment = photonstack::MosaicAlignment::Wcs;
             } else if (alignment == "auto") {
                 options.alignment = photonstack::MosaicAlignment::Auto;
             } else {
-                printError("ArgumentInvalid", "--alignment must be manual or auto");
+                printError("ArgumentInvalid", "--alignment must be manual, auto or wcs");
                 return 1;
             }
         } else if (arg == "--blend") {
@@ -2908,6 +2910,14 @@ int buildMosaic(const std::vector<std::string>& args) {
         return 1;
     }
 
+    for (const auto& input : inputFiles) {
+        std::error_code ec;
+        if (std::filesystem::equivalent(input, *outputPath, ec)) {
+            printError("OutputConflictsWithInput", "Mosaic output would overwrite an input panel");
+            return 1;
+        }
+    }
+
     if (!explicitAlignment && inputFiles.size() >= 2 &&
         std::all_of(inputFiles.begin(), inputFiles.end(), photonstack::isFitsPath)) {
         options.alignment = photonstack::MosaicAlignment::Auto;
@@ -2965,7 +2975,10 @@ int buildMosaic(const std::vector<std::string>& args) {
     const photonstack::ImageCodec codec;
     photonstack::ImageWriteResult writeResult;
     printProgressEvent("mosaic", "mosaic", "write", 0.91);
-    if (result.image.channels == 4) {
+    const bool writeSky = result.outputGrid && photonstack::isFitsPath(*outputPath);
+    if (writeSky) {
+        writeResult = photonstack::FitsCodec().write(result.image, *outputPath, &*result.outputGrid);
+    } else if (result.image.channels == 4) {
         writeResult = codec.writeRows(result.image, *outputPath, [&](const photonstack::ImageRowConsumer& consumer) {
             const auto rowSamples = static_cast<std::size_t>(result.image.width) * result.image.channels;
             const auto interval = std::max<std::uint32_t>(1, result.image.height / 100);
@@ -2984,8 +2997,8 @@ int buildMosaic(const std::vector<std::string>& args) {
             return true;
         });
     }
-    if (result.image.channels != 4 ||
-        (!writeResult.ok && writeResult.errorCode == "ImageRowWriteUnsupported")) {
+    if (!writeSky && (result.image.channels != 4 ||
+        (!writeResult.ok && writeResult.errorCode == "ImageRowWriteUnsupported"))) {
         writeResult = codec.write(result.image, *outputPath);
         if (writeResult.ok) {
             printProgressEvent("mosaic", "mosaic", "write", 0.99);
@@ -2997,6 +3010,7 @@ int buildMosaic(const std::vector<std::string>& args) {
     }
     const auto transformModelName = [](photonstack::MosaicTransformModel model) {
         switch (model) {
+        case photonstack::MosaicTransformModel::Wcs: return "wcs";
         case photonstack::MosaicTransformModel::Translation:
             return "translation";
         case photonstack::MosaicTransformModel::Similarity:
@@ -3017,6 +3031,8 @@ int buildMosaic(const std::vector<std::string>& args) {
               << "  \"width\": " << result.image.width << ",\n"
               << "  \"height\": " << result.image.height << ",\n"
               << "  \"autoAligned\": " << (result.usedAutoAlignment ? "true" : "false") << ",\n"
+              << "  \"wcsMedianPixels\": " << (result.wcsMedian ? std::to_string(*result.wcsMedian) : "null") << ",\n"
+              << "  \"wcsP95Pixels\": " << (result.wcsP95 ? std::to_string(*result.wcsP95) : "null") << ",\n"
               << "  \"matches\": " << result.matchedPairs << ",\n"
               << "  \"fallbackPanels\": " << result.fallbackPanels << ",\n"
               << "  \"exposureMatched\": " << (result.exposureMatched ? "true" : "false") << ",\n"

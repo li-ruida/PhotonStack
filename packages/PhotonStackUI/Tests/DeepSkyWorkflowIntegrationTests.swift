@@ -339,7 +339,7 @@ func deepSkyRefinishChecksV2SourceContentAcrossBuilds(change: String) async thro
     #expect(changedInfo.st_size == info.st_size && changedInfo.st_mtimespec.tv_sec == info.st_mtimespec.tv_sec
             && changedInfo.st_mtimespec.tv_nsec == info.st_mtimespec.tv_nsec)
     await upgraded.refinishDeepSkyMaster()
-    #expect(upgraded.errorMessage?.contains("Source files changed") == true)
+    #expect(upgraded.errorMessage == upgraded.localizedMessage(DeepSkyRecipeError.inputsChanged.localizedDescription))
     #expect(upgraded.deepSkySettings.lastReport == previous)
     try original.write(to: inputs[0]); try restoreTimes()
     // Refinish depends on the verified master/source evidence, not the previous
@@ -505,13 +505,13 @@ func deepSkyAppWorkflowMatchesCLIAndReopensRecipe() async throws {
     var changedMaster = masterBytes; changedMaster[changedMaster.count - 1] ^= 1
     try changedMaster.write(to: masterURL)
     await model.refinishDeepSkyMaster()
-    #expect(model.errorMessage?.contains("Linear master changed") == true)
+    #expect(model.errorMessage == model.localizedMessage(DeepSkyRecipeError.masterChanged.localizedDescription))
     #expect(model.deepSkySettings.lastReport == finished)
     try masterBytes.write(to: masterURL)
     var changedSource = originals[0]; changedSource.append(0)
     try changedSource.write(to: inputs[0])
     await model.refinishDeepSkyMaster()
-    #expect(model.errorMessage?.contains("Source files changed") == true)
+    #expect(model.errorMessage == model.localizedMessage(DeepSkyRecipeError.inputsChanged.localizedDescription))
     #expect(model.deepSkySettings.lastReport == finished)
     try originals[0].write(to: inputs[0])
     // Re-analysis replaces the report but must not lose access to the completed stack.

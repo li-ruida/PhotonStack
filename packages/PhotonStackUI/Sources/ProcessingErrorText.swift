@@ -31,6 +31,8 @@ extension PhotonStackWorkspaceModel {
                     case "MemoryAllocationFailed": return "可用内存不足。请减少并发数或处理较少的帧后重试。"
                     case "OutputConflictsWithInput": return "输出位置与输入文件相同，请另选位置。"
                     case "ImageDimensionsMismatch": return "图像尺寸不一致。请检查参与处理的原片和校准帧。"
+                    case "MosaicWcsInvalid": return "无法使用天球坐标。请导入已解算的 TAN / TAN-SIP 母片，或切换为星点自动配准。\n" + (diagnostic?.message ?? "")
+                    case "MosaicWcsCanvasTooLarge": return "这些母片的坐标跨度过大。请检查分组、像素比例和解算坐标。"
                     case "MosaicInsufficientOverlap": return "相邻天区没有足够的共同星点。请检查天区分组和重叠区域。"
                     default: break
                     }

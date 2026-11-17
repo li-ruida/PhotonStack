@@ -1,5 +1,6 @@
 #pragma once
 
+#include "photonstack/SkyProjection.hpp"
 #include <filesystem>
 
 #include "photonstack/ImageCodec.hpp"
@@ -42,7 +43,8 @@ class FitsCodec {
     // sensorPattern is a matching single-channel, signed linear additive model
     // applied before debayering. It is distinct from bias/dark/flat calibration;
     // combining them is rejected until their training stage is explicitly modeled.
-    ImageWriteResult write(const ImageBuffer& image, const std::filesystem::path& path) const;
+    ImageWriteResult write(const ImageBuffer& image, const std::filesystem::path& path,
+                           const TanGrid* sky = nullptr) const;
 };
 
 bool isFitsPath(const std::filesystem::path& path);

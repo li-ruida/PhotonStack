@@ -564,6 +564,8 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
 
     public func mosaicAlignmentName(_ alignment: MosaicAlignmentMode) -> String {
         switch (self, alignment) {
+        case (.english, .wcs): return "FITS WCS"
+        case (.simplifiedChinese, .wcs): return "天球坐标"
         case (.english, .manual):
             return "Manual"
         case (.english, .auto):

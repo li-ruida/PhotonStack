@@ -40,6 +40,7 @@ let package = Package(
                 "src/BackgroundSamples.cpp",
                 "src/BackgroundRBF.cpp",
                 "src/Calibrator.cpp",
+                "src/CfaCalibration.cpp",
                 "src/CfaDrizzle.cpp",
                 "src/CloudRemoval.cpp",
                 "src/ComaReducer.cpp",

@@ -84,10 +84,10 @@ void save(const fs::path& directory, const std::vector<std::pair<const char*, co
         throw;
     }
 }
-ImageReadResult decodeForStack(const fs::path& path) {
+ImageReadResult decodeForStack(const fs::path& path, const CfaCalibration* calibration) {
     ImageReadResult result;
     try {
-        const auto planes = readDualBandPlanes(path);
+        const auto planes = readDualBandPlanes(path, calibration);
         auto& rgba = result.image;
         rgba.width = planes.hydrogen.width;
         rgba.height = planes.hydrogen.height;
@@ -107,13 +107,13 @@ ImageReadResult decodeForStack(const fs::path& path) {
     return result;
 }
 
-void stackLines(const NarrowbandRecipe& recipe, const fs::path& directory) {
+void stackLines(const NarrowbandRecipe& recipe, const fs::path& directory, const CfaCalibration* calibration) {
     std::vector<fs::path> inputs;
     for (const auto& input : recipe.inputs) inputs.push_back(input.path);
     StackOptions options;
     options.alignSimilarity = true;
     options.method = StackMethod::SigmaClip;
-    options.readFrame = decodeForStack;
+    options.readFrame = [calibration](const auto& path) { return decodeForStack(path, calibration); };
     options.collectAcceptedWeights = true;
     const auto result = Stacker().stack(inputs, options);
     if (!result.ok)
@@ -150,16 +150,36 @@ int runNarrowband(const std::vector<std::string>& args) {
             throw std::invalid_argument("Green-channel H-alpha fraction must be between 0 and 1");
         return value;
     };
+    const auto calibrationOption = [&](const std::string& option, const std::string& value) {
+        if (option == "--bias" || option == "--dark" || option == "--flat") {
+            if (!recipe.calibration.emplace(option.substr(2), NarrowbandFile{fs::canonical(value), {}}).second)
+                throw std::invalid_argument("Duplicate calibration master");
+        } else if (option == "--dark-bias" || option == "--flat-bias") {
+            narrowbandBiasState(value);
+            auto& state = option == "--dark-bias" ? recipe.darkBiasState : recipe.flatBiasState;
+            if (state != "unknown" || value == "unknown") throw std::invalid_argument("Specify each bias state exactly once");
+            state = value;
+        } else return false;
+        return true;
+    };
     if (args.at(0) == "narrowband-stack") {
         if (args.size() < 6 || args[1] != "--output-dir")
             throw std::invalid_argument("Specify --output-dir followed by at least three dual-band CFA exposures");
         directory = args[2]; recipe.operation = "stack";
-        for (std::size_t i = 3; i < args.size(); ++i) recipe.inputs.push_back({fs::canonical(args[i]), {}});
+        for (std::size_t i = 3; i < args.size(); ++i) {
+            if (args[i].starts_with("--")) {
+                if (i + 1 >= args.size() || !calibrationOption(args[i], args[i + 1])) throw std::invalid_argument("Unknown or incomplete stack option");
+                ++i;
+            } else recipe.inputs.push_back({fs::canonical(args[i]), {}});
+        }
+        if (recipe.inputs.size() < 3) throw std::invalid_argument("At least three CFA exposures are required");
     } else {
         std::map<std::string, std::string> values;
-        for (std::size_t i = 1; i < args.size(); i += 2)
-            if (i + 1 >= args.size() || !values.emplace(args[i], args[i + 1]).second)
-                throw std::invalid_argument("Missing or duplicate narrowband option");
+        for (std::size_t i = 1; i < args.size(); i += 2) {
+            if (i + 1 >= args.size()) throw std::invalid_argument("Missing narrowband option value");
+            if (args[0] == "narrowband-extract" && calibrationOption(args[i], args[i + 1])) continue;
+            if (!values.emplace(args[i], args[i + 1]).second) throw std::invalid_argument("Duplicate narrowband option");
+        }
         if (args[0] == "narrowband-inspect") {
             if (values.size() != 1 || !values.contains("--recipe")) throw std::invalid_argument("Expected --recipe");
             recipe = readNarrowbandRecipe(values.at("--recipe"), true);
@@ -192,9 +212,29 @@ int runNarrowband(const std::vector<std::string>& args) {
         if (!distinct.insert(fs::canonical(file.path)).second) throw std::invalid_argument("Duplicate narrowband input");
         if (file.sha.empty()) file.sha = fileSHA256(file.path);
     }
-    if (recipe.operation == "stack") stackLines(recipe, directory);
+    for (auto& [role, file] : recipe.calibration) {
+        if (!distinct.insert(fs::canonical(file.path)).second) throw std::invalid_argument("Calibration master duplicates an input");
+        if (file.sha.empty()) file.sha = fileSHA256(file.path);
+    }
+    std::optional<CfaCalibration> calibration;
+    if (!recipe.calibration.empty()) {
+        CfaCalibrationOptions options;
+        if (recipe.calibration.contains("bias")) options.bias = recipe.calibration.at("bias").path;
+        if (recipe.calibration.contains("dark")) options.dark = recipe.calibration.at("dark").path;
+        if (recipe.calibration.contains("flat")) options.flat = recipe.calibration.at("flat").path;
+        options.darkBiasState = narrowbandBiasState(recipe.darkBiasState);
+        options.flatBiasState = narrowbandBiasState(recipe.flatBiasState);
+        if ((options.dark.empty() && recipe.darkBiasState != "unknown") || (options.flat.empty() && recipe.flatBiasState != "unknown"))
+            throw std::invalid_argument("Bias state requires its calibration master");
+        calibration = prepareCfaCalibration(recipe.inputs[0].path, options);
+        for (const auto& input : recipe.inputs) calibration->validate(inspectCfaSensor(input.path));
+    } else if (recipe.darkBiasState != "unknown" || recipe.flatBiasState != "unknown") {
+        throw std::invalid_argument("Bias state requires its calibration master");
+    }
+    const auto* prepared = calibration ? &*calibration : nullptr;
+    if (recipe.operation == "stack") stackLines(recipe, directory, prepared);
     else if (recipe.operation == "extract") {
-        const auto planes = readDualBandPlanes(recipe.inputs[0].path);
+        const auto planes = readDualBandPlanes(recipe.inputs[0].path, prepared);
         const auto haValid = scalarPlane(planes.hydrogen, 0, true), oxygenValid = scalarPlane(planes.oxygen, 0, true);
         save(directory, {{"Ha.fits", &planes.hydrogen}, {"OIII.fits", &planes.oxygen},
                          {"Ha-valid.fits", &haValid}, {"OIII-valid.fits", &oxygenValid}}, recipe);

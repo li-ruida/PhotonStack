@@ -292,6 +292,7 @@ void printUsage() {
               << "  photonstack narrowband-replay --recipe recipe.txt --output-dir <new-directory> [--green-ha <0..1>]\n"
               << "  photonstack narrowband-inspect --recipe recipe.txt\n"
               << "  photonstack narrowband-stack --output-dir <new-directory> <CFA.fits>...\n"
+              << "    extract/stack calibration: [--bias <CFA.fits>] [--dark <CFA.fits> --dark-bias included|removed] [--flat <CFA.fits> --flat-bias included|removed]\n"
               << "  photonstack narrowband-compose --ha <Ha.fits> --oiii <OIII.fits> --green-ha <0..1> --output-dir <new-directory>\n"
               << "  photonstack frequency-stack --plan <prepared.psfreq> --output <linear.fits> [--threads 1]\n"
               << "  photonstack denoise --input <image> --output <image> [--amount 0.5] [--chroma-amount 0.5] "

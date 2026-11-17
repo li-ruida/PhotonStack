@@ -1,6 +1,7 @@
 #pragma once
 
 #include "photonstack/SkyProjection.hpp"
+#include "photonstack/CfaCalibration.hpp"
 #include <filesystem>
 
 #include "photonstack/ImageCodec.hpp"
@@ -27,7 +28,7 @@ struct DualBandPlanes {
 
 // Estimates H-alpha and OIII from one linear H-alpha/OIII Bayer exposure.
 // Each sample represents one complete 2x2 sensor cell in stored row order.
-DualBandPlanes readDualBandPlanes(const std::filesystem::path& path);
+DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCalibration* calibration = nullptr);
 
 class FitsCodec {
   public:

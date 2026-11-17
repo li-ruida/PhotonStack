@@ -518,7 +518,74 @@ bool FitsSensorIdentity::sameAcquisition(const FitsSensorIdentity& b) const {
         bayer == b.bayer && xOffset == b.xOffset && yOffset == b.yOffset && exposure == b.exposure && gain == b.gain;
 }
 
-DualBandPlanes readDualBandPlanes(const std::filesystem::path& path) {
+CfaSensorInfo inspectCfaSensor(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    const auto header = parseHeader(stream);
+    if (!header.ok) throw std::runtime_error(header.message);
+    const auto desc = imageDescription(header);
+    if (!desc || desc->channels != 1 || desc->width < 2 || desc->height < 2)
+        throw std::invalid_argument("Calibration requires an un-debayered CFA FITS plane");
+    std::size_t count = 0, bytes = 0;
+    const auto size = std::filesystem::file_size(path);
+    if (!checkedMultiply(desc->width, desc->height, count) || !checkedMultiply(count, bytesPerSample(desc->bitpix), bytes) ||
+        header.dataOffset > size || size - header.dataOffset < bytes)
+        throw std::invalid_argument("Calibration CFA data section is truncated or too large");
+    const auto tag = header.values.find("BAYERPAT");
+    std::string pattern = tag == header.values.end() ? "" : tag->second;
+    std::transform(pattern.begin(), pattern.end(), pattern.begin(), [](unsigned char c) { return std::toupper(c); });
+    if (pattern != "RGGB" && pattern != "BGGR" && pattern != "GBRG" && pattern != "GRBG")
+        throw std::invalid_argument("Calibration master requires an explicit supported BAYERPAT");
+    const auto profile = header.values.find("PSCOLOR");
+    if (profile != header.values.end() && profile->second != "Linear" && profile->second != "LINEAR-SRGB")
+        throw std::invalid_argument("Calibration requires linear sensor data");
+    if (desc->bitpix > 0 && header.values.contains("BLANK"))
+        throw std::invalid_argument("Integer CFA with BLANK requires an explicit validity mask");
+    const auto phase = [&](const char* key) -> unsigned {
+        if (!header.values.contains(key)) return 0;
+        const auto v = integerValue(header, key);
+        if (!v) throw std::invalid_argument("Invalid CFA offset");
+        return static_cast<unsigned>(*v) & 1U;
+    };
+    CfaSensorInfo result;
+    result.width = desc->width; result.height = desc->height;
+    for (unsigned p = 0; p < 4; ++p) result.colors[p] = pattern[p ^ phase("XBAYROFF") ^ (phase("YBAYROFF") << 1)];
+    if (header.values.contains("INSTRUME")) result.camera = header.values.at("INSTRUME");
+    const auto number = [&](const char* key) -> std::optional<double> {
+        if (!header.values.contains(key)) return std::nullopt;
+        const auto value = floatingValue(header, key, 0);
+        if (!value || !std::isfinite(*value) || *value < 0) throw std::invalid_argument(std::string("Invalid CFA acquisition field: ") + key);
+        return value;
+    };
+    result.exposure = number(header.values.contains("EXPOSURE") ? "EXPOSURE" : "EXPTIME");
+    result.gain = number("GAIN"); result.binX = number("XBINNING"); result.binY = number("YBINNING");
+    return result;
+}
+
+ImageBuffer readCfaSensor(const std::filesystem::path& path) {
+    const auto info = inspectCfaSensor(path);
+    std::ifstream stream(path, std::ios::binary);
+    const auto header = parseHeader(stream);
+    const auto desc = imageDescription(header);
+    if (!header.ok || !desc || desc->width != info.width || desc->height != info.height || desc->channels != 1)
+        throw std::invalid_argument("Calibration FITS header changed during reading");
+    const auto scale = floatingValue(header, "BSCALE", 1), zero = floatingValue(header, "BZERO", 0);
+    if (!scale || !zero) throw std::invalid_argument("Invalid FITS physical scale");
+    const auto size = std::filesystem::file_size(path);
+    std::size_t count = 0, bytes = 0;
+    if (!checkedMultiply(info.width, info.height, count) || !checkedMultiply(count, bytesPerSample(desc->bitpix), bytes) ||
+        header.dataOffset > size || size - header.dataOffset < bytes)
+        throw std::invalid_argument("Calibration FITS data section is truncated or too large");
+    ImageBuffer result;
+    result.width = info.width; result.height = info.height;
+    result.channels = 1; result.format = PixelFormat::Float32Gray; result.pixels.resize(count);
+    const auto status = forEachPhysicalSample(stream, header.dataOffset, count, bytesPerSample(desc->bitpix), desc->bitpix,
+        *scale, *zero, [&](std::size_t p, float value) { result.pixels[p] = value; });
+    if (status != SampleStreamResult::Success) throw std::runtime_error("Could not read calibration CFA samples");
+    return result;
+}
+
+DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCalibration* calibration) {
+    if (calibration) calibration->validate(inspectCfaSensor(path));
     std::ifstream stream(path, std::ios::binary);
     if (!stream) throw std::runtime_error("Cannot open CFA FITS input");
     const auto header = parseHeader(stream);
@@ -569,6 +636,7 @@ DualBandPlanes readDualBandPlanes(const std::filesystem::path& path) {
             if (x / 2 >= width || y / 2 >= height) return;
             const auto cell = y / 2 * width + x / 2;
             const unsigned colorPhase = unsigned(2 * (y % 2) + x % 2);
+            if (calibration) value = calibration->apply(pixel, value);
             if (!std::isfinite(value)) value = std::numeric_limits<float>::quiet_NaN();
             if (colorPhase == red) result.hydrogen.pixels[cell] = value;
             else sums[x / 2] += value;

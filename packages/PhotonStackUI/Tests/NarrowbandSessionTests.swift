@@ -3,7 +3,7 @@ import Testing
 import PhotonStackProcessing
 @testable import PhotonStackUI
 
-private func writeDualBandFixture(_ path: URL) throws -> Data {
+private func writeDualBandFixture(_ path: URL, constant: Float? = nil) throws -> Data {
     let cards = [("SIMPLE", "T"), ("BITPIX", "-32"), ("NAXIS", "2"), ("NAXIS1", "32"), ("NAXIS2", "32"), ("BAYERPAT", "'RGGB'")]
     var text = cards.map { key, value in
         (key.padding(toLength: 8, withPad: " ", startingAt: 0) + "= " + value).padding(toLength: 80, withPad: " ", startingAt: 0)
@@ -11,7 +11,7 @@ private func writeDualBandFixture(_ path: URL) throws -> Data {
     text = text.padding(toLength: 2880, withPad: " ", startingAt: 0)
     var bytes = Data(text.utf8)
     for y in 0..<32 { for x in 0..<32 {
-        let value = Float((x % 2 == 0 && y % 2 == 0 ? -10 : 20) + x + y)
+        let value = constant ?? Float((x % 2 == 0 && y % 2 == 0 ? -10 : 20) + x + y)
         var word = value.bitPattern.bigEndian
         withUnsafeBytes(of: &word) { bytes.append(contentsOf: $0) }
     }}
@@ -57,4 +57,61 @@ func narrowbandSessionExtractRemixReopenAndReplayProtectsInputsAndDestinations()
     try original.write(to: source)
     var corrupt = content; corrupt[corrupt.count - 1] ^= 1; try corrupt.write(to: image)
     do { _ = try await restored.open(mixed, using: service); Issue.record("Modified output accepted") } catch {}
+}
+
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil)) @MainActor
+func narrowbandCalibrationRestoresMastersAndPreservesPendingChoices() async throws {
+    let cli = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"]))
+    let service = CLIProcessingService(executableURL: cli)
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("NarrowbandCalibration-\(UUID())", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("light.fits"), bias = root.appendingPathComponent("master bias.fits")
+    _ = try writeDualBandFixture(source)
+    let master = try writeDualBandFixture(bias, constant: 10)
+    let session = NarrowbandSession()
+    session.useCalibration = true
+    #expect(!session.canCalibrate)
+    session.calibration.bias = bias.path
+    #expect(session.canCalibrate)
+    let result = root.appendingPathComponent("result", isDirectory: true)
+    let image = try await session.run(["narrowband-extract", "--input", source.path, "--output-dir", result.path] + session.calibrationArguments,
+                                      output: result, using: service)
+    let bytes = try Data(contentsOf: image)
+    let word = bytes[2880..<2884].reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+    #expect(Float(bitPattern: word) == -20)
+    let restored = NarrowbandSession()
+    _ = try await restored.open(result, using: service)
+    #expect(restored.useCalibration)
+    #expect(URL(fileURLWithPath: restored.calibration.bias).resolvingSymlinksInPath() == bias.resolvingSymlinksInPath())
+    restored.useCalibration = false
+    restored.calibration.bias = "/pending/master.fits"
+    _ = try await restored.verifiedOutput("OIII.fits", using: service)
+    #expect(!restored.useCalibration && restored.calibration.bias == "/pending/master.fits")
+    let replay = root.appendingPathComponent("replay", isDirectory: true)
+    let replayed = try await restored.replay(output: replay, using: service)
+    #expect(try Data(contentsOf: replayed) == bytes)
+    #expect(restored.useCalibration)
+    #expect(URL(fileURLWithPath: restored.calibration.bias).resolvingSymlinksInPath() == bias.resolvingSymlinksInPath())
+    var changed = master; changed[changed.count - 1] ^= 1; try changed.write(to: bias)
+    do { _ = try await restored.open(result, using: service); Issue.record("Changed bias master accepted") } catch {}
+}
+
+@Test func narrowbandCalibrationRequiresExplicitBiasHandling() {
+    var options = NarrowbandCalibrationReport()
+    options.dark = "/dark.fits"
+    #expect(!options.isUsable)
+    options.darkBiasState = "included"
+    #expect(options.isUsable)
+    options.darkBiasState = "removed"
+    #expect(!options.isUsable)
+    options.bias = "/bias.fits"
+    #expect(options.isUsable)
+    options.flat = "/flat.fits"
+    #expect(!options.isUsable)
+    options.flatBiasState = "included"
+    #expect(options.isUsable)
+    options.bias = options.flat
+    #expect(!options.isUsable)
 }

@@ -36,30 +36,38 @@ struct NarrowbandControl: View {
                 Text(zh ? "选中一张 Hα/OⅢ 双窄带拜耳 FITS。每个完整的 2×2 像素格生成一个 Hα 和一个 OⅢ 样本。"
                      : "Select an Hα/OⅢ dual-band Bayer FITS. Each complete 2×2 cell yields one sample per line.")
                     .font(.caption)
+                NarrowbandCalibrationControl(session: session, chinese: zh)
                 Button(zh ? "提取并保存两张 FITS…" : "Extract and save both FITS…") {
                     guard let asset = model.selectedAsset, let dest = chooseOutput(asset.originalURL.deletingPathExtension().lastPathComponent) else { return }
                     model.startNarrowbandJob { service in
-                        try await session.run(["narrowband-extract", "--input", asset.originalURL.path, "--output-dir", dest.path],
+                        try await session.run(["narrowband-extract", "--input", asset.originalURL.path, "--output-dir", dest.path] + session.calibrationArguments,
                                               output: dest, using: service)
                     }
-                }.disabled(model.selectedAsset?.kind != .fits).accessibilityIdentifier("narrowband.extract")
+                }.disabled(model.selectedAsset?.kind != .fits || !session.canCalibrate).accessibilityIdentifier("narrowband.extract")
                 Button(zh ? "选择多张原片并堆栈…" : "Stack dual-band exposures…") {
-                    let panel = NSOpenPanel()
-                    panel.allowsMultipleSelection = true
+                    let panel = NativeFilePanels.makeImportFilesPanel(message: zh ? "选择至少 3 张同一目标的双窄带亮场。" : "Select at least 3 dual-band exposures of the same target.")
+                    panel.title = zh ? "双窄带亮场" : "Dual-band exposures"
+                    panel.prompt = zh ? "选择亮场" : "Choose exposures"
                     panel.allowedContentTypes = ["fit", "fits", "fts"].compactMap { UTType(filenameExtension: $0) }
                     guard panel.runModal() == .OK else { return }
                     let frames = panel.urls
+                    guard frames.count >= 3 else {
+                        let alert = NSAlert()
+                        alert.messageText = zh ? "至少选择 3 张亮场" : "Select at least 3 exposures"
+                        alert.informativeText = zh ? "当前选择了 \(frames.count) 张。单张原片可使用“提取并保存两张 FITS”。" : "You selected \(frames.count). Use line extraction for a single exposure."
+                        alert.runModal()
+                        return
+                    }
                     guard let dest = chooseOutput("HOO-stack") else { return }
                     model.startNarrowbandJob { service in
-                        try await session.run(["narrowband-stack", "--output-dir", dest.path] + frames.map(\.path),
+                        try await session.run(["narrowband-stack", "--output-dir", dest.path] + session.calibrationArguments + frames.map(\.path),
                                               output: dest, using: service)
                     }
-                }
+                }.disabled(!session.canCalibrate).accessibilityIdentifier("narrowband.stack")
             }
             Divider()
             Button(zh ? "打开双窄带结果…" : "Open narrowband result…") {
-                let panel = NSOpenPanel()
-                panel.canChooseDirectories = true; panel.canChooseFiles = false
+                let panel = NativeFilePanels.makeImportFolderPanel(message: zh ? "选择含 recipe.txt 的双窄带结果目录。" : "Choose a narrowband result folder containing recipe.txt.")
                 guard panel.runModal() == .OK, let directory = panel.url else { return }
                 model.startNarrowbandJob { service in try await session.open(directory, using: service) }
             }.accessibilityIdentifier("narrowband.open")
@@ -93,8 +101,14 @@ struct NarrowbandControl: View {
                     guard let dest = chooseOutput("narrowband-replay") else { return }
                     model.startNarrowbandJob { service in try await session.replay(output: dest, using: service) }
                 }.accessibilityIdentifier("narrowband.replay")
-                Text(zh ? "输入与结果均校验摘要。采用权重是 Sigma 剔除后有效覆盖权重之和；几何覆盖率为剔除前的帧覆盖比例。双窄带堆栈只使用两条通带都有效的像素格，尚未进行暗偏平校准。"
-                     : "Inputs and results are hash-checked. Accepted weights sum post-Sigma coverage; geometric coverage is measured before clipping. Stacking uses cells valid in both bands. No bias/dark/flat calibration is applied.")
+                Text(report.operation == "compose"
+                     ? (zh ? "合色阶段不重复应用传感器校准。" : "Sensor calibration is not repeated during composition.")
+                     : report.calibration == nil
+                        ? (zh ? "此配方未应用传感器校准。" : "This recipe applies no sensor calibration.")
+                        : (zh ? "此配方已在通带提取前应用传感器校准。" : "Sensor calibration was applied before line extraction."))
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(zh ? "输入与结果均校验摘要。采用权重是 Sigma 剔除后有效覆盖权重之和；几何覆盖率为剔除前的帧覆盖比例。双窄带堆栈只使用两条通带都有效的像素格。"
+                     : "Inputs and results are hash-checked. Accepted weights sum post-Sigma coverage; geometric coverage is measured before clipping. Stacking uses cells valid in both bands.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }.disabled(model.hasActiveProcessing)
@@ -103,7 +117,7 @@ struct NarrowbandControl: View {
     private func linePicker(_ name: String, selection: Binding<URL?>) -> some View {
         HStack {
             Button(name + "…") {
-                let panel = NSOpenPanel()
+                let panel = NativeFilePanels.makeRelinkAssetPanel(message: zh ? "选择已配准的单色线性母片。" : "Choose a registered linear mono master.")
                 panel.allowedContentTypes = ["fit", "fits", "fts"].compactMap { UTType(filenameExtension: $0) }
                 if panel.runModal() == .OK { selection.wrappedValue = panel.url }
             }
@@ -112,10 +126,7 @@ struct NarrowbandControl: View {
     }
 
     private func chooseOutput(_ prefix: String) -> URL? {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
+        let panel = NativeFilePanels.makeBatchOutputDirectoryPanel(message: zh ? "将在所选目录中新建结果文件夹。" : "A new result folder will be created here.")
         panel.prompt = zh ? "保存到此处" : "Save here"
         guard panel.runModal() == .OK, let parent = panel.url else { return nil }
         return parent.appendingPathComponent(prefix + "-" + UUID().uuidString.prefix(8), isDirectory: true)

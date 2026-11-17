@@ -12,10 +12,11 @@ import unittest
 CLI = Path(sys.argv.pop(1)).resolve()
 
 
-def write_source(path, pattern, ox, oy, values, width=5, height=5):
+def write_source(path, pattern, ox, oy, values, width=5, height=5, metadata=None):
     cards = {"SIMPLE": "T", "BITPIX": "-32", "NAXIS": "2", "NAXIS1": width,
              "NAXIS2": height, "BSCALE": "2", "BZERO": "-31",
              "BAYERPAT": repr(pattern), "XBAYROFF": ox, "YBAYROFF": oy}
+    cards.update(metadata or {})
     header = "".join(f"{k:<8}= {str(v):>20}".ljust(80) for k, v in cards.items())
     data = struct.pack(f">{len(values)}f", *values)
     path.write_bytes((header + "END").ljust(2880).encode("ascii") + data.ljust(2880, b"\0"))
@@ -161,6 +162,149 @@ class Extraction(unittest.TestCase):
             marker.write_bytes(b"keep me")
             self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
             self.assertEqual(marker.read_bytes(), b"keep me")
+
+
+class SensorCalibration(unittest.TestCase):
+    def run_cli(self, *args, ok=True):
+        result = subprocess.run([CLI, *map(str, args)], capture_output=True, text=True)
+        if ok:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+        return result.stderr
+
+    def fixture(self, root, name, values, pattern="RGGB", offset=(0,0), metadata=None):
+        path = root / (name + ".fits")
+        meta = {"INSTRUME": "'camera-A'", "GAIN": 100, "EXPTIME": 60, "XBINNING": 1, "YBINNING": 1}
+        meta.update(metadata or {})
+        write_source(path, pattern, *offset, [(v+31)/2 for v in values], 4, 4, meta)
+        return path
+
+    def test_sensor_calibration_recovers_signed_signals_all_phases(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            for pattern in ("RGGB", "GRBG", "GBRG", "BGGR"):
+                for offset in ((0,0), (1,0), (0,-1), (1,1)):
+                    for dark_state, flat_state in (("included","included"), ("removed","removed"), ("included","removed"), ("removed","included")):
+                        truth=[]; bias=[]; dark=[]; flat=[]; light=[]
+                        for y in range(4):
+                            for x in range(4):
+                                phase=(y%2)*2+x%2; cell=(y//2)*2+x//2
+                                response=(.5,1,1.5,1)[cell]
+                                signal=-20+5*cell if pattern[((y+offset[1])%2)*2+(x+offset[0])%2]=='R' else 40+phase*5+cell*5
+                                b=10+phase; d=3+cell
+                                truth.append(signal); bias.append(b)
+                                light.append(signal*response+b+d)
+                                dark.append(d+(b if dark_state=='included' else 0))
+                                flat.append(100*(phase+1)*response+(b if flat_state=='included' else 0))
+                        src=self.fixture(root,'light',light,pattern,offset)
+                        b=self.fixture(root,'bias',bias,pattern,offset,{'EXPTIME':0})
+                        d=self.fixture(root,'dark',dark,pattern,offset)
+                        f=self.fixture(root,'flat',flat,pattern,offset,{'EXPTIME':2})
+                        out=root/f'{pattern}-{offset}-{dark_state}-{flat_state}'
+                        report=self.run_cli('narrowband-extract','--input',src,'--output-dir',out,'--bias',b,
+                                            '--dark',d,'--dark-bias',dark_state,'--flat',f,'--flat-bias',flat_state)
+                        self.assertEqual(report['calibration']['darkBiasState'],dark_state)
+                        h,o=plane(out/'Ha.fits'),plane(out/'OIII.fits')
+                        for cy in range(2):
+                            for cx in range(2):
+                                values=[(pattern[((y+offset[1])%2)*2+(x+offset[0])%2],truth[y*4+x])
+                                    for y in range(cy*2,cy*2+2) for x in range(cx*2,cx*2+2)]
+                                i=cy*2+cx
+                                self.assertAlmostEqual(h[i],next(v for c,v in values if c=='R'),places=5)
+                                self.assertAlmostEqual(o[i],sum(v for c,v in values if c!='R')/3,places=5)
+                        again=out.with_name(out.name+'-again')
+                        self.run_cli('narrowband-replay','--recipe',out/'recipe.txt','--output-dir',again)
+                        for name in ('Ha.fits','OIII.fits','Ha-valid.fits','OIII-valid.fits'):
+                            self.assertEqual((out/name).read_bytes(),(again/name).read_bytes())
+
+    def test_missing_master_values_preserve_independent_line_validity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            source=self.fixture(root,'light',[20]*16)
+            bias=[10]*16; bias[0]=math.nan
+            b=self.fixture(root,'bias',bias)
+            flat=[100]*16; flat[3]=0
+            f=self.fixture(root,'flat',flat)
+            out=root/'out'
+            self.run_cli('narrowband-extract','--input',source,'--output-dir',out,'--bias',b,'--flat',f,'--flat-bias','removed')
+            self.assertEqual(plane(out/'Ha-valid.fits'),(0,1,1,1))
+            self.assertEqual(plane(out/'OIII-valid.fits'),(1,0,1,1))
+            self.assertTrue(math.isnan(plane(out/'Ha.fits')[0]))
+            self.assertTrue(math.isnan(plane(out/'OIII.fits')[1]))
+            self.assertAlmostEqual(plane(out/'Ha.fits')[3],10)
+            original=b.read_bytes(); corrupt=bytearray(original);corrupt[-1]^=1;b.write_bytes(corrupt)
+            self.run_cli('narrowband-inspect','--recipe',out/'recipe.txt',ok=False)
+            self.run_cli('narrowband-replay','--recipe',out/'recipe.txt','--output-dir',root/'replay',ok=False)
+            self.assertFalse((root/'replay').exists())
+
+    def test_rejects_ambiguous_or_incompatible_calibration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            src=self.fixture(root,'light',[20]*16); d=self.fixture(root,'dark',[10]*16)
+            base=['narrowband-extract','--input',src,'--output-dir',root/'out']
+            for args in (['--dark',d],['--dark',d,'--dark-bias','removed'],['--flat',d,'--flat-bias','included'],
+                         ['--dark-bias','included'],['--bias',src],['--bias',d,'--dark',d,'--dark-bias','included']):
+                self.run_cli(*base,*args,ok=False); self.assertFalse((root/'out').exists())
+            for metadata in ({'GAIN':200},{'EXPTIME':120},{'INSTRUME':"'camera-B'"},{'XBINNING':2},{'GAIN':"'oops'"},{'EXPTIME':'NaN'}):
+                self.fixture(root,'dark',[10]*16,metadata=metadata)
+                self.run_cli(*base,'--dark',d,'--dark-bias','included',ok=False)
+                self.assertFalse((root/'out').exists())
+            self.fixture(root,'dark',[10]*16,pattern='GRBG')
+            self.run_cli(*base,'--dark',d,'--dark-bias','included',ok=False)
+            self.fixture(root,'dark',[0]*16)
+            self.run_cli(*base,'--flat',d,'--flat-bias','removed',ok=False)
+            self.assertFalse((root/'out').exists())
+            self.fixture(root,'dark',[10]*16)
+            damaged=src.read_bytes().replace(b'NAXIS1  =                    4',b'NAXIS1  =           4294967295')
+            self.assertNotEqual(damaged,src.read_bytes())
+            src.write_bytes(damaged)
+            error=self.run_cli(*base,'--dark',d,'--dark-bias','included',ok=False)
+            self.assertIn('truncated or too large',error)
+            self.assertFalse((root/'out').exists())
+
+    def test_calibrated_dither_stack_matches_undistorted_truth(self):
+        rng=random.Random(147)
+        w,h=92,68
+        stars=[(rng.randrange(8,w-8),rng.randrange(8,h-8),rng.randrange(100,400)) for _ in range(45)]
+        sky=[round(sum(a*math.exp(-((x-sx)**2+(y-sy)**2)/3) for sx,sy,a in stars)) for y in range(h) for x in range(w)]
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); clean=[]; damaged=[]
+            for n,dx in enumerate((0,2,-2)):
+                original=[]; sensor=[]; flat=[]
+                for y in range(2*h):
+                    for x in range(2*w):
+                        sx=x//2-dx; phase=y%2*2+x%2
+                        value=50+(sky[y//2*w+sx] if 0<=sx<w else 0)*(2 if phase==0 else 1)
+                        response=(.5,1,1.5,1)[x//2%4]
+                        original.append(value); sensor.append(value*response+32)
+                        flat.append(response*100*(phase+1))
+                a=root/f'clean{n}.fits';b=root/f'sensor{n}.fits'
+                write_source(a,'RGGB',0,0,[(v+31)/2 for v in original],2*w,2*h)
+                write_source(b,'RGGB',0,0,[(v+31)/2 for v in sensor],2*w,2*h)
+                clean.append(a);damaged.append(b)
+            dark=root/'dark.fits';flatfile=root/'flat.fits'
+            write_source(dark,'RGGB',0,0,[(32+31)/2]*(4*w*h),2*w,2*h)
+            write_source(flatfile,'RGGB',0,0,[(v+31)/2 for v in flat],2*w,2*h)
+            self.run_cli('narrowband-stack','--output-dir',root/'truth',*clean)
+            self.run_cli('narrowband-stack','--output-dir',root/'calibrated','--dark',dark,'--dark-bias','included',
+                         '--flat',flatfile,'--flat-bias','removed',*damaged)
+            for name in ('Ha.fits','OIII.fits','HOO.fits','Ha-weight.fits','OIII-weight.fits','geometric-coverage.fits'):
+                self.assertEqual((root/'truth'/name).read_bytes(),(root/'calibrated'/name).read_bytes(),name)
+            self.run_cli('narrowband-replay','--recipe',root/'calibrated/recipe.txt','--output-dir',root/'again')
+            self.assertEqual((root/'calibrated/HOO.fits').read_bytes(),(root/'again/HOO.fits').read_bytes())
+
+    def test_version_one_recipe_still_replays_without_calibration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp); src=self.fixture(root,'light',[20]*16); out=root/'out'
+            self.run_cli('narrowband-extract','--input',src,'--output-dir',out)
+            recipe=out/'recipe.txt'
+            lines=recipe.read_text().splitlines(); lines[0]='PhotonStack-Narrowband-1'
+            recipe.write_text('\n'.join(line for line in lines if not line.startswith(('dark-bias','flat-bias')))+'\n')
+            result=self.run_cli('narrowband-inspect','--recipe',recipe)
+            self.assertIsNone(result['calibration'])
+            self.run_cli('narrowband-replay','--recipe',recipe,'--output-dir',root/'again')
+            self.assertEqual((out/'Ha.fits').read_bytes(),(root/'again/Ha.fits').read_bytes())
 
 
 if __name__ == "__main__":

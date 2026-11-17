@@ -1,15 +1,38 @@
 import Foundation
 import PhotonStackProcessing
 
+struct NarrowbandCalibrationReport: Decodable, Equatable {
+    var bias = "", dark = "", flat = ""
+    var darkBiasState = "unknown", flatBiasState = "unknown"
+    var flatNormalization = "bayer-phase-mean"
+    var isUsable: Bool {
+        let paths = [bias, dark, flat].filter { !$0.isEmpty }
+        return !paths.isEmpty && paths.allSatisfy { $0.hasPrefix("/") } && Set(paths).count == paths.count &&
+            flatNormalization == "bayer-phase-mean" &&
+            (dark.isEmpty ? darkBiasState == "unknown" : ["included", "removed"].contains(darkBiasState)) &&
+            (flat.isEmpty ? flatBiasState == "unknown" : ["included", "removed"].contains(flatBiasState)) &&
+            ((darkBiasState != "removed" && flatBiasState != "included") || !bias.isEmpty)
+    }
+    var arguments: [String] {
+        var args: [String] = []
+        for (name, path) in [("bias", bias), ("dark", dark), ("flat", flat)] where !path.isEmpty { args += ["--" + name, path] }
+        if !dark.isEmpty { args += ["--dark-bias", darkBiasState] }
+        if !flat.isEmpty { args += ["--flat-bias", flatBiasState] }
+        return args
+    }
+}
+
 struct NarrowbandReport: Decodable, Equatable {
     var type, command, operation: String
     var directory: String
     var greenHydrogen: Double
     var frames: Int
     var outputs: [String]
+    var calibration: NarrowbandCalibrationReport?
     var isValid: Bool {
         type == "complete" && command == "narrowband-" + operation && ["extract", "stack", "compose"].contains(operation) &&
         directory.hasPrefix("/") && greenHydrogen.isFinite && (0...1).contains(greenHydrogen) && frames > 0 &&
+        (calibration == nil || (operation != "compose" && calibration?.isUsable == true)) &&
         !outputs.isEmpty && Set(outputs).count == outputs.count && outputs.allSatisfy {
             ["Ha.fits", "OIII.fits", "HOO.fits", "Ha-valid.fits", "OIII-valid.fits", "Ha-weight.fits",
              "OIII-weight.fits", "geometric-coverage.fits", "validity.fits"].contains($0)
@@ -19,6 +42,10 @@ struct NarrowbandReport: Decodable, Equatable {
 @MainActor final class NarrowbandSession: ObservableObject {
     @Published private(set) var report: NarrowbandReport?
     @Published var greenHydrogen: Double = 0
+    @Published var useCalibration = false
+    @Published var calibration = NarrowbandCalibrationReport()
+    var canCalibrate: Bool { !useCalibration || calibration.isUsable }
+    var calibrationArguments: [String] { useCalibration ? calibration.arguments : [] }
     var directory: URL? { report.map { URL(fileURLWithPath: $0.directory, isDirectory: true) } }
     var recipe: URL? { directory?.appendingPathComponent("recipe.txt") }
     var primary: URL? {
@@ -33,6 +60,8 @@ struct NarrowbandReport: Decodable, Equatable {
             throw ProcessingServiceError.invalidReport(command: "narrowband-inspect")
         }
         report = decoded; greenHydrogen = decoded.greenHydrogen
+        calibration = decoded.calibration ?? NarrowbandCalibrationReport()
+        useCalibration = decoded.calibration != nil
         return directory.appendingPathComponent(decoded.outputs.contains("HOO.fits") ? "HOO.fits" : "Ha.fits")
     }
     func run(_ arguments: [String], output: URL, using service: any ProcessingService) async throws -> URL {
@@ -62,7 +91,8 @@ struct NarrowbandReport: Decodable, Equatable {
             throw ProcessingServiceError.invalidArguments("Unknown narrowband product.")
         }
         let fraction = greenHydrogen
-        defer { greenHydrogen = fraction }
+        let pending = calibration, enabled = useCalibration
+        defer { greenHydrogen = fraction; calibration = pending; useCalibration = enabled }
         _ = try await open(directory, using: service)
         return directory.appendingPathComponent(name)
     }

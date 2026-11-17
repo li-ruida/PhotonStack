@@ -21,6 +21,7 @@
 #include "NarrowbandCommand.hpp"
 #include "StarLayersCommand.hpp"
 #include "BackgroundReviewCommand.hpp"
+#include "MosaicDiagnosticsJSON.hpp"
 #include "DeepSkyCommand.hpp"
 
 #include "photonstack/ArtifactTrailRemover.hpp"
@@ -313,7 +314,7 @@ void printUsage() {
                  "[--stars-ev 0] [--nebula-ev 0] [--nebula-gamma 1] [--stars-saturation 1] [--nebula-saturation 1]\n"
               << "  photonstack mosaic --output <image> [--overlap-pixels 0] [--projection planar|cylindrical] "
                  "[--layout horizontal|grid] [--columns 2] [--alignment manual|auto|wcs] "
-                 "[--blend average|feather|multiband] [--exposure-match on|off] [--preview-width 1200] "
+                 "[--blend average|feather|multiband] [--exposure-match on|off] [--seam-diagnostics on|off] [--preview-width 1200] "
                  "[--alignment-width 2000] <image>...\n"
               << "  photonstack register --reference <image> --moving <image> --output <image> "
                  "[--mode translation|similarity|affine|distortion] [--minimum-matches 3]\n"
@@ -2866,6 +2867,12 @@ int buildMosaic(const std::vector<std::string>& args) {
                 printError("ArgumentInvalid", "--blend must be average, feather, or multiband");
                 return 1;
             }
+        } else if (arg == "--seam-diagnostics") {
+            if (i + 1 >= args.size() || (args[i + 1] != "on" && args[i + 1] != "off")) {
+                printError("ArgumentInvalid", "--seam-diagnostics requires on or off");
+                return 1;
+            }
+            options.seamDiagnostics = args[++i] == "on";
         } else if (arg == "--exposure-match") {
             if (i + 1 >= args.size()) {
                 printError("ArgumentMissing", "--exposure-match requires on or off");
@@ -3048,8 +3055,9 @@ int buildMosaic(const std::vector<std::string>& args) {
     } else {
         std::cout << (result.blendMode == photonstack::MosaicBlendMode::Feather ? "feather" : "average");
     }
-    std::cout << "\",\n"
-              << "  \"placements\": [";
+    std::cout << "\",\n  \"seams\": ";
+    photonstack::cli::writeMosaicSeams(std::cout, result.seams, inputFiles, jsonEscape);
+    std::cout << ",\n  \"placements\": [";
     for (std::size_t i = 0; i < result.placements.size(); ++i) {
         const auto& placement = result.placements[i];
         if (i > 0) {

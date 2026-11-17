@@ -1,6 +1,7 @@
 #pragma once
 
 #include "photonstack/SkyProjection.hpp"
+#include "photonstack/MosaicDiagnostics.hpp"
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -102,6 +103,7 @@ struct MosaicOptions {
     MosaicAlignment alignment = MosaicAlignment::Manual;
     MosaicBlendMode blendMode = MosaicBlendMode::Feather;
     bool exposureMatching = true;
+    bool seamDiagnostics = true;
     std::uint32_t columns = 1;
     std::uint32_t previewWidth = 0;
     std::uint32_t alignmentWidth = 2000;
@@ -114,6 +116,7 @@ struct MosaicResult {
     bool ok = false;
     ImageBuffer image;
     std::optional<TanGrid> outputGrid;
+    std::optional<MosaicSeamDiagnostics> seams;
     std::optional<double> wcsMedian, wcsP95; // full resolution reference pixels
     std::vector<MosaicPlacement> placements;
     bool usedAutoAlignment = false;

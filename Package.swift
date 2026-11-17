@@ -82,6 +82,7 @@ let package = Package(
                 "src/MasterFrameBuilder.cpp",
                 "src/MeteorLayerComposer.cpp",
                 "src/MosaicBuilder.cpp",
+                "src/MosaicDiagnostics.cpp",
                 "src/SkyProjection.cpp",
                 "src/NoiseReducer.cpp",
                 "src/NonlocalDenoiser.cpp",

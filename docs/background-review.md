@@ -65,4 +65,4 @@ photonstack background-review \
 
 新保存的配方使用版本 2，明确记录模型和平滑参数；旧版多项式配方可读取并保持原参数。RBF 对每个输出像素直接求值，使用 CPU 并行处理。独立数值参考和异常输入检查可运行 `ctest --test-dir build/release -R photonstack_background_rbf --output-on-failure`。
 
-拼接接缝两侧的独立亮度报告，以及自动识别不可采样区域仍待补齐。
+拼接的匹配前后亮度报告见[重叠区检查](mosaic-overlap-review.md)。自动识别不可采样区域仍待补齐。

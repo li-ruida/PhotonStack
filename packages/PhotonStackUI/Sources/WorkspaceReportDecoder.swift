@@ -248,7 +248,19 @@ enum WorkspaceReportDecoder {
             throw ProcessingServiceError.invalidReport(command: "mosaic")
         }
 
+        var seams: MosaicSeamReport?
+        if let raw = object["seams"], !(raw is NSNull) {
+            do {
+                seams = try JSONDecoder().decode(MosaicSeamReport.self, from: JSONSerialization.data(withJSONObject: raw))
+                guard seams?.isValid(panelCount: expectedPanelCount) == true else {
+                    throw ProcessingServiceError.invalidReport(command: "mosaic")
+                }
+            } catch {
+                throw ProcessingServiceError.invalidReport(command: "mosaic")
+            }
+        }
         return MosaicQualityReport(
+            seams: seams,
             wcsMedianPixels: jsonFiniteDouble(object["wcsMedianPixels"]),
             wcsP95Pixels: jsonFiniteDouble(object["wcsP95Pixels"]),
             autoAligned: autoAligned,

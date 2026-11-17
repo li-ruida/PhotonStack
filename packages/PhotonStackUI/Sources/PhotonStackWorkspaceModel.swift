@@ -41,6 +41,7 @@ public struct MosaicPlacementReport: Codable, Identifiable, Equatable, Sendable 
 }
 
 public struct MosaicQualityReport: Codable, Equatable, Sendable {
+    public var seams: MosaicSeamReport? = nil
     public var wcsMedianPixels: Double? = nil
     public var wcsP95Pixels: Double? = nil
     public var autoAligned: Bool

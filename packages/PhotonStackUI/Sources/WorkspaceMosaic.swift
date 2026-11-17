@@ -253,6 +253,7 @@ struct MosaicSection: View {
 private struct MosaicQualityReportView: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     let report: MosaicQualityReport
+    @State private var showingSeams = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -279,6 +280,16 @@ private struct MosaicQualityReportView: View {
                          : "Star residuals: median \(median.formatted(.number.precision(.fractionLength(2)))) · P95 \(p95.formatted(.number.precision(.fractionLength(2)))) px")
                 } else {
                     Text(model.language == .simplifiedChinese ? "仅根据坐标定位，共同星点不足以复核。" : "Placed by WCS; too few common stars to verify.")
+                }
+            }
+
+            if let seams = report.seams, seams.isValid(panelCount: report.placements.count) {
+                Button(model.language == .simplifiedChinese ? "重叠区亮度检查…" : "Review overlap brightness…") {
+                    showingSeams = true
+                }
+                .accessibilityIdentifier("mosaic.seams.open")
+                .sheet(isPresented: $showingSeams) {
+                    MosaicSeamReportView(report: seams, chinese: model.language == .simplifiedChinese)
                 }
             }
 

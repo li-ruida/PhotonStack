@@ -977,10 +977,7 @@ float sampleStraightColor(const ImageBuffer& image, float x, float y, std::uint1
     return colorWeight > 1.0e-8 ? static_cast<float>(weightedColor / colorWeight) : 0.0F;
 }
 
-struct ExposureCorrection {
-    std::array<float, 3> gains{1.0F, 1.0F, 1.0F};
-    std::array<float, 3> offsets{};
-};
+using ExposureCorrection = MosaicExposureCorrection;
 
 struct ChannelSamples {
     std::array<std::vector<double>, 3> reference;
@@ -1677,9 +1674,50 @@ MosaicResult composeMosaic(
         }
     }
 
+    std::optional<MosaicSeamDiagnostics> seams;
+    if (options.seamDiagnostics) {
+        seams.emplace();
+        seams->width = width; seams->height = height;
+        seams->channels = std::min<std::uint16_t>(3, images.front().channels);
+        seams->preview = options.previewWidth > 0;
+        seams->encoding = images.front().colorEncoding == ColorEncoding::Linear ? "linear" :
+                          images.front().colorEncoding == ColorEncoding::SRGB ? "srgb" : "unknown";
+        seams->corrections = corrections;
+        std::vector<MosaicBounds> bounds;
+        for (std::size_t i = 0; i < images.size(); ++i) bounds.push_back(transformedBounds(images[i], placements[i]));
+        for (std::size_t j = 1; j < images.size(); ++j) for (std::size_t i = 0; i < j; ++i) {
+            const double left = std::ceil(std::max(bounds[i].minX, bounds[j].minX));
+            const double top = std::ceil(std::max(bounds[i].minY, bounds[j].minY));
+            const double right = std::floor(std::min(bounds[i].maxX, bounds[j].maxX)) + 1;
+            const double bottom = std::floor(std::min(bounds[i].maxY, bounds[j].maxY)) + 1;
+            if (right <= left || bottom <= top) continue;
+            auto sample = [&](double x, double y) -> std::optional<detail::MosaicSeamSample> {
+                MosaicPoint a, b;
+                if (!inverseTransformPoint(placements[i], float(x), float(y), a) ||
+                    !inverseTransformPoint(placements[j], float(x), float(y), b) ||
+                    sampleCoverage(images[i], a.x, a.y) < .99F || sampleCoverage(images[j], b.x, b.y) < .99F)
+                    return std::nullopt;
+                detail::MosaicSeamSample values{};
+                for (std::uint16_t c = 0; c < seams->channels; ++c) {
+                    values[0][c] = sampleStraightColor(images[i], a.x, a.y, c);
+                    values[1][c] = sampleStraightColor(images[j], b.x, b.y, c);
+                    values[2][c] = values[0][c] * corrections[i].gains[c] + corrections[i].offsets[c];
+                    values[3][c] = values[1][c] * corrections[j].gains[c] + corrections[j].offsets[c];
+                    if (clampColor) {
+                        values[2][c] = std::clamp(values[2][c], 0., 1.);
+                        values[3][c] = std::clamp(values[3][c], 0., 1.);
+                    }
+                }
+                return values;
+            };
+            seams->pairs.push_back(detail::measureMosaicSeam(i, j, {left, top, right, bottom}, seams->channels, sample));
+        }
+    }
     if (options.blendMode == MosaicBlendMode::Multiband) {
-        return composeMultiband(
+        auto result = composeMultiband(
             images, std::move(placements), corrections, width, height, exposureMatched, progress, clampColor);
+        result.seams = std::move(seams);
+        return result;
     }
 
     ImageBuffer output;
@@ -1816,6 +1854,7 @@ MosaicResult composeMosaic(
     result.placements = std::move(placements);
     result.exposureMatched = exposureMatched;
     result.blendMode = options.blendMode;
+    result.seams = std::move(seams);
     return result;
 }
 

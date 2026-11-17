@@ -6894,8 +6894,16 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     func startNarrowbandJob(_ operation: @escaping @MainActor (any ProcessingService) async throws -> URL) {
+        startLinearCompositionJob(title: language == .simplifiedChinese ? "双窄带处理" : "Narrowband processing", operation)
+    }
+
+    func startChannelCompositionJob(_ operation: @escaping @MainActor (any ProcessingService) async throws -> URL) {
+        startLinearCompositionJob(title: language == .simplifiedChinese ? "多滤镜合色" : "Channel composition", operation)
+    }
+
+    private func startLinearCompositionJob(title: String, _ operation: @escaping @MainActor (any ProcessingService) async throws -> URL) {
         launch {
-            await self.runJob(title: self.language == .simplifiedChinese ? "双窄带处理" : "Narrowband processing", kind: .export) {
+            await self.runJob(title: title, kind: .export) {
                 let output = try await operation(self.processingService)
                 try Task.checkCancellation()
                 self.project.addAssets(from: [output], role: .other)

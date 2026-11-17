@@ -432,6 +432,32 @@ float normalizeForDisplay(float value, const SampleRange& range) {
 
 } // namespace
 
+LinearMonoMaster readLinearMonoMaster(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    const auto header = parseHeader(file);
+    if (!header.ok) throw std::runtime_error(header.message);
+    const auto description = imageDescription(header);
+    if (!description || description->channels != 1 || header.values.contains("BAYERPAT"))
+        throw std::invalid_argument("Select a mono master, not an RGB image or CFA exposure");
+    const auto profile = header.values.find("PSCOLOR");
+    if (profile != header.values.end() && profile->second != "Linear" && profile->second != "LINEAR-SRGB")
+        throw std::invalid_argument("Channel composition requires linear intensities");
+    LinearMonoMaster result;
+    for (const auto* key : {"CTYPE1", "CTYPE2", "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2",
+                            "CD1_1", "CD1_2", "CD2_1", "CD2_2", "CDELT1", "CDELT2",
+                            "PC1_1", "PC1_2", "PC2_1", "PC2_2", "A_ORDER", "B_ORDER", "WCSAXES"})
+        if (header.values.contains(key)) { result.sky = readSolvedPanel(path); break; }
+    FitsDecodeOptions options; options.mode = FitsDecodeMode::Scientific;
+    auto decoded = FitsCodec().read(path, options);
+    if (!decoded.ok) throw std::runtime_error(decoded.message);
+    auto& mono = result.image;
+    mono.width = decoded.image.width; mono.height = decoded.image.height;
+    mono.channels = 1; mono.format = PixelFormat::Float32Gray;
+    mono.pixels.resize(mono.pixelCount());
+    for (std::size_t i = 0; i < mono.pixelCount(); ++i) mono.pixels[i] = decoded.image.pixels[i * decoded.image.channels];
+    return result;
+}
+
 SolvedPanel readSolvedPanel(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     const auto header = parseHeader(file);

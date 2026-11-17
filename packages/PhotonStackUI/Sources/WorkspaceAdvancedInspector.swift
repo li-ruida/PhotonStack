@@ -9,10 +9,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum AdvancedTool: String, CaseIterable {
-    case finishing, narrowband, starLayers, background, clouds, normalize, color, trails, stars, deconvolve, drizzle
+    case finishing, channels, narrowband, starLayers, background, clouds, normalize, color, trails, stars, deconvolve, drizzle
 
     func title(chinese: Bool) -> String {
         switch self {
+        case .channels: chinese ? "多滤镜合色与表达式" : "Channels & expressions"
         case .starLayers: chinese ? "星云与恒星分层" : "Nebula & star layers"
         case .narrowband: chinese ? "双窄带与 HOO" : "Dual band & HOO"
         case .finishing: chinese ? "色彩与显示修整" : "Display finishing"
@@ -31,6 +32,7 @@ enum AdvancedTool: String, CaseIterable {
 @MainActor
 final class AdvancedToolSettings: ObservableObject {
     let starLayers = StarLayerSession()
+    let channels = ChannelCompositionSession()
     let narrowband = NarrowbandSession()
     @Published var tool: AdvancedTool = .finishing
     @Published var backgroundModel = "grid"
@@ -73,6 +75,8 @@ struct AdvancedProcessingSection: View {
                 }
             }
             switch settings.tool {
+            case .channels:
+                ChannelCompositionControl(model: model, session: settings.channels)
             case .starLayers:
                 StarLayersControl(model: model, session: settings.starLayers)
             case .narrowband:

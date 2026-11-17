@@ -3,6 +3,7 @@
 #include "photonstack/SkyProjection.hpp"
 #include "photonstack/CfaCalibration.hpp"
 #include <filesystem>
+#include <optional>
 
 #include "photonstack/ImageCodec.hpp"
 #include "photonstack/ImageMetadata.hpp"
@@ -33,6 +34,13 @@ struct DualBandPlanes {
 // CellAverage preserves the historical three-non-red-samples estimate.
 DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCalibration* calibration = nullptr,
                                   DualBandSampling sampling = DualBandSampling::RedGrid);
+
+struct LinearMonoMaster {
+    ImageBuffer image;
+    std::optional<SolvedPanel> sky;
+};
+// Rejects CFA mosaics, display encodings and incomplete/unsupported WCS.
+LinearMonoMaster readLinearMonoMaster(const std::filesystem::path& path);
 
 class FitsCodec {
   public:

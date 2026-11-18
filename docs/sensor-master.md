@@ -1,0 +1,71 @@
+# 传感器域校准母片
+
+`sensor-master-build` 从未去马赛克的 CFA 或显式单色 FITS 制作偏置、暗场、暗平场和平场。它使用传感器原坐标，不做星点配准、去马赛克或负值截断。当前提供 CLI；App 校准库可导入生成的 `master.fits`，制作入口和按组校准执行尚未接通。
+
+## 输入清单
+
+```text
+PhotonStack-SensorMaster-1
+role dark
+method median
+temperature-tolerance 1
+minimum-samples 2
+frame "/absolute/dark-001.fits" -
+frame "/absolute/dark-002.fits" -
+frame "/absolute/dark-003.fits" -
+```
+
+```sh
+photonstack sensor-master-build --manifest /absolute/inputs.txt \
+  --output-dir /absolute/new-master --memory-mib 512 --threads 4
+photonstack sensor-master-inspect --recipe /absolute/new-master/recipe.txt
+photonstack sensor-master-replay --recipe /absolute/new-master/recipe.txt \
+  --output-dir /absolute/recomputed-master
+```
+
+每批 2–256 张不同文件及不同内容的原始校准帧。路径必须绝对，双引号内的引号和反斜线用反斜线转义；不是 JSON 的 `\u` 编码。`-` 表示首次读取时绑定 SHA-256，也可提供预期摘要。保存的配方总是使用真实摘要。输入先按规范路径排序，确保调整清单顺序不会改变归一化参考或结果。
+
+角色支持 `bias`、`dark`、`dark-flat`、`flat`。要求有效的拍摄信息、`PSCOLOR` 线性域、`BAYERPAT` 或 `PSLAYOUT=MONO`，以及明确的 `IMAGETYP`。不把已制作的母片再次作为原始帧堆叠。相机实体、读出、增益或 ISO、偏置、binning、传感器区域、尺寸、采样相位和单位必须通过[匹配检查](calibration-library.md)。原始帧曝光一致，暗场/暗平场/平场曝光必须正数；平场还要求滤镜和光路一致。缺失字段不会按文件名推断，人工补充元数据仍待实现。
+
+## 偏置与平场制作
+
+- 偏置直接堆叠，输出 `PSBIAS='included'`。
+- 暗场或暗平场直接堆叠时仍含偏置；可加入 `bias "/absolute/master-bias.fits" sha256`，逐像素扣除后输出 `PSBIAS='removed'`。负值保留，不隐式缩放曝光。
+- 平场必须先校正：使用偏置，或使用等曝光的暗平场。`dark-flat "/absolute/master-dark-flat.fits" sha256 included` 已包含偏置，不能再加入偏置；若指定 `removed`，则必须同时加入偏置。声明与母片已有 `PSBIAS` 冲突时拒绝执行。
+- 平场校正后按每个 CFA 相位（R/G1/G2/B）分别计算有限正样本的均值，单色使用全平面均值。每张平场缩放到规范路径排序后第一帧的对应相位均值，再逐像素堆叠。结果保持该参考帧的 ADU 水平，不将归一化数值冒充新的电子转换增益。各帧的四个缩放系数写入报告；单色仅使用第一个系数。
+
+先校正平场再做乘法归一化、避免重复减偏置的流程，也可参照 [Siril 手动预处理说明](https://siril.org/tutorials/tuto-manual/)。这里的具体相位均值、缺失像素及数值实现由 PhotonStack 的报告和独立测试界定，不宣称与其他软件逐像素相同。
+
+`method` 为 `median`（默认）或 `mean`，偶数个有效样本的中位数取中间两项平均。没有额外的 sigma clipping；有效样本数不是“被中位数选中”的次数。尚未自动识别饱和、光漏、灰尘移动或非线性平场，拍摄一致性仍需检查。
+
+## 有效性与温度
+
+FITS 存储缩放在读取时应用，整数 `BLANK` 和浮点 NaN/Inf 变成缺失值。有限物理样本超过 Float32 范围时整次构造失败，不静默截断。母片和校正母片的无效值传播；平场校正后非正值也不参与均值或堆叠。每像素达到 `minimum-samples`（默认 2）才写入有效母片，否则写 NaN。所有像素都不合格时不生成结果。
+
+母片保存 `PSTMIN/PSTMAX` 实测温度范围，`CCD-TEMP` 仅为范围中点。匹配暗场/偏置时比较两侧范围的最远端点，不因中点相近而忽略温度跨度；同批暗场/偏置自身的最大温差也必须在容差内。平场响应匹配不强求温度相同，但它使用的偏置或暗平场仍逐帧核对温度。无效或不完整的温度范围会阻止匹配。
+
+输出使用有效拜耳排列和零相位偏移。不会把第一张的目标、拍摄时间、天空 WCS、旧缩放或文件校验和复制成整张母片的属性。
+
+## 产品、重算与资源
+
+新输出目录包含：
+
+| 文件 | 内容 |
+| --- | --- |
+| `master.fits` | Float32 单平面科学母片、拍摄条件、偏置状态、方法、输入帧数 |
+| `accepted.fits` | 每像素参与堆叠的有效样本数，包括因低于最低帧数而未输出有效母片的位置 |
+| `inputs.txt` | 规范化制作参数、全部原帧与校正母片的路径及摘要 |
+| `report.json` | 归一化系数、缺失样本与无效像素数、温度范围、实际线程上限与分块资源估算 |
+| `recipe.txt` | 制作参数及所有产品摘要；检查和重算会验证输入、产品及参数一致性 |
+
+原文件只读。全部写入完成并再次核对来源后才以独占方式发布新目录；既有目标不被覆盖。SIGINT/SIGTERM 取消会停止计算并清理本次暂存目录。重算从头执行，尚不是断点恢复。制作目录应连同配方保存；目前 App 单独导入 `master.fits` 不会自动带入整套制作目录。
+
+CPU 计算按小块读取，内存不随全尺寸输入帧数线性增长。完整保留母片和有效数两个输出平面，输入与校正像素使用分块；默认工作数据预算 512 MiB，可设 4–8192 MiB，预算不足时拒绝而非超额分配。预算不包含系统页缓存和运行库开销，报告中的估算不等同于实测 RSS。`--tile-pixels` 可在 1–1048576 间调整，默认 65536；`--threads` 为 1–32，小块自动减少并行。文件句柄按读取短暂打开，可处理接近 256 张输入而不长期占满文件描述符。
+
+## 独立验证与当前边界
+
+`tests/cli/test_sensor_master.py` 覆盖校正顺序、负值、相位、有效数、温度范围、物理缩放、BLANK、数据/配方变更及重算。`tools/scripts/qa/sensor_master_validation.py` 用 NumPy/Astropy 独立计算偏置、暗场和平场的全部像素、缩放系数和缺失掩膜，并检查线程/分块一致性、取消和原片摘要。
+
+当前独立模拟数据中，每种母片 98,304 个像素与 oracle 的最大差为零；12 张 2160×3840 模拟暗场四线程暖缓存完整 CLI 中位耗时 2.975 秒（2.973–2.994 秒），峰值 RSS 78,692,352 字节，包含来源摘要验证、读图、计算及产品写入。不同线程数和分块的科学文件逐字节一致。它们证明上述算法和资源路径，不证明特定真实相机的校准质量；还需要真实偏置/暗场/平场配套亮场验证。
+
+后续仍需 App 制作与审查入口、制作记录随校准库迁移、人工元数据声明、质量拒绝与坏像素图、逐帧分配实际校准、按组执行及中断恢复。既有一键成片手工校准路径暂未替换为本流程。

@@ -44,7 +44,10 @@ private let tinyPNG = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAA
     try tinyPNG.write(to: input)
     let tool = ExternalImageTool(name: "Slow", executable: executable, arguments: ["{input}", "{output}"])
     let task = Task { try await tool.run(input: input, output: output, workingDirectory: root) }
-    let deadline = ContinuousClock.now + .seconds(5)
+    // Match the other process fixtures' bounded startup allowance. Concurrent
+    // subprocess tests may delay launch; the readiness marker, not a fixed
+    // sleep, still proves that cancellation happens after output was staged.
+    let deadline = ContinuousClock.now + .seconds(30)
     while !FileManager.default.fileExists(atPath: root.appendingPathComponent("ready").path) && ContinuousClock.now < deadline {
         try await Task.sleep(for: .milliseconds(20))
     }

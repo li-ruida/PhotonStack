@@ -5,6 +5,7 @@
 #include "photonstack/StageProfile.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/CalibrationMetadata.hpp"
+#include "photonstack/SensorMasterBuilder.hpp"
 #include "DemosaicMenon.hpp"
 #include "DemosaicRatio.hpp"
 #include "DemosaicStarGuard.hpp"
@@ -666,11 +667,24 @@ CalibrationAcquisition inspectCalibrationAcquisition(const std::filesystem::path
     text("object", "OBJECT"); text("observedAt", "DATE-OBS"); text("timeSystem", "TIMESYS"); text("frameType", "IMAGETYP");
     text("units", "BUNIT"); text("domain", "PSCOLOR"); text("declaredLayout", "PSLAYOUT");
     text("bayer", "BAYERPAT"); text("temperatureUnit", "TEMPUNIT");
+    text("biasState", "PSBIAS"); text("normalization", "PSNORM");
+    if (r.text.contains("biasState") && !std::set<std::string>{"included","removed"}.contains(r.text.at("biasState")))
+        issue("biasState", "invalid", "PSBIAS must be included or removed");
     number("exposure", {"EXPTIME", "EXPOSURE"}, 0, 1e8);
     number("gain", {"GAIN"}, 0, 1e9); number("iso", {"ISOSPEED"}, 1, 1e9, true);
     number("offset", {"OFFSET"}, 0, 1e9); number("electronsPerADU", {"EGAIN"}, 1e-12, 1e9);
     number("sensorTemperature", {"CCD-TEMP"}, -273.15, 200);
     number("setTemperature", {"SET-TEMP"}, -273.15, 200);
+    number("sensorTemperatureMin", {"PSTMIN"}, -273.15, 200);
+    number("sensorTemperatureMax", {"PSTMAX"}, -273.15, 200);
+    if (header.values.contains("PSTMIN") || header.values.contains("PSTMAX")) {
+        if (!r.numeric.contains("sensorTemperatureMin") || !r.numeric.contains("sensorTemperatureMax") ||
+            r.numeric.at("sensorTemperatureMin") > r.numeric.at("sensorTemperatureMax") ||
+            (r.numeric.contains("sensorTemperature") &&
+             (r.numeric.at("sensorTemperature") < r.numeric.at("sensorTemperatureMin") ||
+              r.numeric.at("sensorTemperature") > r.numeric.at("sensorTemperatureMax"))))
+            issue("sensorTemperature", "invalid", "Incomplete or inconsistent master temperature range");
+    }
     number("binX", {"XBINNING"}, 1, 65535, true); number("binY", {"YBINNING"}, 1, 65535, true);
     number("originX", {"XORGSUBF"}, 0, 1e9, true); number("originY", {"YORGSUBF"}, 0, 1e9, true);
     number("focalLength", {"FOCALLEN"}, 1e-9, 1e9);
@@ -781,6 +795,67 @@ ImageBuffer readCfaSensor(const std::filesystem::path& path) {
         *scale, *zero, [&](std::size_t p, float value) { result.pixels[p] = value; });
     if (status != SampleStreamResult::Success) throw std::runtime_error("Could not read calibration CFA samples");
     return result;
+}
+
+struct SensorFitsReader::Impl {
+    CalibrationAcquisition acquisition;
+    std::filesystem::path path;
+    std::ifstream stream;
+    std::size_t offset = 0, count = 0, stride = 0;
+    double scale = 1, zero = 0;
+    std::optional<long long> blank;
+    std::vector<unsigned char> bytes;
+};
+SensorFitsReader::SensorFitsReader(const std::filesystem::path& path): impl_(std::make_unique<Impl>()) {
+    auto& r = *impl_;
+    r.acquisition = inspectCalibrationAcquisition(path);
+    const auto& a = r.acquisition;
+    if (a.channels != 1 || !a.issues.empty() || !a.text.contains("sampling") ||
+        !a.text.contains("domain") || a.text.at("domain") != "linear")
+        throw std::invalid_argument("Sensor frames require valid explicit linear single-plane acquisition metadata");
+    r.stream.open(path,std::ios::binary);
+    const auto h = parseHeader(r.stream,true);
+    if (!h.ok) throw std::runtime_error(h.message);
+    r.offset = h.dataOffset; r.count = std::size_t(a.width)*a.height; r.stride = bytesPerSample(a.bitpix);
+    r.scale = a.numeric.at("scale"); r.zero = a.numeric.at("zero");
+    if (h.values.contains("BLANK")) {
+        r.blank = integerValue(h,"BLANK");
+        const auto low = a.bitpix == 8 ? 0LL : a.bitpix == 16 ? -32768LL : -2147483648LL;
+        const auto high = a.bitpix == 8 ? 255LL : a.bitpix == 16 ? 32767LL : 2147483647LL;
+        if (a.bitpix < 0 || !r.blank || *r.blank < low || *r.blank > high || h.duplicateKeys.contains("BLANK") ||
+            trim(h.rawCards.at("BLANK").substr(10)).starts_with('\''))
+            throw std::invalid_argument("Invalid integer sensor BLANK keyword");
+    }
+    r.path=path; r.stream.close(); r.bytes.resize(65536);
+}
+SensorFitsReader::~SensorFitsReader() = default;
+SensorFitsReader::SensorFitsReader(SensorFitsReader&&) noexcept = default;
+SensorFitsReader& SensorFitsReader::operator=(SensorFitsReader&&) noexcept = default;
+const CalibrationAcquisition& SensorFitsReader::metadata() const { return impl_->acquisition; }
+void SensorFitsReader::read(std::size_t start, std::span<float> samples) {
+    auto& r = *impl_;
+    if (start > r.count || samples.size() > r.count-start) throw std::invalid_argument("Sensor read range exceeds image");
+    r.stream.close(); r.stream.clear(); r.stream.open(r.path,std::ios::binary);
+    r.stream.seekg(static_cast<std::streamoff>(r.offset + start*r.stride));
+    for (std::size_t i=0; i<samples.size();) {
+        const auto n=std::min(samples.size()-i,r.bytes.size()/r.stride);
+        r.stream.read(reinterpret_cast<char*>(r.bytes.data()),std::streamsize(n*r.stride));
+        if (!r.stream) throw std::runtime_error("Sensor file changed or cannot be read");
+        for (std::size_t j=0;j<n;++j) {
+            const auto* p=r.bytes.data()+j*r.stride;
+            const double raw=r.acquisition.bitpix==8 ? p[0] : r.acquisition.bitpix==16 ? readSigned16(p) :
+                r.acquisition.bitpix==32 ? readSigned32(p) : r.acquisition.bitpix==-32 ? readFloat32(p) : readFloat64(p);
+            if (!std::isfinite(raw) || (r.blank && raw == double(*r.blank))) {
+                samples[i+j]=std::numeric_limits<float>::quiet_NaN(); continue;
+            }
+            const double physical=raw*r.scale+r.zero;
+            if (!std::isfinite(physical) || std::abs(physical)>std::numeric_limits<float>::max())
+                throw std::invalid_argument("Sensor physical sample exceeds Float32 range");
+            samples[i+j]=static_cast<float>(physical);
+        }
+        i+=n;
+    }
+    r.stream.close();
 }
 
 DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCalibration* calibration, DualBandSampling sampling) {
@@ -1458,8 +1533,8 @@ void copyFitsWithWcs(const std::filesystem::path& source, const std::filesystem:
 
 }
 
-ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesystem::path& path,
-                                  const TanGrid* sky, const std::vector<SipTerm>* distortion, FitsOutputDomain domain) const {
+static ImageWriteResult writeFitsProduct(const ImageBuffer& image, const std::filesystem::path& path,
+                                  const TanGrid* sky, const std::vector<SipTerm>* distortion, FitsOutputDomain domain, const SensorMasterResult* sensor) {
     if (image.empty() || image.channels == 0 || image.channels > 4 || image.pixels.size() != image.sampleCount()) {
         return writeError("ImageBufferInvalid", "Image buffer must be non-empty Float32 data with 1 to 4 channels");
     }
@@ -1482,7 +1557,43 @@ ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesyste
         }
         appendCard(header, makeCard("BSCALE", "1.0"));
         appendCard(header, makeCard("BZERO", "0.0"));
-        appendCard(header, makeCard("PSCOLOR", display ? "'SRGB-DISPLAY'" : "'LINEAR-SRGB'"));
+        appendCard(header, makeCard("PSCOLOR", sensor ? "'Linear'" : display ? "'SRGB-DISPLAY'" : "'LINEAR-SRGB'"));
+        if (sensor) {
+            auto str = [&](const std::string& key, const std::string& value) {
+                std::string quoted = "'";
+                for (unsigned char c : value) {
+                    if (c < 32 || c > 126) throw std::invalid_argument("Sensor metadata requires printable FITS ASCII");
+                    quoted += char(c); if (c == '\'') quoted += '\'';
+                }
+                quoted += "'";
+                if (quoted.size() > 68) throw std::invalid_argument("Sensor metadata exceeds one FITS card");
+                appendCard(header, makeCard(key, quoted));
+            };
+            auto num = [&](const std::string& key, double value) {
+                if (!std::isfinite(value)) throw std::invalid_argument("Invalid sensor metadata number");
+                std::ostringstream out; out << std::setprecision(17) << value;
+                appendCard(header, makeCard(key, out.str()));
+            };
+            const auto& a = sensor->acquisition;
+            for (const auto& [field, key] : std::map<std::string, std::string>{
+                     {"camera","INSTRUME"},{"cameraSerial","CAM-SER"},{"readoutMode","READMODE"},
+                     {"units","BUNIT"},{"filter","FILTER"},{"opticalTrain","PSOPTICS"}})
+                if (a.text.contains(field)) str(key, a.text.at(field));
+            for (const auto& [field, key] : std::map<std::string, std::string>{
+                     {"exposure","EXPTIME"},{"gain","GAIN"},{"iso","ISOSPEED"},{"offset","OFFSET"},
+                     {"binX","XBINNING"},{"binY","YBINNING"},{"originX","XORGSUBF"},{"originY","YORGSUBF"},
+                     {"electronsPerADU","EGAIN"},{"focalLength","FOCALLEN"},{"sensorTemperature","CCD-TEMP"},
+                     {"sensorTemperatureMin","PSTMIN"},{"sensorTemperatureMax","PSTMAX"}})
+                if (a.numeric.contains(field)) num(key,a.numeric.at(field));
+            const auto sampling = a.text.at("sampling");
+            if (sampling == "mono") str("PSLAYOUT","MONO");
+            else { str("PSLAYOUT","CFA"); str("BAYERPAT",sampling.substr(4)); num("XBAYROFF",0); num("YBAYROFF",0); }
+            str("IMAGETYP", "Master " + sensor->role);
+            str("PSBIAS",sensor->biasState); str("PSMETHOD",sensor->method);
+            num("STACKCNT",sensor->sources.size());
+            str("PSNORM",sensor->role == "flat" ? "phase-mean" : "none");
+        }
+
         if (sky) appendWcsCards(header, sky, distortion, image.channels);
         appendCard(header, makeEndCard());
         header.resize(((header.size() + kFitsBlockSize - 1) / kFitsBlockSize) * kFitsBlockSize, ' ');
@@ -1541,6 +1652,21 @@ ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesyste
     ImageWriteResult result;
     result.ok = true;
     return result;
+}
+
+ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesystem::path& path,
+                                  const TanGrid* sky, const std::vector<SipTerm>* distortion, FitsOutputDomain domain) const {
+    return writeFitsProduct(image, path, sky, distortion, domain, nullptr);
+}
+void writeSensorMaster(const SensorMasterResult& result, const std::filesystem::path& path) {
+    if (result.master.channels != 1 || result.master.colorEncoding != ColorEncoding::Linear ||
+        result.master.width != result.acquisition.width || result.master.height != result.acquisition.height ||
+        result.sources.size() < 2 || result.sources.size() > 256 ||
+        !std::set<std::string>{"bias","dark","dark-flat","flat"}.contains(result.role) ||
+        !std::set<std::string>{"included","removed"}.contains(result.biasState))
+        throw std::invalid_argument("Invalid sensor master product");
+    const auto written = writeFitsProduct(result.master, path, nullptr, nullptr, FitsOutputDomain::LinearScience, &result);
+    if (!written.ok) throw std::runtime_error(written.message);
 }
 
 } // namespace photonstack

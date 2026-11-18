@@ -22,6 +22,10 @@ enum CalibrationPresentation {
     static let fields = ["object", "observedAt", "camera", "cameraSerial", "filter", "opticalTrain", "sampling", "domain", "units", "readoutMode",
                          "exposure", "gain", "iso", "offset", "sensorTemperature", "setTemperature", "binX", "binY", "originX", "originY", "electronsPerADU"]
     static func value(_ key: String, in source: CalibrationAcquisition, chinese: Bool) -> String {
+        if key == "sensorTemperature", let low = source.numeric["sensorTemperatureMin"], let high = source.numeric["sensorTemperatureMax"] {
+            let style = FloatingPointFormatStyle<Double>.number.precision(.fractionLength(0...6))
+            return low.formatted(style) + "…" + high.formatted(style)
+        }
         if let value = source.text[key] { return value }
         if let value = source.numeric[key] { return value.formatted(.number.precision(.fractionLength(0...6))) }
         return chinese ? "未知" : "Unknown"

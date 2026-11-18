@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 
@@ -200,8 +201,24 @@ CalibrationMatch matchCalibrationAcquisition(const CalibrationAcquisition& input
         add("gainOrISO", "missing", "", "", "GAIN or ISOSPEED is required; EGAIN is not camera gain");
     if (input.numeric.contains("electronsPerADU") || master.numeric.contains("electronsPerADU"))
         compareNumber("electronsPerADU");
-    if (role != CalibrationMasterRole::Flat)
-        compareNumber("sensorTemperature", tolerance);
+    if (role != CalibrationMasterRole::Flat) {
+        // A combined master represents the entire measured temperature range,
+        // not merely its midpoint. Every endpoint must satisfy the tolerance.
+        auto range = [](const CalibrationAcquisition& a) -> std::optional<std::pair<double,double>> {
+            if (a.numeric.contains("sensorTemperatureMin") && a.numeric.contains("sensorTemperatureMax"))
+                return std::pair{a.numeric.at("sensorTemperatureMin"),a.numeric.at("sensorTemperatureMax")};
+            if (a.numeric.contains("sensorTemperature")) return std::pair{a.numeric.at("sensorTemperature"),a.numeric.at("sensorTemperature")};
+            return std::nullopt;
+        };
+        const auto a=range(input), b=range(master);
+        if (!a || !b) add("sensorTemperature","missing","","","Measured temperature or complete range is required");
+        else if (!std::isfinite(a->first) || !std::isfinite(a->second) || !std::isfinite(b->first) || !std::isfinite(b->second) ||
+                 a->first>a->second || b->first>b->second || a->first < -273.15 || b->first < -273.15 || a->second>200 || b->second>200)
+            add("sensorTemperature","invalid","","","Invalid temperature range");
+        else add("sensorTemperature",std::max(std::abs(a->first-b->second),std::abs(a->second-b->first))<=tolerance ? "match" : "conflict",
+                 number(a->first)+".."+number(a->second),number(b->first)+".."+number(b->second),
+                 "All measured temperature endpoints must be within the allowed difference: "+number(tolerance));
+    }
     else
         add("sensorTemperature", "not-required", "", "",
             "Flat response matching does not select by sensor temperature; dark correction of the flat is separate");

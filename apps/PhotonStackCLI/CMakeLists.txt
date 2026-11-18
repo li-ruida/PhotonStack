@@ -13,6 +13,7 @@ add_executable(photonstack
   SpectralProfileCommand.cpp
   SpectralCatalogCommand.cpp
   CalibrationMetadataCommand.cpp
+  SensorMasterCommand.cpp
   PlateSolveCommand.cpp
   ChannelCommand.cpp
   NarrowbandCommand.cpp

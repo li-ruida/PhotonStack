@@ -185,3 +185,29 @@ func calibrationReviewSessionRetainsViewDataButInvalidatesObsoleteResults() asyn
     while session.busy && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
     #expect(session.reportIsCurrent && session.groupSelection == 0 && session.frameSelection == 0)
 }
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func calibrationLibraryImportsConstructedMasterAndPreservesPreparationAndTemperatureRange() async throws {
+    let fm = FileManager.default, root = try calibrationTestRoot(); defer { try? fm.removeItem(at: root) }
+    let service = try calibrationTestService(), library = CalibrationLibrary(root: root.appendingPathComponent("Library"), service: service)
+    let first = root.appendingPathComponent("dark-1.fits"), second = root.appendingPathComponent("dark-2.fits")
+    try calibrationFixture(first, type: "Dark", temperature: -10)
+    try calibrationFixture(second, type: "Dark", temperature: -9.2)
+    let manifest = root.appendingPathComponent("inputs.txt"), output = root.appendingPathComponent("Built")
+    try "PhotonStack-SensorMaster-1\nrole dark\nframe \"\(first.path)\" -\nframe \"\(second.path)\" -\n".write(to: manifest, atomically: true, encoding: .utf8)
+    _ = try await service.runCLI(arguments: ["sensor-master-build", "--manifest", manifest.path, "--output-dir", output.path])
+    let master = output.appendingPathComponent("master.fits")
+    do {
+        _ = try await library.importMaster(master, label: "Wrong declaration", role: "dark", biasState: "removed", notes: "")
+        Issue.record("Constructed master accepted a contradictory bias declaration")
+    } catch { }
+    _ = try await library.importMaster(master, label: "Constructed dark", role: "dark", biasState: "included", notes: "Two raw dark exposures")
+    let entry = try #require(try await library.list().first), acquisition = try await library.verify(entry)
+    #expect(acquisition.text["biasState"] == "included")
+    #expect(acquisition.numeric["sensorTemperatureMin"] == -10 && acquisition.numeric["sensorTemperatureMax"] == -9.2)
+    #expect(CalibrationPresentation.value("sensorTemperature", in: acquisition, chinese: true) == "-10…-9.2")
+    let light = root.appendingPathComponent("light.fits"); try calibrationFixture(light, temperature: -10.4)
+    let report = try await library.plan(lights: [light], entries: [entry], tolerance: 1)
+    #expect(report.isValid && report.frameChoices.first?.roles["dark"]?.status == "no-compatible-master")
+    _ = try await service.runCLI(arguments: ["sensor-master-inspect", "--recipe", output.appendingPathComponent("recipe.txt").path])
+}

@@ -865,7 +865,8 @@ private func writeSolidTestPNG(to url: URL, red: CGFloat, green: CGFloat, blue: 
             targetBackground: 0.25
         )
     }
-    let deadline = ContinuousClock.now + .seconds(15)
+    // Allow concurrent process fixtures to launch before testing cancellation.
+    let deadline = ContinuousClock.now + .seconds(30)
     var partialOutputExists = false
     while ContinuousClock.now < deadline {
         let entries = try FileManager.default.contentsOfDirectory(atPath: directory.path)

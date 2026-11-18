@@ -38,7 +38,7 @@ struct CalibrationMasterImportView: View {
                 TextField(t("制作说明（可选）", "Preparation notes (optional)"), text: $notes, axis: .vertical).lineLimit(2...4)
                     .accessibilityIdentifier("calibration.import-notes")
             }.formStyle(.grouped).disabled(session.busy)
-            Text(t("母片会保存独立副本，重复文件沿用已有记录。用途和偏置状态是你的制作记录，不会根据图像亮度猜测；未知状态可先入库，使用前仍需核对。", "Stores an independent copy; duplicate files retain their existing record. Role and bias state are your preparation record, never inferred from brightness. Unknown states require later review."))
+            Text(t("母片会保存独立副本，重复文件沿用已有记录。用途和偏置状态是你的制作记录，不会根据图像亮度猜测；文件中的明确偏置标记必须相符；未标记时可先记录未知状态，使用前仍需核对。", "Stores an independent copy; duplicate files retain their existing record. Role and bias state are your preparation record, never inferred from brightness. Explicit bias tags in the file must agree; untagged files can retain an unknown state for later review."))
                 .font(.caption).foregroundStyle(.secondary)
             if let error = session.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
             HStack {

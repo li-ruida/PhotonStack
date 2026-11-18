@@ -30,6 +30,7 @@
 #include "SpectralCalibrationCommand.hpp"
 #include "SpectralProfileCommand.hpp"
 #include "CalibrationMetadataCommand.hpp"
+#include "SensorMasterCommand.hpp"
 #include "SpectralCatalogCommand.hpp"
 #include "StarLayersCommand.hpp"
 #include "BackgroundReviewCommand.hpp"
@@ -335,6 +336,8 @@ void printUsage() {
               << "  photonstack spcc-preview --recipe <recipe.txt> --output <new.tiff> [--full-resolution 0|1 --expected-sha sha256]\n"
               << "  photonstack spcc-profile-inspect --profile <profile.txt> [--expected-sha sha256]\n"
               << "  photonstack calibration-inspect <frame1.fits> [frame2.fits ...]\n"
+              << "  photonstack sensor-master-build --manifest <inputs.txt> --output-dir <new-directory> [--memory-mib 512 --threads 4 --tile-pixels 65536]\n"
+              << "  photonstack sensor-master-inspect|sensor-master-replay --recipe <recipe.txt> [--output-dir <new-directory>]\n"
               << "  photonstack calibration-plan --manifest <acquisition-list.txt>\n"
               << "  photonstack calibration-match --input <frame.fits> --master <master.fits> --role bias|dark|flat|dark-flat [--temperature-tolerance 1 --expected-input-sha sha256 --expected-master-sha sha256]\n"
               << "  photonstack spcc-narrowband-profile --profile <base.txt> --layout mono|osc-dual|extracted-hoo --centers r,g,b --widths r,g,b --name <name> --output-dir <new-directory> [--expected-sha sha256]\n"
@@ -7124,6 +7127,10 @@ int runCommandImpl(const std::vector<std::string>& args) {
     if (args[0] == "spcc-profile-inspect") {
         try { return runSpectralProfileInspection(args); }
         catch (const std::exception& error) { printError("SpectralProfileFailed", error.what()); return 1; }
+    }
+    if (args[0] == "sensor-master-build" || args[0] == "sensor-master-inspect" || args[0] == "sensor-master-replay") {
+        try { return runSensorMaster(args); }
+        catch (const std::exception& error) { printError("SensorMasterFailed", error.what()); return 1; }
     }
     if (args[0] == "calibration-inspect" || args[0] == "calibration-match" || args[0] == "calibration-plan") {
         try { return runCalibrationMetadata(args); }

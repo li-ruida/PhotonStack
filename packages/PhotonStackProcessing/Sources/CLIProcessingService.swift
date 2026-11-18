@@ -52,7 +52,7 @@ private struct AtomicOutputTransaction: Sendable {
         self.temporaryURL = temporaryURL
         self.processArguments = processArguments
         self.isDirectory = isDirectory
-        self.requiresNewDestination = externalOutputIndex != nil || arguments.first == "spcc" || arguments.first?.hasPrefix("spcc-") == true || arguments.first?.hasPrefix("sky-annotat") == true || arguments.first?.hasPrefix("plate-solve") == true || arguments.first?.hasPrefix("ghs-") == true || arguments.first?.hasPrefix("psf-") == true || arguments.first?.hasPrefix("channel-") == true || arguments.first?.hasPrefix("narrowband-") == true || arguments.first == "star-layers" || arguments.first == "background-review" || arguments.first == "frequency-stack" || arguments.first == "suppress-grid"
+        self.requiresNewDestination = externalOutputIndex != nil || arguments.first == "spcc" || arguments.first?.hasPrefix("spcc-") == true || arguments.first?.hasPrefix("sky-annotat") == true || arguments.first?.hasPrefix("plate-solve") == true || arguments.first?.hasPrefix("ghs-") == true || arguments.first?.hasPrefix("psf-") == true || arguments.first?.hasPrefix("channel-") == true || arguments.first?.hasPrefix("narrowband-") == true || arguments.first?.hasPrefix("sensor-master-") == true || arguments.first == "star-layers" || arguments.first == "background-review" || arguments.first == "frequency-stack" || arguments.first == "suppress-grid"
     }
 
     func commit() throws {

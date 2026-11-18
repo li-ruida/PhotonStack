@@ -66,6 +66,7 @@ let package = Package(
                 "src/DrizzleStacker.cpp",
                 "src/FitsCodec.cpp",
                 "src/CalibrationMetadata.cpp",
+                "src/SensorMasterBuilder.cpp",
                 "src/FileDigest.cpp",
                 "src/SensorPatternBuilder.cpp",
                 "src/FrameQualityAnalyzer.cpp",

@@ -112,6 +112,9 @@ actor CalibrationLibrary {
     }
     func importMaster(_ url: URL, label: String, role: String, biasState: String, notes: String) async throws -> String {
         let original = try await CalibrationAcquisition.inspect([url], service: service)[0]
+        if let declared = original.text["biasState"], declared != biasState {
+            throw fail("The selected bias state contradicts PSBIAS in the FITS header.")
+        }
         let record = Receipt(id: original.sha, label: label.trimmingCharacters(in: .whitespacesAndNewlines),
                              role: role, biasState: biasState, notes: notes, importedAt: Date(), acquisition: original)
         guard record.isValid else { throw fail("Choose a single-plane FITS master, a valid name, role and bias state.") }

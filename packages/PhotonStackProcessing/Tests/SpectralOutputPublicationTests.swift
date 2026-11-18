@@ -10,7 +10,7 @@ import Testing
     try fixture.write(to: root.appendingPathComponent("fixture.fits"))
     let executable = root.appendingPathComponent("tool")
     let service = CLIProcessingService(executableURL: executable, workingDirectoryURL: root)
-    for command in ["spcc", "spcc-replay", "spcc-export", "spcc-narrowband-profile"] {
+    for command in ["spcc", "spcc-replay", "spcc-export", "spcc-narrowband-profile", "sensor-master-build", "sensor-master-replay"] {
         let file = command == "spcc-export"
         let profile = command == "spcc-narrowband-profile"
         for mode in ["new", "existing", "concurrent"] {

@@ -33,6 +33,8 @@ let package = Package(
                 "src/AstroDevelop.cpp",
                 "src/AstrometricValidation.cpp",
                 "src/SkyAnnotation.cpp",
+                "src/SpectralCalibration.cpp",
+                "src/StellarPhotometry.cpp",
                 "src/FitsNumericTable.cpp",
                 "src/MasterRegistration.cpp",
                 "src/LinearMatch.cpp",

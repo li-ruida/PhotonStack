@@ -1,6 +1,56 @@
-# 光谱颜色校准：底层接口与实物验证
+# 光谱颜色校准：离线 CLI 与实物验证
 
-当前为实验性引擎接口，尚未提供 App 或正式 CLI 的 SPCC 工作流。已实现光谱积分、原生像素孔径测光、候选审查、留出星验证和线性增益应用。设备响应库导入、星表下载、人工审查界面、配方重开及窄带通带参数仍待接入；不能将本阶段称为完整 SPCC。
+当前提供离线 CLI，可导入外部响应与缓存光谱，执行候选审查、保存完整报告和科学母片，并重开、重算及导出。已有光谱积分、原生像素孔径测光、留出星验证和线性增益应用。App 审查界面、内置设备响应库管理、在线星表获取及独立窄带通带参数仍待接入；不能将本阶段称为完整 SPCC。
+
+## 离线使用
+
+使用明确带 ICRS WCS 的原生 RGB/RGBA 线性 FITS。单色、CFA、显示域、缺少 WCS 的输入会被拒绝。设备与滤镜响应由使用者选定，不从文件名推测。`tools/scripts/import-spcc-data.py` 可将外部 OSC 响应 JSON、CALSPEC 白参考和 ESA Gaia DR3 XP sampled 缓存转换为输入：
+
+```sh
+python3 tools/scripts/import-spcc-data.py \
+  --sensor /data/Sony_IMX585.json --response-license-file /data/LICENSE.md \
+  --ideal-cutoff 400 700 \
+  --white-calspec /data/sun_reference_stis_002.fits \
+  --white-name 'CALSPEC Sun' \
+  --white-source https://ssb.stsci.edu/trds/calspec/sun_reference_stis_002.fits \
+  --white-license 'STScI CALSPEC public calibration reference' \
+  --profile-name 'IMX585 with assumed 400-700 nm IRCUT' \
+  --gaia-catalog /data/m31-gaia.csv --xp-dir /data/xp-cache \
+  --observation-date 2026-08-18T20:04:18.382445 --output-dir /data/new-reference-import
+
+photonstack spcc --input /data/solved-linear-rgb.fits \
+  --profile /data/new-reference-import/profile.txt \
+  --catalog /data/new-reference-import/catalog.txt \
+  --output-dir /data/new-calibration
+```
+
+示例的 400–700 nm 是明确的近似条件，不是该设备实测通带。若已有共同 OSC 滤镜透过率 JSON，使用 `--filter /data/filter.json` 代替 `--ideal-cutoff`。当前导入器将组件曲线组合标为 `approximate`，不将曲线来源等级自动等同于实测整机精度；它不是独立的窄带/HOO 标色入口。
+
+导入脚本需 NumPy、Astropy；原生 `spcc` 不依赖 Python。导入会校验波长、单位、响应范围、光谱误差、唯一 ID，以及 XP 光谱与 Gaia 行的原始坐标一致性。缺失光谱或自行的星记录在 `import.json`，不默认为零自行。以归一化位置与切向速度传播至指定历元，未虚构距离、径向速度或视差。保留输入摘要、来源元数据和 `response-source-license.txt`，外部数据不装入应用资源。
+
+可用参数包括 `--radius 8 --sky-inner 11 --sky-outer 15 --min-snr 20 --saturation 0 --exclude source-id,...`。饱和阈值 0 表示未知；排除 ID 必须存在且唯一。`--expected-sha` 可将操作绑定到已经审查过的原片摘要。
+
+结果目录包含：
+
+| 文件 | 内容 |
+|---|---|
+| `profile.txt`、`catalog.txt` | 实际使用的响应、白参考、已传播星位及光谱快照 |
+| `report.json` | 配置、来源、全部候选及剔除原因、两孔径测量、拟合/留出残差、仪器与白参考增益 |
+| `before.tiff` | 16 位显示预览 |
+| `after.tiff`、`calibrated.fits` | 仅通过留出验收时生成；分别为显示预览和保留 WCS/覆盖的 Float32 线性科学母片 |
+| `recipe.txt` | 来源、参数、依赖与产品 SHA-256；报告同时绑定此配置 |
+
+质量未通过的运行仍保存可检查的报告；`report.fit.valid=false` 时没有校准母片，并禁止导出。CLI 成功退出表示审查已完成，不等于颜色校准通过。
+
+```sh
+photonstack spcc-inspect --recipe /data/new-calibration/recipe.txt
+photonstack spcc-replay --recipe /data/new-calibration/recipe.txt --output-dir /data/new-replay
+photonstack spcc-export --recipe /data/new-calibration/recipe.txt --output /data/new-export.fits
+```
+
+重开、重算与导出均检查原片、依赖快照和产品摘要。修改配方参数但保留旧报告也会被拒绝。重算使用保存的设置重新运行，并要求产品与旧配方一致；若后续算法改变结果，应建立一次新的审查。已有目录与文件不覆盖，失败时清理本次创建的未完成输出。
+
+预览采用覆盖加权的面积缩采样，避免在缩小的星点核心中仅选几个像素。前后使用同一原图统计、同一显示尺度；后图的黑场参考与科学通道增益同步变换。它不是再次自动白平衡，也没有修改科学母片的背景。报告记录显示范围与公式，不能把显示 TIFF 的非线性值当成测光结果。
 
 ## 数值定义
 
@@ -50,4 +100,16 @@ python3 tools/scripts/qa/spectral_calibration_validation.py \
   --output-dir /path/to/new-audit
 ```
 
-Python 需 NumPy、SciPy 和 Astropy；输入 CSV 的列为 `source_id,ra,dec,pmra,pmdec,phot_g_mean_mag`，XP 缓存是 ESA DataLink `DATAMODEL_GAIA` CSV 的 `xp-*.download` 文件。输出包含原生报告、独立复核报告、输入 SHA-256、实验夹具及通过检查时的线性 `calibrated.fits`。输入保持只读，拒绝已有输出目录。正式星表获取、响应导入和来源绑定配方仍是后续工作。
+Python 需 NumPy、SciPy 和 Astropy；输入 CSV 的列为 `source_id,ra,dec,pmra,pmdec,phot_g_mean_mag`，XP 缓存是 ESA DataLink `DATAMODEL_GAIA` CSV 的 `xp-*.download` 文件。输出包含原生报告、独立复核报告、输入 SHA-256、实验夹具及通过检查时的线性 `calibrated.fits`。输入保持只读，拒绝已有输出目录。
+
+`tests/cli/test_spectral_calibration.py` 用不依赖科学 Python 库的解析星场验证正式 CLI，包含所有科学像素、WCS、16 位 TIFF 公式、质量失败、手动排除、快照和产品修改、原片修改、配方参数修改及重算/导出字节一致性。`tests/cli/test_spcc_import.py` 另需 NumPy、Astropy，验证自行跨 RA=0、单位转换、负光谱值、输入只读、重复导入、坐标不匹配和异常误差拒绝。
+
+对上述真实 M31，正式 CLI 科学输出与底层探针逐字节一致，增益与留出统计未改变。`tools/scripts/qa/spcc_cli_validation.py` 独立重算光谱积分、原孔径和扩大孔径测量、拟合与全图增益；源 WCS、重算全部文件和再次导出通过复核。自行传播与 [Astropy 的空间运动接口](https://docs.astropy.org/en/stable/coordinates/apply_space_motion.html) 的最大差约 7.02e−11 角秒；保留其无已知距离提示，不将此结果解释为绝对天体测量精度。面积缩采样及共同显示公式在 17×17 位置复算，前后 TIFF 差分别为 0/1 个 16 位刻度；合成原尺寸 TIFF 全像素检查也通过。
+
+第一次共用固定黑点的显示把母片原有较大背景基线变成明显的通道偏色，实际看图后改为同步变换黑场参考；科学增益公式与 FITS 未改变。另一次独立预览校验发现通用缩放器采用双线性抽样，遂为该比较预览实现面积积分，并保持严格显示误差门限。失败工件保留于本机 QA 目录。
+
+## 文本输入约定
+
+`profile.txt` 首行为 `PhotonStack-SpectralProfile-1`，随后是五个带引号的元数据字段：名称、`broadband`、质量（`measured`/`approximate`/`synthetic`）、来源说明、许可说明。接下来依次为 R/G/B：组件数量（1–8），每组件的采样数量及 `波长nm 响应值` 行。最后是白参考名称/来源/许可三个带引号字段、采样数量及 `波长nm Fλ` 行。所有曲线总样本最多 200000；质量字段是用户声明，验收不能证明其真实性。
+
+`catalog.txt` 首行为 `PhotonStack-SpectralCatalog-1`，随后是名称、已传播星位的十进制儒略年历元、来源说明、许可说明及恒星数量。每颗星为带引号的 ID、ICRS 赤经/赤纬（度）、样本数量，随后是 `波长nm Fλ flux_error` 行。最多 10000 颗星、总计 4000000 个样本；波长严格递增、通量有限、误差非负，ID 唯一。原生接口不再传播一次自行，也不根据图片文件名推测历元。

@@ -9,6 +9,7 @@ add_executable(photonstack
   GeneralizedStretchCommand.cpp
   LocalProcess.cpp
   SkyAnnotationCommand.cpp
+  SpectralCalibrationCommand.cpp
   PlateSolveCommand.cpp
   ChannelCommand.cpp
   NarrowbandCommand.cpp

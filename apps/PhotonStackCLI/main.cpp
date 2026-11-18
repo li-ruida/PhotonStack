@@ -27,6 +27,7 @@
 #include "GeneralizedStretchCommand.hpp"
 #include "PlateSolveCommand.hpp"
 #include "SkyAnnotationCommand.hpp"
+#include "SpectralCalibrationCommand.hpp"
 #include "StarLayersCommand.hpp"
 #include "BackgroundReviewCommand.hpp"
 #include "MosaicDiagnosticsJSON.hpp"
@@ -325,6 +326,8 @@ void printUsage() {
               << "  photonstack plate-solve-replay|plate-solve-export --recipe <recipe.txt> --output-dir <new-directory>\n"
               << "  photonstack sky-annotate --input <solved.fits> --output-dir <new-directory> [--category all|galaxies|nebulae|clusters|other --query name --limiting-magnitude 18 --max-objects 200 --include-unknown 1 --outlines 1 --labels 1 --preview-width 1600 --catalog-dir directory]\n"
               << "  photonstack sky-annotation-inspect|sky-annotation-replay|sky-annotation-export --recipe <recipe.txt> [--output-dir <new-directory>]\n"
+              << "  photonstack spcc --input <solved-linear-rgb.fits> --profile <profile.txt> --catalog <catalog.txt> --output-dir <new-directory> [--radius 8 --sky-inner 11 --sky-outer 15 --saturation 0 --min-snr 20 --exclude source-id,... --expected-sha sha256]\n"
+              << "  photonstack spcc-inspect|spcc-replay|spcc-export --recipe <recipe.txt> [--output-dir <new-directory> | --output <new.fits>] [--expected-sha sha256]\n"
               << "  photonstack ghs-stretch --input <master.fits|developed.tiff> --output-dir <new-directory> [--log-stretch 3 --local-intensity 1 --symmetry 0 --shadow-protection 0 --highlight-protection 1 --mode luminance|independent --black value --white value --preview-width 1200]\n"
               << "  photonstack ghs-inspect|ghs-replay --recipe <recipe.txt> [--output-dir <new-directory>]\n"
               << "  photonstack psf-restore --measurement <recipe.txt> --output-dir <new-directory> [--iterations 8 --amount 1 --pedestal 0 --noise-sigma 0 --protect-above 0 --threads 4]\n"
@@ -7105,6 +7108,10 @@ int runCommandImpl(const std::vector<std::string>& args) {
     if (args[0] == "sky-annotate" || args[0] == "sky-annotation-inspect" || args[0] == "sky-annotation-replay" || args[0] == "sky-annotation-export") {
         try { return runSkyAnnotation(args); }
         catch (const std::exception& error) { printError("SkyAnnotationFailed", error.what()); return 1; }
+    }
+    if (args[0] == "spcc" || args[0] == "spcc-inspect" || args[0] == "spcc-replay" || args[0] == "spcc-export") {
+        try { return runSpectralCalibration(args); }
+        catch (const std::exception& error) { printError("SpectralCalibrationFailed", error.what()); return 1; }
     }
     if (args[0] == "plate-solve" || args[0] == "plate-solve-inspect" || args[0] == "plate-solve-replay" || args[0] == "plate-solve-export") {
         try { return runPlateSolve(args); }

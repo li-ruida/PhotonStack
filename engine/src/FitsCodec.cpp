@@ -14,6 +14,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -432,7 +433,7 @@ float normalizeForDisplay(float value, const SampleRange& range) {
 
 } // namespace
 
-DevelopableFitsImage readDevelopableFits(const std::filesystem::path& path) {
+DevelopableFitsImage readDevelopableFits(const std::filesystem::path& path, bool readWcs) {
     std::ifstream file(path, std::ios::binary);
     const auto header = parseHeader(file);
     if (!header.ok) throw std::runtime_error(header.message);
@@ -446,7 +447,7 @@ DevelopableFitsImage readDevelopableFits(const std::filesystem::path& path) {
     for (const auto* key : {"CTYPE1", "CTYPE2", "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2",
                             "CD1_1", "CD1_2", "CD2_1", "CD2_2", "CDELT1", "CDELT2",
                             "PC1_1", "PC1_2", "PC2_1", "PC2_2", "A_ORDER", "B_ORDER", "WCSAXES"})
-        if (header.values.contains(key)) { result.sky = readSolvedPanel(path); break; }
+        if (readWcs && header.values.contains(key)) { result.sky = readSolvedPanel(path); break; }
     FitsDecodeOptions options; options.mode = FitsDecodeMode::Scientific; options.maskNonFinitePixels = true;
     auto decoded = FitsCodec().read(path, options);
     if (!decoded.ok) throw std::runtime_error(decoded.message);
@@ -487,7 +488,7 @@ LinearMonoMaster readLinearMonoMaster(const std::filesystem::path& path) {
     return result;
 }
 
-SolvedPanel readSolvedPanel(const std::filesystem::path& path) {
+static SolvedPanel readPanelWcs(const std::filesystem::path& path, bool astrometryICRS) {
     std::ifstream file(path, std::ios::binary);
     const auto header = parseHeader(file);
     if (!header.ok)
@@ -509,7 +510,7 @@ SolvedPanel readSolvedPanel(const std::filesystem::path& path) {
     const bool sip = value("CTYPE1") == "RA---TAN-SIP" && value("CTYPE2") == "DEC--TAN-SIP";
     if (!sip && !(value("CTYPE1") == "RA---TAN" && value("CTYPE2") == "DEC--TAN"))
         throw std::runtime_error("A solved RA/DEC TAN or TAN-SIP FITS panel is required");
-    if ((!value("RADESYS").empty() && value("RADESYS") != "ICRS") || h.contains("RADECSYS") || h.contains("EQUINOX") ||
+    if ((!value("RADESYS").empty() && value("RADESYS") != "ICRS") || h.contains("RADECSYS") || (h.contains("EQUINOX") && (!astrometryICRS || number("EQUINOX") != 2000)) ||
         (h.contains("LONPOLE") && number("LONPOLE") != 180) ||
         (h.contains("LATPOLE") && std::abs(number("LATPOLE")) > 90))
         throw std::runtime_error("Only ICRS with standard celestial pole orientation is supported");
@@ -562,6 +563,10 @@ SolvedPanel readSolvedPanel(const std::filesystem::path& path) {
     }
     return panel;
 }
+
+SolvedPanel readSolvedPanel(const std::filesystem::path& path) { return readPanelWcs(path, false); }
+SolvedPanel readAstrometryICRSPanel(const std::filesystem::path& path) { return readPanelWcs(path, true); }
+
 
 bool isFitsPath(const std::filesystem::path& path) {
     const auto extension = lowercaseExtension(path);
@@ -1217,6 +1222,103 @@ ImageReadResult detail::readAnalysisFits(const std::filesystem::path& path, cons
     return result;
 }
 
+namespace {
+void appendWcsCards(std::vector<unsigned char>& header, const TanGrid* sky, const std::vector<SipTerm>* distortion, unsigned channels) {
+    if (!std::isfinite(sky->x) || !std::isfinite(sky->y) || !std::isfinite(sky->ra) || !std::isfinite(sky->dec) || std::abs(sky->dec)>=90 ||
+        !std::all_of(sky->cd.begin(),sky->cd.end(),[](double v){return std::isfinite(v);}) ||
+        std::abs(sky->cd[0]*sky->cd[3]-sky->cd[1]*sky->cd[2])<1e-18)
+        throw std::invalid_argument("Invalid celestial WCS grid");
+    (void)SkyProjection(SolvedPanel{*sky, distortion ? *distortion : std::vector<SipTerm>{}}, *sky);
+    auto put = [&](const char* key, double n) {
+        std::ostringstream value;
+        value << std::uppercase << std::setprecision(16) << n;
+        appendCard(header, makeCard(key, value.str()));
+    };
+    for (auto [key, value] : {std::pair{"CTYPE1", distortion && !distortion->empty() ? "'RA---TAN-SIP'" : "'RA---TAN'"},
+                              {"CTYPE2", distortion && !distortion->empty() ? "'DEC--TAN-SIP'" : "'DEC--TAN'"},
+                              {"CUNIT1", "'deg'"},
+                              {"CUNIT2", "'deg'"},
+                              {"RADESYS", "'ICRS'"}})
+        appendCard(header, makeCard(key, value));
+    put("CRPIX1", sky->x);
+    put("CRPIX2", sky->y);
+    put("CRVAL1", sky->ra);
+    put("CRVAL2", sky->dec);
+    put("CD1_1", sky->cd[0]);
+    put("CD1_2", sky->cd[1]);
+    put("CD2_1", sky->cd[2]);
+    put("CD2_2", sky->cd[3]);
+    if (distortion && !distortion->empty()) {
+        unsigned order=2;
+        std::set<std::pair<unsigned,unsigned>> powers;
+        for (const auto& t:*distortion) {
+            if(t.i>5||t.j>5||t.i+t.j<2||t.i+t.j>5||!std::isfinite(t.a)||!std::isfinite(t.b)||
+               !powers.emplace(t.i,t.j).second)
+                throw std::invalid_argument("SIP terms must be unique finite terms of total degree 2...5");
+            order=std::max(order,t.i+t.j);
+            put(("A_"+std::to_string(t.i)+"_"+std::to_string(t.j)).c_str(),t.a);
+            put(("B_"+std::to_string(t.i)+"_"+std::to_string(t.j)).c_str(),t.b);
+        }
+        put("A_ORDER",order);put("B_ORDER",order);
+    }
+    if (channels != 1)
+        put("CD3_3", 1);
+
+}
+} // namespace
+
+void copyFitsWithWcs(const std::filesystem::path& source, const std::filesystem::path& output, const SolvedPanel& sky) {
+    if (std::filesystem::exists(output) || std::filesystem::is_symlink(output))
+        throw std::invalid_argument("WCS output must be a new file");
+    std::ifstream in(source, std::ios::binary);
+    const auto parsed = parseHeader(in);
+    if (!parsed.ok || parsed.dataOffset > 1024 * 1024) throw std::invalid_argument("Invalid or oversized FITS header");
+    const auto description = imageDescription(parsed);
+    if (!description || (description->channels != 1 && description->channels != 3 && description->channels != 4) || parsed.values.contains("BAYERPAT"))
+        throw std::invalid_argument("WCS attachment requires a mono/RGB master");
+    const auto bytes = std::uint64_t(description->width) * description->height;
+    const auto stride = std::uint64_t(description->channels) * unsigned(std::abs(description->bitpix)/8);
+    const auto fileSize = std::filesystem::file_size(source);
+    if(fileSize < parsed.dataOffset || bytes > (fileSize-parsed.dataOffset)/stride)
+        throw std::invalid_argument("Truncated FITS image payload");
+    // Remove all prior primary and alternate WCS descriptions, including old
+    // inverse SIP / lookup distortions. Preserve acquisition cards verbatim.
+    const auto isWcs = [](const std::string& key) {
+        for (const auto* prefix : {"CTYPE", "CUNIT", "CRPIX", "CRVAL", "CDELT", "CROTA", "WCSAXES", "WCSNAME",
+                "RADESYS", "RADECSYS", "EQUINOX", "LONPOLE", "LATPOLE", "CPDIS", "CQDIS", "D2IM", "DET2IM",
+                "A_", "B_", "AP_", "BP_", "LTM", "LTV"})
+            if (key.starts_with(prefix)) return true;
+        for (const auto* prefix : {"CD", "PC", "PV", "PS", "DP", "DQ"})
+            if (key.starts_with(prefix) && key.size() > 2 && std::isdigit(static_cast<unsigned char>(key[2]))) return true;
+        return key == "CHECKSUM" || key == "DATASUM";
+    };
+    in.clear(); in.seekg(0);
+    std::vector<unsigned char> header;
+    for (std::size_t offset=0; offset<parsed.dataOffset; offset+=80) {
+        std::string card(80, ' '); in.read(card.data(),80);
+        if (!in) throw std::runtime_error("Cannot read FITS header");
+        const auto key=trim(card.substr(0,8)); if(key=="END")break;
+        if(!isWcs(key)) appendCard(header,card);
+    }
+    appendWcsCards(header,&sky.grid,&sky.distortion,description->channels);
+    appendCard(header,makeEndCard());
+    header.resize((header.size()+2879)/2880*2880,' ');
+    in.clear();in.seekg(static_cast<std::streamoff>(parsed.dataOffset));
+    auto* out=std::fopen(output.c_str(),"wbx");
+    if(!out)throw std::runtime_error("Cannot create new WCS output");
+    try {
+        if(std::fwrite(header.data(),1,header.size(),out)!=header.size())throw std::runtime_error("Cannot write WCS header");
+        std::array<char,65536> buffer{};
+        while(in) {
+            in.read(buffer.data(),buffer.size());const auto count=static_cast<std::size_t>(in.gcount());
+            if(count&&std::fwrite(buffer.data(),1,count,out)!=count)throw std::runtime_error("Cannot copy FITS data");
+        }
+        if(!in.eof()||std::fflush(out))throw std::runtime_error("Cannot save WCS output");
+        const auto status=std::fclose(out);out=nullptr;if(status)throw std::runtime_error("Cannot close WCS output");
+    } catch(...) {if(out)std::fclose(out);std::error_code ec;std::filesystem::remove(output,ec);throw;}
+
+}
+
 ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesystem::path& path,
                                   const TanGrid* sky, const std::vector<SipTerm>* distortion, FitsOutputDomain domain) const {
     if (image.empty() || image.channels == 0 || image.channels > 4 || image.pixels.size() != image.sampleCount()) {
@@ -1242,44 +1344,11 @@ ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesyste
         appendCard(header, makeCard("BSCALE", "1.0"));
         appendCard(header, makeCard("BZERO", "0.0"));
         appendCard(header, makeCard("PSCOLOR", display ? "'SRGB-DISPLAY'" : "'LINEAR-SRGB'"));
-        if (sky) {
-            auto put = [&](const char* key, double n) {
-                std::ostringstream value;
-                value << std::uppercase << std::setprecision(16) << n;
-                appendCard(header, makeCard(key, value.str()));
-            };
-            for (auto [key, value] : {std::pair{"CTYPE1", distortion && !distortion->empty() ? "'RA---TAN-SIP'" : "'RA---TAN'"},
-                                      {"CTYPE2", distortion && !distortion->empty() ? "'DEC--TAN-SIP'" : "'DEC--TAN'"},
-                                      {"CUNIT1", "'deg'"},
-                                      {"CUNIT2", "'deg'"},
-                                      {"RADESYS", "'ICRS'"}})
-                appendCard(header, makeCard(key, value));
-            put("CRPIX1", sky->x);
-            put("CRPIX2", sky->y);
-            put("CRVAL1", sky->ra);
-            put("CRVAL2", sky->dec);
-            put("CD1_1", sky->cd[0]);
-            put("CD1_2", sky->cd[1]);
-            put("CD2_1", sky->cd[2]);
-            put("CD2_2", sky->cd[3]);
-            if (distortion && !distortion->empty()) {
-                unsigned order=2;
-                std::set<std::pair<unsigned,unsigned>> powers;
-                for (const auto& t:*distortion) {
-                    if(t.i>5||t.j>5||t.i+t.j<2||t.i+t.j>5||!std::isfinite(t.a)||!std::isfinite(t.b)||
-                       !powers.emplace(t.i,t.j).second)
-                        return writeError("WCSInvalid","SIP terms must be unique finite terms of total degree 2...5");
-                    order=std::max(order,t.i+t.j);
-                    put(("A_"+std::to_string(t.i)+"_"+std::to_string(t.j)).c_str(),t.a);
-                    put(("B_"+std::to_string(t.i)+"_"+std::to_string(t.j)).c_str(),t.b);
-                }
-                put("A_ORDER",order);put("B_ORDER",order);
-            }
-            if (image.channels != 1)
-                put("CD3_3", 1);
-        }
+        if (sky) appendWcsCards(header, sky, distortion, image.channels);
         appendCard(header, makeEndCard());
         header.resize(((header.size() + kFitsBlockSize - 1) / kFitsBlockSize) * kFitsBlockSize, ' ');
+    } catch (const std::invalid_argument& e) {
+        return writeError("WCSInvalid", e.what());
     } catch (const std::bad_alloc&) {
         return writeError("ImageAllocationFailed", "Could not allocate the FITS header buffer");
     } catch (const std::length_error&) {

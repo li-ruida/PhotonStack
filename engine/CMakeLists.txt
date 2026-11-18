@@ -1,5 +1,6 @@
 add_library(photonstack_engine STATIC
   src/AstroDevelop.cpp
+  src/AstrometricValidation.cpp
   src/MasterRegistration.cpp
   src/LinearMatch.cpp
   src/PsfMeasurement.cpp
@@ -27,6 +28,7 @@ add_library(photonstack_engine STATIC
   src/DisplayGridReducer.cpp
   src/Deconvolution.cpp
   src/DrizzleStacker.cpp
+  src/FitsNumericTable.cpp
   src/FitsCodec.cpp
   src/FileDigest.cpp
   src/FrameQualityAnalyzer.cpp

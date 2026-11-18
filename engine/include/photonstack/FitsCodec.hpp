@@ -40,7 +40,14 @@ struct DevelopableFitsImage {
     std::optional<SolvedPanel> sky;
 };
 // Validates mono/RGB/RGBA masters, rejects CFA and unsupported color encodings.
-DevelopableFitsImage readDevelopableFits(const std::filesystem::path& path);
+// readWcs=false is reserved for solving independently of missing/stale WCS.
+DevelopableFitsImage readDevelopableFits(const std::filesystem::path& path, bool readWcs = true);
+// Replaces only primary-header coordinate cards. Original pixel bytes and
+// extension HDUs are copied exactly; acquisition cards are preserved.
+void copyFitsWithWcs(const std::filesystem::path& source, const std::filesystem::path& output, const SolvedPanel& sky);
+// Astrometry.net writes EQUINOX=2000 regardless of the index reference frame.
+// Only call with explicitly declared ICRS indices. No FK5 conversion is implied.
+SolvedPanel readAstrometryICRSPanel(const std::filesystem::path& path);
 using LinearScienceImage = DevelopableFitsImage;
 
 // Linear mono/RGB/RGBA FITS, decoded to RGBA with nonfinite colors masked.

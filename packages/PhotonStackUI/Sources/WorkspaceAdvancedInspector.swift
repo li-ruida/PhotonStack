@@ -9,10 +9,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum AdvancedTool: String, CaseIterable {
-    case finishing, channels, narrowband, starLayers, background, clouds, normalize, color, trails, stars, deconvolve, drizzle
+    case astrometry, finishing, channels, narrowband, starLayers, background, clouds, normalize, color, trails, stars, deconvolve, drizzle
 
     func title(chinese: Bool) -> String {
         switch self {
+        case .astrometry: chinese ? "天文定位与 WCS" : "Plate solving & WCS"
         case .channels: chinese ? "多滤镜合色与表达式" : "Channels & expressions"
         case .starLayers: chinese ? "星云与恒星分层" : "Nebula & star layers"
         case .narrowband: chinese ? "双窄带与 HOO" : "Dual band & HOO"
@@ -76,6 +77,8 @@ struct AdvancedProcessingSection: View {
                 }
             }
             switch settings.tool {
+            case .astrometry:
+                PlateSolveControl(model: model)
             case .channels:
                 ChannelCompositionControl(model: model, session: settings.channels)
             case .starLayers:

@@ -7,6 +7,8 @@ add_executable(photonstack
   PsfMeasurementCommand.cpp
   PsfRestorationCommand.cpp
   GeneralizedStretchCommand.cpp
+  LocalProcess.cpp
+  PlateSolveCommand.cpp
   ChannelCommand.cpp
   NarrowbandCommand.cpp
   FrequencyStackCommand.cpp

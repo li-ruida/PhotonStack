@@ -31,6 +31,8 @@ let package = Package(
             path: "engine",
             sources: [
                 "src/AstroDevelop.cpp",
+                "src/AstrometricValidation.cpp",
+                "src/FitsNumericTable.cpp",
                 "src/MasterRegistration.cpp",
                 "src/LinearMatch.cpp",
                 "src/PsfMeasurement.cpp",

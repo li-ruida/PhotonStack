@@ -34,6 +34,7 @@ add_library(photonstack_engine STATIC
   src/DrizzleStacker.cpp
   src/FitsNumericTable.cpp
   src/FitsCodec.cpp
+  src/CalibrationMetadata.cpp
   src/FileDigest.cpp
   src/FrameQualityAnalyzer.cpp
   src/SequenceQualityAnalyzer.cpp

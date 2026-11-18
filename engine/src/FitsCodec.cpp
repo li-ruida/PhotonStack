@@ -4,6 +4,7 @@
 #include <bit>
 #include "photonstack/StageProfile.hpp"
 #include "photonstack/FitsCodec.hpp"
+#include "photonstack/CalibrationMetadata.hpp"
 #include "DemosaicMenon.hpp"
 #include "DemosaicRatio.hpp"
 #include "DemosaicStarGuard.hpp"
@@ -37,6 +38,8 @@ constexpr std::size_t kFitsStreamChunkBytes = 1024 * 1024;
 struct FitsHeader {
     bool ok = false;
     std::map<std::string, std::string> values;
+    std::map<std::string, std::string> rawCards;
+    std::set<std::string> duplicateKeys;
     std::size_t dataOffset = 0;
     std::string errorCode;
     std::string message;
@@ -83,7 +86,7 @@ std::string parseCardValue(const std::string& card) {
     return trim(value);
 }
 
-FitsHeader parseHeader(std::ifstream& file) {
+FitsHeader parseHeader(std::ifstream& file, bool acquisition = false) {
     FitsHeader header;
     file.clear();
     file.seekg(0, std::ios::beg);
@@ -96,6 +99,11 @@ FitsHeader parseHeader(std::ifstream& file) {
     std::array<char, kFitsBlockSize> block{};
     std::size_t blockOffset = 0;
     while (true) {
+        if (acquisition && blockOffset > 1024 * 1024 - kFitsBlockSize) {
+            header.message = "Calibration metadata header exceeds 1 MiB";
+            header.errorCode = "ImageHeaderInvalid";
+            return header;
+        }
         file.read(block.data(), static_cast<std::streamsize>(block.size()));
         const auto bytesRead = file.gcount();
         if (bytesRead != static_cast<std::streamsize>(block.size())) {
@@ -123,6 +131,10 @@ FitsHeader parseHeader(std::ifstream& file) {
                 return header;
             }
             if (!key.empty() && card[8] == '=') {
+                if (acquisition) {
+                    if (header.values.contains(key)) header.duplicateKeys.insert(key);
+                    header.rawCards[key] = card;
+                }
                 header.values[key] = parseCardValue(card);
             }
         }
@@ -576,6 +588,133 @@ bool isFitsPath(const std::filesystem::path& path) {
 bool FitsSensorIdentity::sameAcquisition(const FitsSensorIdentity& b) const {
     return ok && b.ok && width == b.width && height == b.height && camera == b.camera &&
         bayer == b.bayer && xOffset == b.xOffset && yOffset == b.yOffset && exposure == b.exposure && gain == b.gain;
+}
+
+CalibrationAcquisition inspectCalibrationAcquisition(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    const auto header = parseHeader(stream, true);
+    if (!header.ok) throw std::invalid_argument(header.message);
+    const auto desc = imageDescription(header);
+    if (!desc || !header.values.contains("SIMPLE") || header.values.at("SIMPLE") != "T")
+        throw std::invalid_argument("Calibration metadata requires a supported primary FITS image");
+    for (const auto* key : {"SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS2", "NAXIS3"})
+        if (header.rawCards.contains(key) && trim(header.rawCards.at(key).substr(10)).starts_with('\''))
+            throw std::invalid_argument("Structural FITS values cannot be strings");
+    std::size_t count = 0, samples = 0, bytes = 0;
+    const auto size = std::filesystem::file_size(path);
+    if (!checkedMultiply(desc->width, desc->height, count) || !checkedMultiply(count, desc->channels, samples) ||
+        !checkedMultiply(samples, bytesPerSample(desc->bitpix), bytes) || header.dataOffset > size ||
+        size - header.dataOffset < bytes)
+        throw std::invalid_argument("Calibration image data are truncated or too large");
+    CalibrationAcquisition r;
+    r.width = desc->width; r.height = desc->height; r.channels = desc->channels; r.bitpix = desc->bitpix;
+    auto issue = [&](const std::string& field, const std::string& code, const std::string& message) {
+        r.issues.push_back({field, code, message});
+    };
+    for (const auto& key : {"SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS2", "NAXIS3", "BSCALE", "BZERO"})
+        if (header.duplicateKeys.contains(key)) issue(key, "duplicate", "Repeated structural FITS keyword");
+    auto text = [&](const std::string& field, const std::string& key, bool allowUnquoted = false) {
+        if (!header.values.contains(key)) return;
+        r.keys[field].push_back(key);
+        if (header.duplicateKeys.contains(key)) { issue(field, "duplicate", key + " is repeated"); return; }
+        const auto raw = trim(header.rawCards.at(key).substr(10));
+        std::string value;
+        if (raw.empty()) return;
+        if (raw.front() == '\'') {
+            bool closed = false;
+            for (std::size_t i = 1; i < raw.size(); ++i) {
+                if (raw[i] != '\'') { value += raw[i]; continue; }
+                if (i + 1 < raw.size() && raw[i + 1] == '\'') { value += '\''; ++i; continue; }
+                const auto rest = trim(raw.substr(i + 1));
+                closed = rest.empty() || rest.front() == '/'; break;
+            }
+            if (!closed) { issue(field, "invalid", key + " is not a complete FITS string"); return; }
+        } else if (allowUnquoted && integerValue(header, key)) value = header.values.at(key);
+        else { issue(field, "invalid", key + " requires a FITS string"); return; }
+        value = trim(value);
+        if (!value.empty()) r.text[field] = value;
+    };
+    auto number = [&](const std::string& field, const std::vector<std::string>& keys,
+                      double low, double high, bool integer = false) {
+        std::optional<double> value;
+        bool invalid = false;
+        for (const auto& key : keys) {
+            if (!header.values.contains(key)) continue;
+            r.keys[field].push_back(key);
+            try {
+                if (header.duplicateKeys.contains(key)) throw std::invalid_argument("repeated keyword");
+                auto input = header.values.at(key);
+                if (trim(header.rawCards.at(key).substr(10)).starts_with('\''))
+                    throw std::invalid_argument("number stored as a string");
+                std::replace(input.begin(), input.end(), 'D', 'E');
+                std::replace(input.begin(), input.end(), 'd', 'e');
+                if (input.find_first_not_of("0123456789+-.eE") != std::string::npos)
+                    throw std::invalid_argument("unsupported numeric syntax");
+                std::size_t consumed = 0; const auto n = std::stod(input, &consumed);
+                if (consumed != input.size() || !std::isfinite(n) || n < low || n > high ||
+                    (integer && n != std::floor(n))) throw std::invalid_argument("invalid range or numeric syntax");
+                if (value && *value != n) {
+                    issue(field, "conflict", "Acquisition aliases disagree"); invalid = true;
+                }
+                value = n;
+            } catch (const std::exception& e) { issue(field, "invalid", key + ": " + e.what()); invalid = true; }
+        }
+        if (value && !invalid) r.numeric[field] = *value;
+    };
+    text("camera", "INSTRUME"); text("cameraSerial", "CAM-SER"); text("filter", "FILTER");
+    text("opticalTrain", "PSOPTICS"); text("readoutMode", "READMODE", true);
+    text("object", "OBJECT"); text("observedAt", "DATE-OBS"); text("timeSystem", "TIMESYS"); text("frameType", "IMAGETYP");
+    text("units", "BUNIT"); text("domain", "PSCOLOR"); text("declaredLayout", "PSLAYOUT");
+    text("bayer", "BAYERPAT"); text("temperatureUnit", "TEMPUNIT");
+    number("exposure", {"EXPTIME", "EXPOSURE"}, 0, 1e8);
+    number("gain", {"GAIN"}, 0, 1e9); number("iso", {"ISOSPEED"}, 1, 1e9, true);
+    number("offset", {"OFFSET"}, 0, 1e9); number("electronsPerADU", {"EGAIN"}, 1e-12, 1e9);
+    number("sensorTemperature", {"CCD-TEMP"}, -273.15, 200);
+    number("setTemperature", {"SET-TEMP"}, -273.15, 200);
+    number("binX", {"XBINNING"}, 1, 65535, true); number("binY", {"YBINNING"}, 1, 65535, true);
+    number("originX", {"XORGSUBF"}, 0, 1e9, true); number("originY", {"YORGSUBF"}, 0, 1e9, true);
+    number("focalLength", {"FOCALLEN"}, 1e-9, 1e9);
+    number("scale", {"BSCALE"}, 1e-300, 1e300); number("zero", {"BZERO"}, -1e300, 1e300);
+    if (!header.values.contains("BSCALE")) r.numeric["scale"] = 1;
+    if (!header.values.contains("BZERO")) r.numeric["zero"] = 0;
+    auto upper = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return std::toupper(c); }); return s;
+    };
+    if (r.text.contains("temperatureUnit") && !std::set<std::string>{"C", "CELSIUS", "DEGC"}.contains(upper(r.text.at("temperatureUnit")))) {
+        issue("sensorTemperature", "unsupported", "CCD-TEMP is supported only in degrees Celsius");
+        r.numeric.erase("sensorTemperature");
+    }
+    if (r.text.contains("units") && upper(r.text.at("units")) == "ADU") r.text["units"] = "ADU";
+    if (r.text.contains("domain")) {
+        const auto value = upper(r.text.at("domain"));
+        if (value == "LINEAR" || value == "LINEAR-SRGB") r.text["domain"] = "linear";
+        else issue("domain", "unsupported", "Calibration requires linear sensor samples");
+    }
+    const auto layout = r.text.contains("declaredLayout") ? upper(r.text.at("declaredLayout")) : "";
+    if (r.text.contains("bayer")) {
+        const auto bayer = upper(r.text.at("bayer"));
+        if (!std::set<std::string>{"RGGB", "BGGR", "GRBG", "GBRG"}.contains(bayer) || r.channels != 1 ||
+            (!layout.empty() && layout != "CFA")) issue("sampling", "invalid", "CFA pattern and declared layout disagree or are unsupported");
+        else {
+            std::string effective;
+            auto phase = [&](const char* key) -> unsigned {
+                if (!header.values.contains(key)) return 0;
+                const auto n = integerValue(header, key);
+                if (!n || header.duplicateKeys.contains(key) || trim(header.rawCards.at(key).substr(10)).starts_with('\'')) {
+                    issue("sampling", "invalid", std::string("Invalid CFA phase: ") + key); return 0;
+                }
+                return static_cast<unsigned>(*n) & 1;
+            };
+            const auto dx = phase("XBAYROFF"), dy = phase("YBAYROFF");
+            for (unsigned i = 0; i < 4; ++i) effective += bayer[i ^ dx ^ (dy << 1)];
+            r.text["sampling"] = "CFA:" + effective;
+            r.keys["sampling"] = {"BAYERPAT"};
+            for (const auto* key : {"XBAYROFF", "YBAYROFF"}) if (header.values.contains(key)) r.keys["sampling"].push_back(key);
+        }
+    } else if (layout == "MONO" && r.channels == 1) {
+        r.text["sampling"] = "mono"; r.keys["sampling"] = {"PSLAYOUT"};
+    } else if (!layout.empty()) issue("sampling", "unsupported", "Explicit MONO or complete CFA layout is required");
+    return r;
 }
 
 CfaSensorInfo inspectCfaSensor(const std::filesystem::path& path) {

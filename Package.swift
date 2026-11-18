@@ -65,6 +65,7 @@ let package = Package(
                 "src/Deconvolution.cpp",
                 "src/DrizzleStacker.cpp",
                 "src/FitsCodec.cpp",
+                "src/CalibrationMetadata.cpp",
                 "src/FileDigest.cpp",
                 "src/SensorPatternBuilder.cpp",
                 "src/FrameQualityAnalyzer.cpp",

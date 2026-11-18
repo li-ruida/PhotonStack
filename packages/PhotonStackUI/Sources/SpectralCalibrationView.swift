@@ -22,6 +22,7 @@ struct SpectralCalibrationView: View {
     @State private var filter = "all"
     @State private var query = ""
     @State private var saved: URL?
+    @State private var libraryPresented = false
     private var zh: Bool { model.language == .simplifiedChinese }
     private func text(_ zh: String, _ en: String) -> String { self.zh ? zh : en }
     private var locked: Bool { session.busy || operation != nil }
@@ -62,6 +63,9 @@ struct SpectralCalibrationView: View {
                     .buttonStyle(.borderedProminent).disabled(locked || !session.isCurrent || session.report?.fit.valid != true).accessibilityIdentifier("spcc.use")
             }
         }.padding(18).frame(width: 1140, height: 800)
+            .sheet(isPresented: $libraryPresented) {
+                SpectralProfileLibraryView(chinese: zh, library: SpectralProfileLibrary()) { session.chooseProfile($0.url, name: $0.inspection.profile.name) }
+            }
             .onDisappear { let pending = operation; pending?.cancel(); Task { await pending?.value; session.close() } }
     }
     private var preview: some View {
@@ -89,7 +93,8 @@ struct SpectralCalibrationView: View {
     }
     private var inputs: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack { Button(text("响应配置…", "Response profile…")) { chooseData(profile: true) }.accessibilityIdentifier("spcc.profile"); Text(session.profile?.lastPathComponent ?? text("未选择", "Not selected")).lineLimit(1).font(.caption) }
+            Button(text("响应配置库…", "Response library…")) { libraryPresented = true }.accessibilityIdentifier("spcc.library.open")
+            HStack { Button(text("响应配置…", "Response profile…")) { chooseData(profile: true) }.accessibilityIdentifier("spcc.profile"); Text(session.profileName ?? session.profile?.lastPathComponent ?? text("未选择", "Not selected")).lineLimit(2).font(.caption).help(session.profile?.path ?? "") }
             HStack { Button(text("光谱星表…", "Spectral catalog…")) { chooseData(profile: false) }.accessibilityIdentifier("spcc.catalog"); Text(session.catalog?.lastPathComponent ?? text("未选择", "Not selected")).lineLimit(1).font(.caption) }
             DisclosureGroup(text("孔径与质量设置", "Aperture & quality")) {
                 VStack(spacing: 5) {

@@ -8,7 +8,7 @@ namespace {
 using namespace photonstack;
 using namespace photonstack::cli;
 namespace fs = std::filesystem;
-const std::set<std::string> dependencies{"profile.txt", "catalog.txt"};
+const std::set<std::string> dependencies{"profile.txt", "catalog.txt", "response-source-license.txt"};
 const std::set<std::string> allProducts{"before.tiff", "after.tiff", "calibrated.fits", "report.json"};
 struct Recipe {
     fs::path source;
@@ -116,7 +116,8 @@ Recipe readRecipe(const fs::path& path) {
         throw std::invalid_argument("Invalid spectral product record");
     }
     const std::set<std::string> expected = r.valid ? allProducts : std::set<std::string>{"before.tiff", "report.json"};
-    if (!in.eof() || r.dependencies.size() != 2 || r.products.size() != expected.size())
+    if (!in.eof() || !r.dependencies.contains("profile.txt") || !r.dependencies.contains("catalog.txt") ||
+        r.products.size() != expected.size())
         throw std::invalid_argument("Incomplete spectral recipe");
     for (const auto& name : expected)
         if (!r.products.contains(name))
@@ -345,13 +346,22 @@ void run(Recipe r, const fs::path& profile, const fs::path& catalog, const fs::p
     validateOptions(r.options);
     verifySource(r);
     const auto expectedProducts = r.products;
-    if (r.dependencies.empty())
+    const auto license = profile.parent_path() / "response-source-license.txt";
+    if (r.dependencies.empty()) {
         r.dependencies = {{"profile.txt", fileSHA256(profile)}, {"catalog.txt", fileSHA256(catalog)}};
+        if (fs::exists(license)) {
+            if (!fs::is_regular_file(license) || fs::is_symlink(license) || fs::file_size(license) > 1024 * 1024)
+                throw std::invalid_argument("Invalid or oversized response license file");
+            r.dependencies["response-source-license.txt"] = fileSHA256(license);
+        }
+    }
     if (!fs::create_directory(directory))
         throw std::invalid_argument("Choose a new spectral output directory");
     try {
         fs::copy_file(profile, directory / "profile.txt");
         fs::copy_file(catalog, directory / "catalog.txt");
+        if (r.dependencies.contains("response-source-license.txt"))
+            fs::copy_file(license, directory / "response-source-license.txt");
         verify(directory, r.dependencies);
         const auto p = readSpectralProfile(directory / "profile.txt");
         const auto c = readSpectralCatalog(directory / "catalog.txt");

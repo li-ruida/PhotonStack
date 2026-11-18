@@ -5,6 +5,7 @@ import PhotonStackProcessing
     @Published var settings = SpectralCalibrationSettings()
     @Published private(set) var source: URL
     @Published private(set) var profile: URL?
+    @Published private(set) var profileName: String?
     @Published private(set) var catalog: URL?
     @Published private(set) var report: SpectralCalibrationReport?
     @Published private(set) var output: URL?
@@ -27,7 +28,7 @@ import PhotonStackProcessing
         source = url.resolvingSymlinksInPath(); report = nil; output = nil; beforeImage = nil; afterImage = nil
         settings.excluded = []; error = nil
     }
-    func chooseProfile(_ url: URL) { guard !busy else { return }; profile = url.resolvingSymlinksInPath(); error = nil }
+    func chooseProfile(_ url: URL, name: String? = nil) { guard !busy else { return }; profile = url.resolvingSymlinksInPath(); profileName = name; error = nil }
     func chooseCatalog(_ url: URL) { guard !busy else { return }; catalog = url.resolvingSymlinksInPath(); settings.excluded = []; error = nil }
     func exclude(_ id: String, _ excluded: Bool) {
         guard !busy, canExclude, report?.stars.contains(where: { $0.id == id }) == true else { return }
@@ -74,6 +75,7 @@ import PhotonStackProcessing
             let rendered = try images(folder, report: value), previous = output
             report = value; output = folder; beforeImage = rendered.0; afterImage = rendered.1
             acceptedProfile = profile; acceptedCatalog = catalog
+            profileName = value.profile.name
             if let previous, previous.deletingLastPathComponent() == root { try? FileManager.default.removeItem(at: previous) }
         } catch { try? FileManager.default.removeItem(at: folder); throw error }
     }
@@ -84,6 +86,7 @@ import PhotonStackProcessing
         source = URL(fileURLWithPath: value.source).resolvingSymlinksInPath(); settings = value.options; report = value; output = folder
         profile = folder.appendingPathComponent("profile.txt").resolvingSymlinksInPath(); catalog = folder.appendingPathComponent("catalog.txt").resolvingSymlinksInPath()
         acceptedProfile = profile; acceptedCatalog = catalog; beforeImage = rendered.0; afterImage = rendered.1
+        profileName = value.profile.name
     }
     /// Save by replaying the reviewed snapshots. CLI verifies source, options,
     /// every dependency and every product, including rejected-review reports.

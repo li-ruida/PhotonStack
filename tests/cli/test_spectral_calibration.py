@@ -74,6 +74,24 @@ def calibrate(root, name='result', *options, ok=True):
 
 
 class SpectralCalibration(unittest.TestCase):
+    def test_optional_response_license_is_preserved_and_bound_to_replay(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); fixture(root)
+            license = root/'response-source-license.txt'
+            content = b'Original response license\nRetain this text with the response data.\n'
+            license.write_bytes(content)
+            calibrate(root)
+            result = root/'result'; recipe = result/'recipe.txt'
+            self.assertEqual((result/license.name).read_bytes(), content)
+            self.assertIn('dependency response-source-license.txt '+sha(license), recipe.read_text())
+            replay = root/'replay'
+            run('spcc-replay', '--recipe', recipe, '--output-dir', replay)
+            for p in result.iterdir(): self.assertEqual(p.read_bytes(), (replay/p.name).read_bytes())
+            (result/license.name).write_bytes(b'changed')
+            run('spcc-inspect', '--recipe', recipe, ok=False)
+            run('spcc-replay', '--recipe', recipe, '--output-dir', root/'bad', ok=False)
+            self.assertFalse((root/'bad').exists())
+
     def test_scientific_pixels_reopen_replay_export_and_shared_display(self):
         with tempfile.TemporaryDirectory(prefix='spectral space ') as d:
             root = Path(d); gains, bands = fixture(root)

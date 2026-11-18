@@ -1,6 +1,6 @@
 # 光谱颜色校准：离线审查与实物验证
 
-当前提供 App 离线审查与 CLI，可导入外部响应与缓存光谱，执行候选审查、保存完整报告和科学母片，并重开、重算及导出。已有光谱积分、原生像素孔径测光、留出星验证和线性增益应用。内置设备响应库管理、在线星表获取及独立窄带通带参数仍待接入；不能将本阶段称为完整 SPCC。
+当前提供 App 离线审查、用户响应配置库与 CLI，可导入外部响应与缓存光谱，执行候选审查、保存完整报告和科学母片，并重开、重算及导出。已有光谱积分、原生像素孔径测光、留出星验证和线性增益应用。应用未内置厂商响应曲线数据库；在线星表获取及独立窄带通带参数仍待接入，不能将本阶段称为完整 SPCC。
 
 ## App 审查流程
 
@@ -14,6 +14,25 @@
 - 「打开审查结果」选择之前保存的目录，恢复来源、快照、孔径、完整质量门限和手动排除。保存时重新验证来源与产品摘要、按快照复算，不能覆盖已有结果；运行中出现的同名文件或目录也保留。关闭窗口会取消待完成任务，临时预览在任务结束后清理。
 
 ## 离线使用
+
+### 响应配置库
+
+在 SPCC 窗口打开「响应配置库」，导入已有的 `profile.txt`。配置与同目录可选的 `response-source-license.txt` 保存为独立副本，原文件保持不变。库位于 `~/Library/Application Support/PhotonStack/SpectralProfiles`；内容相同的导入复用已有项，同名而响应或许可内容不同的配置各自保留。可改显示名称、导出到新文件夹，以及归档或恢复。归档不删除响应数据，已生成结果另有完整快照。
+
+选择配置后，可查看相机和滤镜组件相乘得到的 RGB 总响应、白参考光谱、平均波长、RMS 通带宽度与白参考相对 G 的通量。RMS 宽度是响应加权标准差，不是半高全宽；白参考图以绝对峰值归一，负采样保留。显示曲线在原曲线节点、区间中点及等距位置取样，再按波长区间保留首尾与最小/最大值，最多每条 2048 点。校准积分始终使用原始组件数据，不能将显示曲线当作导出的科学响应。
+
+「使用此配置」重新验证响应及许可摘要，并将配置传给校准窗口。改名不改变原始配置元数据或科学数据。实测、近似、模拟等级是输入的来源声明，不是应用对整机响应精度的认证；仍需由使用者确认相机、滤镜及完整光路。损坏记录会保留并显示错误，不能静默替换或用于校准。归档项可检查和导出，恢复后才能选择使用。
+
+独立 CLI 检查不需要母片、星表或网络，不写入任何文件：
+
+```sh
+photonstack spcc-profile-inspect --profile /data/profile.txt
+photonstack spcc-profile-inspect --profile /data/profile.txt --expected-sha <sha256>
+```
+
+报告包含来源、许可、内容 SHA-256、每通道组件数、响应支持范围、准确积分得到的平均波长/RMS 宽度/白参考通量，以及仅供绘图的采样。`--expected-sha` 拒绝与已检查配置不一致的输入。
+
+### 外部数据转换
 
 使用明确带 ICRS WCS 的原生 RGB/RGBA 线性 FITS。单色、CFA、显示域、缺少 WCS 的输入会被拒绝。设备与滤镜响应由使用者选定，不从文件名推测。`tools/scripts/import-spcc-data.py` 可将外部 OSC 响应 JSON、CALSPEC 白参考和 ESA Gaia DR3 XP sampled 缓存转换为输入：
 
@@ -48,6 +67,7 @@ photonstack spcc --input /data/solved-linear-rgb.fits \
 | 文件 | 内容 |
 |---|---|
 | `profile.txt`、`catalog.txt` | 实际使用的响应、白参考、已传播星位及光谱快照 |
+| `response-source-license.txt` | 输入响应附带时保留的原始许可文本，并作为配方依赖校验 |
 | `report.json` | 配置、来源、全部候选及剔除原因、两孔径测量、拟合/留出残差、仪器与白参考增益 |
 | `before.tiff` | 16 位显示预览 |
 | `after.tiff`、`calibrated.fits` | 仅通过留出验收时生成；分别为显示预览和保留 WCS/覆盖的 Float32 线性科学母片 |
@@ -64,6 +84,8 @@ photonstack spcc-preview --recipe /data/new-calibration/recipe.txt --output /dat
 ```
 
 重开、重算与导出均检查原片、依赖快照和产品摘要。修改配方参数但保留旧报告也会被拒绝。重算使用保存的设置重新运行，并要求产品与旧配方一致；若后续算法改变结果，应建立一次新的审查。已有目录与文件不覆盖，失败时清理本次创建的未完成输出。
+
+新的校准会保留响应旁边的许可文本（常规文件，至多 1 MiB）。重算按原配方是否包含此依赖处理，因此此前只有响应和星表两个依赖的结果仍可原样重开、重算；不追溯增加未保存的许可内容。
 
 `spcc-preview` 默认复制通过验收且摘要正确的显示 TIFF；`--full-resolution 1` 先重现原图显示预览并核对其摘要，确认当前显示算法与保存结果一致，再用同一黑场参考和尺度渲染全尺寸校准母片。两种模式都不生成科学数据，同样拒绝已有目标、被修改的依赖和未通过的结果。App 的缓存区分配方、依赖和显示产品的文件状态。
 
@@ -120,6 +142,8 @@ python3 tools/scripts/qa/spectral_calibration_validation.py \
 Python 需 NumPy、SciPy 和 Astropy；输入 CSV 的列为 `source_id,ra,dec,pmra,pmdec,phot_g_mean_mag`，XP 缓存是 ESA DataLink `DATAMODEL_GAIA` CSV 的 `xp-*.download` 文件。输出包含原生报告、独立复核报告、输入 SHA-256、实验夹具及通过检查时的线性 `calibrated.fits`。输入保持只读，拒绝已有输出目录。
 
 `tests/cli/test_spectral_calibration.py` 用不依赖科学 Python 库的解析星场验证正式 CLI，包含所有科学像素、WCS、16 位 TIFF 公式、质量失败、手动排除、快照和产品修改、原片修改、配方参数修改及重算/导出字节一致性。`tests/cli/test_spcc_import.py` 另需 NumPy、Astropy，验证自行跨 RA=0、单位转换、负光谱值、输入只读、重复导入、坐标不匹配和异常误差拒绝。
+
+`tests/cli/test_spectral_profile.py` 用解析的双线性组件乘积验证通带矩、白参考积分与绘图值；另覆盖极窄峰、负白参考、非法输入和只读检查。`SpectralProfileLibraryTests.swift` 在指定 `PHOTONSTACK_TEST_CLI` 时运行真实 CLI，覆盖并发重复导入、同名不同配置、改名、重开、导出、归档恢复、来源删除、配置/许可修改与损坏记录保护。`tools/scripts/qa/spectral_profile_validation.py --profile ... --cli ... --output ...` 使用独立多项式积分检查真实配置，输出路径必须为新文件。
 
 对上述真实 M31，正式 CLI 科学输出与底层探针逐字节一致，增益与留出统计未改变。`tools/scripts/qa/spcc_cli_validation.py` 独立重算光谱积分、原孔径和扩大孔径测量、拟合与全图增益；源 WCS、重算全部文件和再次导出通过复核。自行传播与 [Astropy 的空间运动接口](https://docs.astropy.org/en/stable/coordinates/apply_space_motion.html) 的最大差约 7.02e−11 角秒；保留其无已知距离提示，不将此结果解释为绝对天体测量精度。面积缩采样及共同显示公式在 17×17 位置复算，前后 TIFF 差分别为 0/1 个 16 位刻度；合成原尺寸 TIFF 全像素检查也通过。
 

@@ -17,7 +17,7 @@ enum SpectralCalibrationDisplayPreview {
     static func cacheKey(for input: URL) -> String {
         guard let recipe = recipe(for: input) else { return "" }
         let folder = recipe.deletingLastPathComponent()
-        return "|spcc-display-2|" + ["recipe.txt", "report.json", "profile.txt", "catalog.txt", "before.tiff", "after.tiff"].map {
+        return "|spcc-display-2|" + ["recipe.txt", "report.json", "profile.txt", "catalog.txt", "response-source-license.txt", "before.tiff", "after.tiff"].map {
             let a = try? FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent($0).path)
             let modified = (a?[.modificationDate] as? Date ?? .distantPast).timeIntervalSince1970
             return "\($0):\(a?[.size] ?? 0):\(modified):\(a?[.systemFileNumber] ?? 0)"

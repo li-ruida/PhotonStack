@@ -71,3 +71,4 @@ add_test(NAME photonstack_psf_restoration COMMAND ${Python3_EXECUTABLE}
 
 add_test(NAME photonstack_generalized_stretch_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_generalized_stretch.py $<TARGET_FILE:photonstack>)
 add_test(NAME photonstack_plate_solve_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_plate_solve.py $<TARGET_FILE:photonstack>)
+add_test(NAME photonstack_sky_annotation_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_sky_annotation.py $<TARGET_FILE:photonstack>)

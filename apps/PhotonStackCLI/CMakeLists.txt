@@ -8,6 +8,7 @@ add_executable(photonstack
   PsfRestorationCommand.cpp
   GeneralizedStretchCommand.cpp
   LocalProcess.cpp
+  SkyAnnotationCommand.cpp
   PlateSolveCommand.cpp
   ChannelCommand.cpp
   NarrowbandCommand.cpp
@@ -28,3 +29,5 @@ if(MSVC)
 else()
   target_compile_options(photonstack PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+
+target_compile_definitions(photonstack PRIVATE PHOTONSTACK_CATALOG_DIR="${PROJECT_SOURCE_DIR}/resources/OpenNGC")

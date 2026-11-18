@@ -1,0 +1,6 @@
+OpenNGC — Mattia Verga and contributors
+https://github.com/mattiaverga/OpenNGC
+Revision: be3cd6c5498806a2fbb2f7e0452ef802dbb02be0
+Data license: CC BY-SA 4.0; see LICENSE.txt.
+PhotonStack copies catalog CSVs without changes and converts standard-level nebula outlines to a numeric text representation without simplifying vertices.
+See provenance.json for original file hashes, AUTHORS, UPSTREAM-README.md and outlines-methodology.txt for credits and source methods.

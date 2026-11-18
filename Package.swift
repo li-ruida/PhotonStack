@@ -32,6 +32,7 @@ let package = Package(
             sources: [
                 "src/AstroDevelop.cpp",
                 "src/AstrometricValidation.cpp",
+                "src/SkyAnnotation.cpp",
                 "src/FitsNumericTable.cpp",
                 "src/MasterRegistration.cpp",
                 "src/LinearMatch.cpp",

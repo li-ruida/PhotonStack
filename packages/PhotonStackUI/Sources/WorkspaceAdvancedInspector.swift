@@ -79,6 +79,7 @@ struct AdvancedProcessingSection: View {
             switch settings.tool {
             case .astrometry:
                 PlateSolveControl(model: model)
+                SkyAnnotationControl(model: model)
             case .channels:
                 ChannelCompositionControl(model: model, session: settings.channels)
             case .starLayers:

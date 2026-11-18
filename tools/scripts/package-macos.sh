@@ -63,6 +63,7 @@ fi
 rm -rf "$APP_DIR" "$LEGACY_APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 mkdir -p "$RESOURCES_DIR/ThirdPartyNotices"
+cp -R "$ROOT_DIR/resources/OpenNGC" "$RESOURCES_DIR/OpenNGC"
 cp "$ROOT_DIR/third_party/colour-demosaicing-LICENSE.txt" "$RESOURCES_DIR/ThirdPartyNotices/"
 cp "$ROOT_DIR/third_party/pocketfft-LICENSE.md" "$RESOURCES_DIR/ThirdPartyNotices/"
 cp "$ROOT_DIR/third_party/pocketfft-header-NOTICE.txt" "$RESOURCES_DIR/ThirdPartyNotices/"

@@ -9,6 +9,7 @@ struct CalibrationLibraryView: View {
     @State private var importing = false
     @State private var building = false
     @State private var constructionEntry: CalibrationLibrary.Entry?
+    @State private var calibrationJob: CalibrationJobLaunch?
     init(library: CalibrationLibrary, lights: [URL], chinese: Bool) {
         _session = StateObject(wrappedValue: CalibrationLibrarySession(library: library, lights: lights))
         self.chinese = chinese
@@ -22,6 +23,8 @@ struct CalibrationLibraryView: View {
                     Text(t("母片管理", "Masters")).tag(false)
                     Text(t("匹配审查", "Match review")).tag(true)
                 }.pickerStyle(.segmented).frame(width: 260).accessibilityIdentifier("calibration.page")
+                Button(t("打开校准任务…", "Open calibration task…")) { openJob() }.disabled(session.busy)
+                    .accessibilityIdentifier("calibration.open-job")
                 Spacer()
                 if session.busy {
                     ProgressView().controlSize(.small)
@@ -39,7 +42,7 @@ struct CalibrationLibraryView: View {
             if let error = session.error {
                 Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled).lineLimit(4)
             }
-            Text(t("支持制作、管理母片和匹配审查；尚未按分组执行亮场校准。原片不会被修改。", "Build and manage masters and review matches; grouped light calibration is not yet applied. Source files stay unchanged."))
+            Text(t("制作母片 → 匹配审查 → 分配并校准。任务可重开恢复，原片不会被修改。", "Build masters → review matches → assign and calibrate. Tasks can be reopened and resumed; sources stay unchanged."))
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(18).frame(width: 1040, height: 760)
             .task { session.perform { try await session.reload() } }
@@ -58,6 +61,9 @@ struct CalibrationLibraryView: View {
             }
             .sheet(item: $constructionEntry) { entry in
                 CalibrationConstructionView(library: session.library, entry: entry, chinese: chinese)
+            }
+            .sheet(item: $calibrationJob) { launch in
+                CalibrationJobView(library: session.library, launch: launch, chinese: chinese)
             }
     }
     private var masters: some View {
@@ -164,6 +170,12 @@ struct CalibrationLibraryView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button(t("导出审查…", "Export review…")) { exportReview(report) }.disabled(session.busy).accessibilityIdentifier("calibration.export-review")
+                    Button(t("分配并校准…", "Assign and calibrate…")) {
+                        session.perform {
+                            let draft = try CalibrationJobDraft(review: report, entries: session.entries.filter { session.selectedMasters.contains($0.id) })
+                            calibrationJob = CalibrationJobLaunch(draft: draft)
+                        }
+                    }.disabled(session.busy).accessibilityIdentifier("calibration.assign-job")
                 }
             }
         }
@@ -187,6 +199,11 @@ struct CalibrationLibraryView: View {
                 try Task.checkCancellation(); session.setScannedLights(inputs)
             }
         }
+    }
+    private func openJob() {
+        let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
+        panel.message = t("选择包含 job.txt 的校准任务文件夹。", "Choose a calibration task folder containing job.txt.")
+        if panel.runModal() == .OK, let url = panel.url { calibrationJob = CalibrationJobLaunch(directory: url) }
     }
     private func exportMaster(_ entry: CalibrationLibrary.Entry) {
         let panel = NSSavePanel(); panel.nameFieldStringValue = entry.label

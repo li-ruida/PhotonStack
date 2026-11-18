@@ -35,6 +35,7 @@ let package = Package(
                 "src/LinearMatch.cpp",
                 "src/PsfMeasurement.cpp",
                 "src/MeasuredDeconvolution.cpp",
+                "src/GeneralizedStretch.cpp",
                 "src/ChannelComposer.cpp",
                 "src/ChannelAlignment.cpp",
                 "src/ArtifactTrailRemover.cpp",

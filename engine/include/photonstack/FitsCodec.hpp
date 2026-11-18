@@ -35,10 +35,14 @@ struct DualBandPlanes {
 DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCalibration* calibration = nullptr,
                                   DualBandSampling sampling = DualBandSampling::RedGrid);
 
-struct LinearScienceImage {
+struct DevelopableFitsImage {
     ImageBuffer image;
     std::optional<SolvedPanel> sky;
 };
+// Validates mono/RGB/RGBA masters, rejects CFA and unsupported color encodings.
+DevelopableFitsImage readDevelopableFits(const std::filesystem::path& path);
+using LinearScienceImage = DevelopableFitsImage;
+
 // Linear mono/RGB/RGBA FITS, decoded to RGBA with nonfinite colors masked.
 // Rejects CFA and explicit nonlinear encoding; validates supplied WCS.
 LinearScienceImage readLinearScienceImage(const std::filesystem::path& path);
@@ -49,6 +53,8 @@ struct LinearMonoMaster {
 };
 // Rejects CFA mosaics, display encodings and incomplete/unsupported WCS.
 LinearMonoMaster readLinearMonoMaster(const std::filesystem::path& path);
+
+enum class FitsOutputDomain { LinearScience, DisplaySRGB };
 
 class FitsCodec {
   public:
@@ -66,7 +72,8 @@ class FitsCodec {
     // combining them is rejected until their training stage is explicitly modeled.
     ImageWriteResult write(const ImageBuffer& image, const std::filesystem::path& path,
                            const TanGrid* sky = nullptr,
-                           const std::vector<SipTerm>* distortion = nullptr) const;
+                           const std::vector<SipTerm>* distortion = nullptr,
+                           FitsOutputDomain domain = FitsOutputDomain::LinearScience) const;
 };
 
 bool isFitsPath(const std::filesystem::path& path);

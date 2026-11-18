@@ -85,6 +85,7 @@ struct AdvancedProcessingSection: View {
             case .finishing:
                 VStack(alignment: .leading, spacing: 10) {
                     AstroDevelopControl(model: model)
+                    GeneralizedStretchControl(model: model)
                     GreenCastControl(model: model)
                     ContinuumToneControl(model: model)
                     DisplayGridControl(model: model)

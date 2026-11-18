@@ -6,6 +6,7 @@ add_executable(photonstack
   LinearMatchCommand.cpp
   PsfMeasurementCommand.cpp
   PsfRestorationCommand.cpp
+  GeneralizedStretchCommand.cpp
   ChannelCommand.cpp
   NarrowbandCommand.cpp
   FrequencyStackCommand.cpp

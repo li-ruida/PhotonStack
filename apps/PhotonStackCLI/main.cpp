@@ -24,6 +24,7 @@
 #include "LinearMatchCommand.hpp"
 #include "PsfMeasurementCommand.hpp"
 #include "PsfRestorationCommand.hpp"
+#include "GeneralizedStretchCommand.hpp"
 #include "StarLayersCommand.hpp"
 #include "BackgroundReviewCommand.hpp"
 #include "MosaicDiagnosticsJSON.hpp"
@@ -317,6 +318,8 @@ void printUsage() {
               << "  photonstack denoise-nonlocal --input <linear RGB FITS> --blend-map <FITS> --output <new FITS> --h <distance units> [--mode luminance|conservative-rgb] [--red-weight 0.2126] [--green-weight 0.7152] [--blue-weight 0.0722]\n"
               << "  photonstack psf-match --input <linear.fits> --output <linear.fits> --cov-xx <px2> --cov-yy <px2> --cov-xy <px2> [--strength 0.7]\n"
               << "  photonstack psf-measure --input <linear.fits> --output-dir <new-directory> [--channel luminance|red|green|blue --sigma 5 --saturation 0 --exclude 1,7,9]\n"
+              << "  photonstack ghs-stretch --input <master.fits|developed.tiff> --output-dir <new-directory> [--log-stretch 3 --local-intensity 1 --symmetry 0 --shadow-protection 0 --highlight-protection 1 --mode luminance|independent --black value --white value --preview-width 1200]\n"
+              << "  photonstack ghs-inspect|ghs-replay --recipe <recipe.txt> [--output-dir <new-directory>]\n"
               << "  photonstack psf-restore --measurement <recipe.txt> --output-dir <new-directory> [--iterations 8 --amount 1 --pedestal 0 --noise-sigma 0 --protect-above 0 --threads 4]\n"
               << "  photonstack psf-restoration-inspect --recipe <recipe.txt>\n"
               << "  photonstack psf-restoration-replay --recipe <recipe.txt> --output-dir <new-directory>\n"
@@ -1558,6 +1561,16 @@ int reviewPreviewImage(const std::vector<std::string>& args) {
     if (!input.ok) { printError(input.errorCode, input.message); return 1; }
     const auto decoded = std::chrono::steady_clock::now();
     auto& image = input.image;
+    if (photonstack::isFitsPath(*inputPath) && image.colorEncoding == photonstack::ColorEncoding::SRGB) {
+        // Tagged display FITS already contains the saved appearance. A second
+        // automatic stretch would change the saved appearance on reopening.
+        photonstack::ImageWriteOptions options; options.bitDepth = photonstack::ImageWriteBitDepth::Sixteen;
+        const auto written = codec.write(image, *outputPath, options);
+        if (!written.ok) { printError(written.errorCode, written.message); return 1; }
+        std::cout << "{\"type\":\"complete\",\"command\":\"review-preview\",\"stretched\":false,\"width\":" << image.width
+                  << ",\"height\":" << image.height << ",\"output\":\"" << jsonEscape(outputPath->string()) << "\"}\n";
+        return 0;
+    }
     photonstack::detail::parallelRanges(image.pixelCount(), 262144, [&](std::size_t begin, std::size_t end) noexcept {
         for (std::size_t pixel = begin; pixel < end; ++pixel) {
             const auto offset = pixel * image.channels;
@@ -7081,6 +7094,10 @@ int runCommandImpl(const std::vector<std::string>& args) {
     if (args[0] == "star-layers") {
         try { return runStarLayers(args); }
         catch (const std::exception& error) { printError("StarLayersFailed", error.what()); return 1; }
+    }
+    if (args[0] == "ghs-stretch" || args[0] == "ghs-inspect" || args[0] == "ghs-replay") {
+        try { return runGeneralizedStretch(args); }
+        catch (const std::exception& error) { printError("GeneralizedStretchFailed", error.what()); return 1; }
     }
     if (args[0] == "psf-restore" || args[0] == "psf-restoration-inspect" || args[0] == "psf-restoration-replay") {
         try { return runPsfRestoration(args); }

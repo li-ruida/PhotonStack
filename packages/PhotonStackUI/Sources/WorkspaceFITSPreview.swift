@@ -31,7 +31,7 @@ struct WorkspaceFITSPreview: View {
                 }
             }
             if !isMosaic {
-                Text(chinese ? "单张拉伸预览 · 未对齐 · 不改原片" : "Stretched original · Unregistered · Source unchanged")
+                Text(chinese ? "FITS 显示预览 · 不改原文件" : "FITS display preview · Source unchanged")
                     .font(.caption).foregroundStyle(.secondary)
                     .accessibilityIdentifier("workspace.single-frame-preview")
             }

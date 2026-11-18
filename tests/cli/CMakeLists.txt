@@ -68,3 +68,5 @@ if(Python3_Interpreter_FOUND)
 endif()
 add_test(NAME photonstack_psf_restoration COMMAND ${Python3_EXECUTABLE}
   ${CMAKE_CURRENT_SOURCE_DIR}/test_psf_restoration.py $<TARGET_FILE:photonstack>)
+
+add_test(NAME photonstack_generalized_stretch_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_generalized_stretch.py $<TARGET_FILE:photonstack>)

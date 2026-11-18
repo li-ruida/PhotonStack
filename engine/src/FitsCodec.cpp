@@ -432,7 +432,7 @@ float normalizeForDisplay(float value, const SampleRange& range) {
 
 } // namespace
 
-LinearScienceImage readLinearScienceImage(const std::filesystem::path& path) {
+DevelopableFitsImage readDevelopableFits(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     const auto header = parseHeader(file);
     if (!header.ok) throw std::runtime_error(header.message);
@@ -440,9 +440,9 @@ LinearScienceImage readLinearScienceImage(const std::filesystem::path& path) {
     if (!description || (description->channels != 1 && description->channels != 3 && description->channels != 4) || header.values.contains("BAYERPAT"))
         throw std::invalid_argument("Select a linear mono/RGB master, not a CFA exposure");
     const auto profile = header.values.find("PSCOLOR");
-    if (profile != header.values.end() && profile->second != "Linear" && profile->second != "LINEAR-SRGB")
-        throw std::invalid_argument("Select a linear FITS master");
-    LinearScienceImage result;
+    if (profile != header.values.end() && profile->second != "Linear" && profile->second != "LINEAR-SRGB" && profile->second != "SRGB-DISPLAY")
+        throw std::invalid_argument("Unsupported FITS master color encoding; expected linear or SRGB-DISPLAY");
+    DevelopableFitsImage result;
     for (const auto* key : {"CTYPE1", "CTYPE2", "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2",
                             "CD1_1", "CD1_2", "CD2_1", "CD2_2", "CDELT1", "CDELT2",
                             "PC1_1", "PC1_2", "PC2_1", "PC2_2", "A_ORDER", "B_ORDER", "WCSAXES"})
@@ -451,6 +451,13 @@ LinearScienceImage readLinearScienceImage(const std::filesystem::path& path) {
     auto decoded = FitsCodec().read(path, options);
     if (!decoded.ok) throw std::runtime_error(decoded.message);
     result.image = std::move(decoded.image);
+    return result;
+}
+
+LinearScienceImage readLinearScienceImage(const std::filesystem::path& path) {
+    auto result = readDevelopableFits(path);
+    if (result.image.colorEncoding != ColorEncoding::Linear)
+        throw std::invalid_argument("Select a linear FITS master");
     return result;
 }
 
@@ -900,11 +907,13 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
         }
     }
 
+    const bool displayDomain = header.values.contains("PSCOLOR") && header.values.at("PSCOLOR") == "SRGB-DISPLAY";
     const auto decodeColor = [&](float value) {
+        if (displayDomain) return value;
         return options.mode == FitsDecodeMode::Scientific ? value : normalizeForDisplay(value, colorRange);
     };
     const auto decodeAlpha = [&](float value) {
-        return options.mode == FitsDecodeMode::Scientific ? value : normalizeForDisplay(value, alphaRange);
+        return displayDomain || options.mode == FitsDecodeMode::Scientific ? value : normalizeForDisplay(value, alphaRange);
     };
 
     ImageReadResult result;
@@ -913,7 +922,7 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
     result.image.height = description->height;
     result.image.channels = 4;
     result.image.format = PixelFormat::Float32RGBA;
-    result.image.colorEncoding = ColorEncoding::Linear;
+    result.image.colorEncoding = displayDomain ? ColorEncoding::SRGB : ColorEncoding::Linear;
     result.image.sourceBitsPerChannel = bitsPerChannelForBitpix(description->bitpix);
     std::size_t outputSamples = 0;
     if (!checkedMultiply(pixelCount, static_cast<std::size_t>(result.image.channels), outputSamples)) {
@@ -1209,11 +1218,17 @@ ImageReadResult detail::readAnalysisFits(const std::filesystem::path& path, cons
 }
 
 ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesystem::path& path,
-                                  const TanGrid* sky, const std::vector<SipTerm>* distortion) const {
+                                  const TanGrid* sky, const std::vector<SipTerm>* distortion, FitsOutputDomain domain) const {
     if (image.empty() || image.channels == 0 || image.channels > 4 || image.pixels.size() != image.sampleCount()) {
         return writeError("ImageBufferInvalid", "Image buffer must be non-empty Float32 data with 1 to 4 channels");
     }
 
+    const bool display = domain == FitsOutputDomain::DisplaySRGB;
+    if (domain != FitsOutputDomain::LinearScience && !display)
+        return writeError("ImageEncodingInvalid", "Unknown FITS output domain");
+    if (display && (image.colorEncoding != ColorEncoding::SRGB ||
+        !std::all_of(image.pixels.begin(),image.pixels.end(),[](float v){return std::isfinite(v)&&v>=0&&v<=1;})))
+        return writeError("ImageEncodingInvalid", "Display FITS requires bounded sRGB values");
     std::vector<unsigned char> header;
     try {
         appendCard(header, makeCard("SIMPLE", "T"));
@@ -1226,7 +1241,7 @@ ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesyste
         }
         appendCard(header, makeCard("BSCALE", "1.0"));
         appendCard(header, makeCard("BZERO", "0.0"));
-        appendCard(header, makeCard("PSCOLOR", "'LINEAR-SRGB'"));
+        appendCard(header, makeCard("PSCOLOR", display ? "'SRGB-DISPLAY'" : "'LINEAR-SRGB'"));
         if (sky) {
             auto put = [&](const char* key, double n) {
                 std::ostringstream value;
@@ -1291,7 +1306,8 @@ ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesyste
         for (std::size_t start = 0; start < pixels; start += chunk.size()) {
             const auto count = std::min(chunk.size(), pixels - start);
             for (std::size_t i = 0; i < count; ++i) {
-                const auto value = sampleForFits(image, channel, (start + i) * image.channels + channel);
+                const auto offset = (start + i) * image.channels + channel;
+                const auto value = display ? image.pixels[offset] : sampleForFits(image, channel, offset);
                 const auto bits = std::bit_cast<std::uint32_t>(value);
                 if constexpr (std::endian::native == std::endian::big) chunk[i] = bits;
                 else chunk[i] = (bits >> 24) | ((bits >> 8) & 0xff00u) | ((bits << 8) & 0xff0000u) | (bits << 24);

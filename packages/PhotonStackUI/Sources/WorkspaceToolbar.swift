@@ -8,6 +8,7 @@ struct WorkspaceToolbar: ToolbarContent {
     let onOpenProject: () -> Void
     let onSaveProject: () -> Void
     let onOpenWorkflows: () -> Void
+    let onOpenCalibrationLibrary: () -> Void
 
     var body: some ToolbarContent {
         ToolbarItemGroup(placement: .automatic) {
@@ -45,6 +46,14 @@ struct WorkspaceToolbar: ToolbarContent {
             .help(model.localized(.workflowsHelp))
             .keyboardShortcut("w", modifiers: [.command, .option])
             .accessibilityIdentifier("workspace.workflows")
+
+            Button(action: onOpenCalibrationLibrary) {
+                Label(model.language == .simplifiedChinese ? "校准库" : "Calibration", systemImage: "externaldrive")
+                    .labelStyle(.titleAndIcon)
+            }
+            .keyboardShortcut("c", modifiers: [.command, .option])
+            .accessibilityIdentifier("workspace.calibration")
+            .disabled(model.hasActiveProcessing)
 
             Menu {
                 Button(action: onOpenProject) {

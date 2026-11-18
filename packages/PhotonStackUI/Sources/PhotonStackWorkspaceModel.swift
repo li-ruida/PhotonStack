@@ -460,6 +460,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     @Published public private(set) var hasPendingUserSettingsPersistence = false
 
     private let processingService: any ProcessingService
+    let calibrationLibrary: CalibrationLibrary
     private let projectRepository: ProjectRepository
     private let settingsRepository: any AppSettingsStoring
     private var previewDirectory: URL
@@ -574,6 +575,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         self.batchRegistrationCandidateIDs = Self.batchRegistrationCandidateIDs(in: project)
         self.batchRegistrationSelection = self.batchRegistrationCandidateIDs
         self.processingService = processingService
+        self.calibrationLibrary = CalibrationLibrary(service: processingService)
         self.projectRepository = projectRepository
         self.settingsRepository = settingsRepository
         self.usesManagedPreviewDirectory = previewDirectory == nil

@@ -401,16 +401,18 @@ void run(Recipe r, const fs::path& profile, const fs::path& catalog, const fs::p
 } // namespace
 int runSpectralCalibration(const std::vector<std::string>& args) {
     const bool fresh = args[0] == "spcc", inspect = args[0] == "spcc-inspect", replay = args[0] == "spcc-replay",
-               exporting = args[0] == "spcc-export";
-    if (!fresh && !inspect && !replay && !exporting)
+               exporting = args[0] == "spcc-export", display = args[0] == "spcc-preview";
+    if (!fresh && !inspect && !replay && !exporting && !display)
         throw std::invalid_argument("Unknown spectral command");
     const std::set<std::string> freshKeys{"--input",        "--profile", "--catalog",   "--output-dir",
                                           "--expected-sha", "--radius",  "--sky-inner", "--sky-outer",
-                                          "--saturation",   "--min-snr", "--exclude"};
+                                          "--saturation",   "--min-snr", "--exclude", "--max-center-offset",
+                                          "--max-spectral-error", "--max-aperture-color-change", "--max-validation-log-error"};
     const std::set<std::string> savedKeys = inspect ? std::set<std::string>{"--recipe", "--expected-sha"}
                                             : replay
                                                 ? std::set<std::string>{"--recipe", "--output-dir", "--expected-sha"}
-                                                : std::set<std::string>{"--recipe", "--output", "--expected-sha"};
+                                                : display ? std::set<std::string>{"--recipe", "--output", "--expected-sha", "--full-resolution"}
+                                                          : std::set<std::string>{"--recipe", "--output", "--expected-sha"};
     std::map<std::string, std::string> values;
     for (std::size_t i = 1; i < args.size(); i += 2)
         if (i + 1 >= args.size() || !(fresh ? freshKeys : savedKeys).contains(args[i]) ||
@@ -430,7 +432,11 @@ int runSpectralCalibration(const std::vector<std::string>& args) {
                                                      {"--sky-inner", &a.skyInner},
                                                      {"--sky-outer", &a.skyOuter},
                                                      {"--saturation", &a.saturation},
-                                                     {"--min-snr", &a.minSNR}};
+                                                     {"--min-snr", &a.minSNR},
+                                                     {"--max-center-offset", &a.maxCenterOffset},
+                                                     {"--max-spectral-error", &r.options.maxRelativeSpectralError},
+                                                     {"--max-aperture-color-change", &r.options.maxApertureColorChange},
+                                                     {"--max-validation-log-error", &r.options.maxValidationLogError}};
         for (const auto& [key, ptr] : numeric)
             if (values.contains(key)) {
                 std::size_t n = 0;
@@ -460,6 +466,8 @@ int runSpectralCalibration(const std::vector<std::string>& args) {
     const auto r = readRecipe(path);
     if (values.contains("--expected-sha") && r.sha != values.at("--expected-sha"))
         throw std::runtime_error("Spectral recipe belongs to another source");
+    if (values.contains("--full-resolution") && values.at("--full-resolution") != "0" && values.at("--full-resolution") != "1")
+        throw std::invalid_argument("Spectral full-resolution must be 0 or 1");
     if (inspect) {
         print(path.parent_path());
         return 0;
@@ -473,13 +481,31 @@ int runSpectralCalibration(const std::vector<std::string>& args) {
     if (!values.contains("--output") || !r.valid)
         throw std::invalid_argument("Export requires a validated spectral result and new --output");
     const fs::path output = values.at("--output");
-    if (output.empty() || fs::exists(output) || !isFitsPath(output))
-        throw std::invalid_argument("Choose a new FITS export path");
+    if (output.empty() || fs::exists(output) ||
+        (display ? output.extension() != ".tiff" && output.extension() != ".tif" : !isFitsPath(output)))
+        throw std::invalid_argument(display ? "Choose a new TIFF preview path" : "Choose a new FITS export path");
+    const std::string product = display ? "after.tiff" : "calibrated.fits";
     bool copied = false;
     try {
-        copied = fs::copy_file(path.parent_path() / "calibrated.fits", output);
-        if (!copied || fileSHA256(output) != r.products.at("calibrated.fits"))
+        copied = fs::copy_file(path.parent_path() / product, output);
+        if (!copied || fileSHA256(output) != r.products.at(product))
             throw std::runtime_error("Spectral export verification failed");
+        if (display && values.contains("--full-resolution") && values.at("--full-resolution") == "1") {
+            // Reproduce the saved comparison first. This binds the display
+            // statistics and rendering algorithm without trusting new defaults
+            // or silently restretching with another black reference.
+            const auto bounds = [&] {
+                const auto source = readLinearScienceImage(r.source);
+                auto small = resized(source.image);
+                const auto limits = range(small);
+                preview(std::move(small), limits.first, limits.second, {1, 1, 1}, output);
+                if (fileSHA256(output) != r.products.at("before.tiff"))
+                    throw std::runtime_error("Saved spectral display differs; create a fresh review");
+                return limits;
+            }();
+            auto calibrated = readLinearScienceImage(path.parent_path() / "calibrated.fits");
+            preview(std::move(calibrated.image), bounds.first, bounds.second, r.gains, output);
+        }
         verifySource(r);
         verify(path.parent_path(), r.dependencies);
         verify(path.parent_path(), r.products);
@@ -490,7 +516,7 @@ int runSpectralCalibration(const std::vector<std::string>& args) {
         }
         throw;
     }
-    std::cout << "{\"type\":\"complete\",\"command\":\"spcc-export\",\"output\":"
+    std::cout << "{\"type\":\"complete\",\"command\":" << channelJSON(args[0]) << ",\"output\":"
               << channelJSON(fs::absolute(output).string()) << "}\n";
     return 0;
 }

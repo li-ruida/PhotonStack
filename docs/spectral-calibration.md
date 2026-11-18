@@ -1,6 +1,17 @@
-# 光谱颜色校准：离线 CLI 与实物验证
+# 光谱颜色校准：离线审查与实物验证
 
-当前提供离线 CLI，可导入外部响应与缓存光谱，执行候选审查、保存完整报告和科学母片，并重开、重算及导出。已有光谱积分、原生像素孔径测光、留出星验证和线性增益应用。App 审查界面、内置设备响应库管理、在线星表获取及独立窄带通带参数仍待接入；不能将本阶段称为完整 SPCC。
+当前提供 App 离线审查与 CLI，可导入外部响应与缓存光谱，执行候选审查、保存完整报告和科学母片，并重开、重算及导出。已有光谱积分、原生像素孔径测光、留出星验证和线性增益应用。内置设备响应库管理、在线星表获取及独立窄带通带参数仍待接入；不能将本阶段称为完整 SPCC。
+
+## App 审查流程
+
+在后期调整的「高级 → 色彩校正」打开「光谱星色校准（SPCC）」。选择带 ICRS WCS 的宽带线性 RGB FITS 母片，以及按下节导入得到的 `profile.txt`、`catalog.txt`，执行「校准并审查」。如果当前画布是已显影图，需在窗口中另选原线性母片。
+
+- 前后图使用共同显示尺度。黄色为拟合星、青色为独立留出星、橙色为剔除星；点击星点或选择列表可查看信噪比、颜色残差、扩大孔径差与剔除原因。画幅外候选仍保留在列表中。
+- 可按 ID 搜索、按采用/剔除筛选，并手动排除候选。排除或孔径设置改变后，旧结果仍可比较，但必须重新审查才能保存。更换星表会清除旧排除项。
+- 对数残差图的横轴是 R/G、纵轴是 B/G；两种比较状态共用尺度。它包含相对白参考的归一化，不把白参考的颜色与仪器增益混为一谈。近似响应会明确提示；通过留出门限不证明整机响应准确。
+- 「保存审查与配方」将快照、报告和预览存入新目录；验收失败时同样可以保存诊断，但不生成校准母片。「另存并使用校准母片」只在当前结果通过验收时可用，主画布打开全尺寸线性 `calibrated.fits`。
+- 主画布识别母片旁的 SPCC 配方，经来源和产品摘要复核后，按同一显示参数生成全尺寸 TIFF，保留 1:1 查看所需的像素尺寸，避免通用拉伸错误处理已缩放的背景基线。显示图不进入编辑图；后续科学操作仍读取线性 FITS。单独导出的 FITS 若没有旁边的配方目录，则由查看软件自行决定显示拉伸。
+- 「打开审查结果」选择之前保存的目录，恢复来源、快照、孔径、完整质量门限和手动排除。保存时重新验证来源与产品摘要、按快照复算，不能覆盖已有结果；运行中出现的同名文件或目录也保留。关闭窗口会取消待完成任务，临时预览在任务结束后清理。
 
 ## 离线使用
 
@@ -30,6 +41,8 @@ photonstack spcc --input /data/solved-linear-rgb.fits \
 
 可用参数包括 `--radius 8 --sky-inner 11 --sky-outer 15 --min-snr 20 --saturation 0 --exclude source-id,...`。饱和阈值 0 表示未知；排除 ID 必须存在且唯一。`--expected-sha` 可将操作绑定到已经审查过的原片摘要。
 
+质量门限可用 `--max-center-offset 2 --max-spectral-error 0.1 --max-aperture-color-change 0.03 --max-validation-log-error 0.2` 指定，分别约束质心位移（像素）、光谱相对误差上界、扩大孔径对数颜色变化及留出对数残差 P90。完整设置随配方保存，在 App 重开、重新审查时保留；改变门限会改变通过条件，不能将放宽门限视为精度提升。
+
 结果目录包含：
 
 | 文件 | 内容 |
@@ -46,9 +59,13 @@ photonstack spcc --input /data/solved-linear-rgb.fits \
 photonstack spcc-inspect --recipe /data/new-calibration/recipe.txt
 photonstack spcc-replay --recipe /data/new-calibration/recipe.txt --output-dir /data/new-replay
 photonstack spcc-export --recipe /data/new-calibration/recipe.txt --output /data/new-export.fits
+photonstack spcc-preview --recipe /data/new-calibration/recipe.txt --output /data/new-preview.tiff
+photonstack spcc-preview --recipe /data/new-calibration/recipe.txt --output /data/new-full-display.tiff --full-resolution 1
 ```
 
 重开、重算与导出均检查原片、依赖快照和产品摘要。修改配方参数但保留旧报告也会被拒绝。重算使用保存的设置重新运行，并要求产品与旧配方一致；若后续算法改变结果，应建立一次新的审查。已有目录与文件不覆盖，失败时清理本次创建的未完成输出。
+
+`spcc-preview` 默认复制通过验收且摘要正确的显示 TIFF；`--full-resolution 1` 先重现原图显示预览并核对其摘要，确认当前显示算法与保存结果一致，再用同一黑场参考和尺度渲染全尺寸校准母片。两种模式都不生成科学数据，同样拒绝已有目标、被修改的依赖和未通过的结果。App 的缓存区分配方、依赖和显示产品的文件状态。
 
 预览采用覆盖加权的面积缩采样，避免在缩小的星点核心中仅选几个像素。前后使用同一原图统计、同一显示尺度；后图的黑场参考与科学通道增益同步变换。它不是再次自动白平衡，也没有修改科学母片的背景。报告记录显示范围与公式，不能把显示 TIFF 的非线性值当成测光结果。
 

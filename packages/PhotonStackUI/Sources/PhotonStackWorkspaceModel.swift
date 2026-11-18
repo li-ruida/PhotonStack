@@ -4128,11 +4128,16 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     func deepSkyReviewDecodeKey(for input: URL) -> String {
-        deepSkyReviewDecodeArguments(for: input).joined(separator: "|")
+        deepSkyReviewDecodeArguments(for: input).joined(separator: "|") + SpectralCalibrationDisplayPreview.cacheKey(for: input)
     }
 
     /// Independent review preview. Never replaces the editor's stack or adds history.
     func makeDeepSkyReviewPreview(input: URL, output: URL) async throws {
+        if let recipe = SpectralCalibrationDisplayPreview.recipe(for: input) {
+            _ = try await processingService.runCLI(arguments: ["spcc-preview", "--recipe", recipe.path, "--output", output.path, "--full-resolution", "1"])
+            try Task.checkCancellation()
+            return
+        }
         _ = try await processingService.runCLI(arguments: ["review-preview", "--input", input.path,
             "--output", output.path] + deepSkyReviewDecodeArguments(for: input))
         try Task.checkCancellation()

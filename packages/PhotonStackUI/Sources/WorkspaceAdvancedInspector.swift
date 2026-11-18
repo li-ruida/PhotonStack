@@ -284,6 +284,7 @@ struct AdvancedProcessingSection: View {
                 .buttonStyle(.bordered)
                 .disabled(model.canProcessCurrentInput == false || model.isProcessing)
             case .color:
+                SpectralCalibrationControl(model: model)
                 Text(model.localized(.colorSection))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)

@@ -101,6 +101,13 @@ class SpectralCalibration(unittest.TestCase):
                              {p.name: p.read_bytes() for p in (root/'replay').iterdir()})
             run('spcc-export', '--recipe', root/'result/recipe.txt', '--output', root/'export.fits')
             self.assertEqual((root/'export.fits').read_bytes(), (root/'result/calibrated.fits').read_bytes())
+            run('spcc-preview', '--recipe', root/'result/recipe.txt', '--output', root/'display.tiff')
+            self.assertEqual((root/'display.tiff').read_bytes(), (root/'result/after.tiff').read_bytes())
+            run('spcc-preview', '--recipe', root/'result/recipe.txt', '--output', root/'full.tiff', '--full-resolution', '1')
+            self.assertEqual((root/'full.tiff').read_bytes(), (root/'result/after.tiff').read_bytes())
+            run('spcc-preview', '--recipe', root/'result/recipe.txt', '--output', root/'bad.tiff', '--full-resolution', '2', ok=False)
+            run('spcc-preview', '--recipe', root/'result/recipe.txt', '--output', root/'display.tiff', ok=False)
+            run('spcc-preview', '--recipe', root/'result/recipe.txt', '--output', root/'wrong.fits', ok=False)
             self.assertEqual(sha(root/'source.fits'), original)
             for p in ['before.tiff', 'after.tiff']: self.assertGreater((root/'result'/p).stat().st_size, 1000)
             self.assertIn('shared', result['preview']['transfer'])
@@ -123,12 +130,20 @@ class SpectralCalibration(unittest.TestCase):
             root=Path(d); fixture(root)
             for i, options in enumerate([('--radius', '20'), ('--min-snr', 'nan'), ('--exclude', 'missing'),
                                          ('--exclude', '0,0'), ('--exclude', '0,'), ('--expected-sha', '0'*64),
-                                         ('--radius', '8', '--radius', '9'), ('--recipe', 'unexpected')]):
+                                         ('--radius', '8', '--radius', '9'), ('--recipe', 'unexpected'),
+                                         ('--max-center-offset', '0'), ('--max-spectral-error', '.6'),
+                                         ('--max-aperture-color-change', '.3'), ('--max-validation-log-error', 'nan')]):
                 calibrate(root, str(i), *options, ok=False)
                 self.assertFalse((root/str(i)).exists())
             report=calibrate(root, 'excluded', '--exclude', '0,7')['report']
             self.assertTrue(report['fit']['valid'])
             self.assertEqual([s['id'] for s in report['stars'] if s['status']=='excluded'], ['0', '7'])
+            limits=calibrate(root, 'limits', '--max-center-offset', '1.5', '--max-spectral-error', '.08',
+                             '--max-aperture-color-change', '.025', '--max-validation-log-error', '.18')['report']
+            self.assertTrue(limits['fit']['valid'])
+            for k,v in [('maxCenterOffset',1.5),('maxRelativeSpectralError',.08),('maxApertureColorChange',.025),('maxValidationLogError',.18)]:
+                self.assertEqual(limits['options'][k],v)
+            self.assertEqual(run('spcc-inspect', '--recipe', root/'limits/recipe.txt')['report'],limits)
             baseline={p.name: p.read_bytes() for p in (root/'excluded').iterdir()}
             calibrate(root, 'excluded', ok=False)
             self.assertEqual(baseline, {p.name: p.read_bytes() for p in (root/'excluded').iterdir()})
@@ -152,11 +167,13 @@ class SpectralCalibration(unittest.TestCase):
             self.assertFalse((root/'result/calibrated.fits').exists()); self.assertFalse((root/'result/after.tiff').exists())
             self.assertEqual(run('spcc-inspect','--recipe',root/'result/recipe.txt')['report'], report)
             run('spcc-export','--recipe',root/'result/recipe.txt','--output',root/'no.fits',ok=False)
+            run('spcc-preview','--recipe',root/'result/recipe.txt','--output',root/'no.tiff',ok=False)
             self.assertFalse((root/'no.fits').exists())
             run('spcc-replay','--recipe',root/'result/recipe.txt','--output-dir',root/'rejected-replay')
             for file in ['source.fits', 'result/profile.txt', 'result/catalog.txt', 'result/report.json', 'result/before.tiff']:
                 path=root/file; old=path.read_bytes(); path.write_bytes(old+b'changed')
                 run('spcc-inspect','--recipe',root/'result/recipe.txt',ok=False)
+                run('spcc-preview','--recipe',root/'result/recipe.txt','--output',root/'no.tiff',ok=False)
                 run('spcc-replay','--recipe',root/'result/recipe.txt','--output-dir',root/'no',ok=False)
                 self.assertFalse((root/'no').exists()); path.write_bytes(old)
             path=root/'result/recipe.txt'; old=path.read_text(); path.write_text(old.replace('8 11 15 0 20 2', '8 11 15 0 21 2'))

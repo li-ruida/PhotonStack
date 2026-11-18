@@ -132,10 +132,27 @@ def main():
     for p in root.iterdir(): assert p.read_bytes()==(out/'replayed'/p.name).read_bytes()
     run('spcc-export','--recipe',root/'recipe.txt','--output',out/'exported.fits')
     assert sha(out/'exported.fits')==sha(root/'calibrated.fits')
+    # Main-canvas 1:1 viewing needs native dimensions, not the small review proxy.
+    run('spcc-preview','--recipe',root/'recipe.txt','--output',out/'full-display.tiff','--full-resolution','1')
+    full=Image.open(out/'full-display.tiff'); tags=full.tag_v2
+    assert full.size==(report['width'],report['height']) and tags[259]==1 and set(tags[258])=={16}
+    raw=(out/'full-display.tiff').read_bytes(); endian='<' if raw[:2]==b'II' else '>'
+    payload=b''.join(raw[o:o+n] for o,n in zip(tags[273],tags[279]))
+    full_pixels=np.frombuffer(payload,dtype=endian+'u2').reshape(report['height'],report['width'],4)
+    full_errors=[]; covered=calibrated[3]>0
+    for c,gain in enumerate(report['fit']['gains']):
+        normalized=np.maximum(0,(calibrated[c].astype(float)-report['preview']['low']*gain)/max(report['preview']['high']-report['preview']['low'],1e-12))
+        mapped=np.clip(np.arcsinh(10*normalized)/np.arcsinh(10),0,1).astype(np.float32)
+        expected_integer=np.rint(mapped.astype(float)*65535)
+        error=float(np.max(np.abs(full_pixels[:,:,c][covered].astype(float)-expected_integer[covered])))
+        assert error<=1, (c,error)
+        full_errors.append(error)
+    assert np.max(np.abs(full_pixels[:,:,3].astype(float)-np.rint(np.clip(calibrated[3],0,1).astype(float)*65535)))<=1
     for p in [source,args.gaia_catalog,*root.iterdir()]: assert sha(p)==original[str(p.resolve())]
     result=dict(maximumMotionDifferenceArcsec=motion_error,motionReferenceWarnings=sorted({str(w.message) for w in caught}),
                 maximumRelativeApertureDifference=max(flux_differences),previewMaximum16BitDifference=preview_errors,
-                allSciencePixelsEqual=True,wcsGridVerified=True,replayAllFilesEqual=True,exportSHA256=sha(out/'exported.fits'),
+                allSciencePixelsEqual=True,wcsGridVerified=True,replayAllFilesEqual=True,fullDisplayMaximum16BitDifference=full_errors,
+                fullDisplaySize=list(full.size),exportSHA256=sha(out/'exported.fits'),
                 sourceSHA256=report['sourceSHA'],profileQuality=report['profile']['quality'],fit=report['fit'])
     (out/'audit.json').write_text(json.dumps(result,indent=2)+'\n'); print(json.dumps(result,indent=2))
 

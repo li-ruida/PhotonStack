@@ -29,6 +29,7 @@
 #include "SkyAnnotationCommand.hpp"
 #include "SpectralCalibrationCommand.hpp"
 #include "SpectralProfileCommand.hpp"
+#include "SpectralCatalogCommand.hpp"
 #include "StarLayersCommand.hpp"
 #include "BackgroundReviewCommand.hpp"
 #include "MosaicDiagnosticsJSON.hpp"
@@ -332,6 +333,8 @@ void printUsage() {
               << "  photonstack spcc-inspect|spcc-replay|spcc-export --recipe <recipe.txt> [--output-dir <new-directory> | --output <new.fits>] [--expected-sha sha256]\n"
               << "  photonstack spcc-preview --recipe <recipe.txt> --output <new.tiff> [--full-resolution 0|1 --expected-sha sha256]\n"
               << "  photonstack spcc-profile-inspect --profile <profile.txt> [--expected-sha sha256]\n"
+              << "  photonstack spcc-field --input <solved-linear-rgb.fits> [--expected-sha sha256]\n"
+              << "  photonstack spcc-catalog-inspect --catalog <catalog.txt> [--expected-sha sha256]\n"
               << "  photonstack ghs-stretch --input <master.fits|developed.tiff> --output-dir <new-directory> [--log-stretch 3 --local-intensity 1 --symmetry 0 --shadow-protection 0 --highlight-protection 1 --mode luminance|independent --black value --white value --preview-width 1200]\n"
               << "  photonstack ghs-inspect|ghs-replay --recipe <recipe.txt> [--output-dir <new-directory>]\n"
               << "  photonstack psf-restore --measurement <recipe.txt> --output-dir <new-directory> [--iterations 8 --amount 1 --pedestal 0 --noise-sigma 0 --protect-above 0 --threads 4]\n"
@@ -7116,6 +7119,10 @@ int runCommandImpl(const std::vector<std::string>& args) {
     if (args[0] == "spcc-profile-inspect") {
         try { return runSpectralProfileInspection(args); }
         catch (const std::exception& error) { printError("SpectralProfileFailed", error.what()); return 1; }
+    }
+    if (args[0] == "spcc-field" || args[0] == "spcc-catalog-inspect") {
+        try { return runSpectralCatalog(args); }
+        catch (const std::exception& error) { printError("SpectralCatalogFailed", error.what()); return 1; }
     }
     if (args[0] == "spcc" || args[0] == "spcc-inspect" || args[0] == "spcc-replay" || args[0] == "spcc-export" || args[0] == "spcc-preview") {
         try { return runSpectralCalibration(args); }

@@ -23,6 +23,7 @@ struct SpectralCalibrationView: View {
     @State private var query = ""
     @State private var saved: URL?
     @State private var libraryPresented = false
+    @State private var gaiaPresented = false
     private var zh: Bool { model.language == .simplifiedChinese }
     private func text(_ zh: String, _ en: String) -> String { self.zh ? zh : en }
     private var locked: Bool { session.busy || operation != nil }
@@ -66,6 +67,9 @@ struct SpectralCalibrationView: View {
             .sheet(isPresented: $libraryPresented) {
                 SpectralProfileLibraryView(chinese: zh, library: SpectralProfileLibrary()) { session.chooseProfile($0.url, name: $0.inspection.profile.name) }
             }
+            .sheet(isPresented: $gaiaPresented) {
+                GaiaCatalogDownloadView(source: session.source, chinese: zh) { session.chooseCatalog($0); selected = nil }
+            }
             .onDisappear { let pending = operation; pending?.cancel(); Task { await pending?.value; session.close() } }
     }
     private var preview: some View {
@@ -96,6 +100,7 @@ struct SpectralCalibrationView: View {
             Button(text("响应配置库…", "Response library…")) { libraryPresented = true }.accessibilityIdentifier("spcc.library.open")
             HStack { Button(text("响应配置…", "Response profile…")) { chooseData(profile: true) }.accessibilityIdentifier("spcc.profile"); Text(session.profileName ?? session.profile?.lastPathComponent ?? text("未选择", "Not selected")).lineLimit(2).font(.caption).help(session.profile?.path ?? "") }
             HStack { Button(text("光谱星表…", "Spectral catalog…")) { chooseData(profile: false) }.accessibilityIdentifier("spcc.catalog"); Text(session.catalog?.lastPathComponent ?? text("未选择", "Not selected")).lineLimit(1).font(.caption) }
+            Button(text("获取 Gaia 光谱星表…", "Get Gaia spectral catalog…")) { gaiaPresented = true }.accessibilityIdentifier("spcc.gaia.open")
             DisclosureGroup(text("孔径与质量设置", "Aperture & quality")) {
                 VStack(spacing: 5) {
                     number(text("孔径半径 (px)", "Aperture radius (px)"), \.radius, "radius")

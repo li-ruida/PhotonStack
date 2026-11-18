@@ -11,6 +11,7 @@ add_executable(photonstack
   SkyAnnotationCommand.cpp
   SpectralCalibrationCommand.cpp
   SpectralProfileCommand.cpp
+  SpectralCatalogCommand.cpp
   PlateSolveCommand.cpp
   ChannelCommand.cpp
   NarrowbandCommand.cpp

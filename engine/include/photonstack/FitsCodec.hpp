@@ -35,6 +35,14 @@ struct DualBandPlanes {
 DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCalibration* calibration = nullptr,
                                   DualBandSampling sampling = DualBandSampling::RedGrid);
 
+struct LinearScienceImage {
+    ImageBuffer image;
+    std::optional<SolvedPanel> sky;
+};
+// Linear mono/RGB/RGBA FITS, decoded to RGBA with nonfinite colors masked.
+// Rejects CFA and explicit nonlinear encoding; validates supplied WCS.
+LinearScienceImage readLinearScienceImage(const std::filesystem::path& path);
+
 struct LinearMonoMaster {
     ImageBuffer image;
     std::optional<SolvedPanel> sky;

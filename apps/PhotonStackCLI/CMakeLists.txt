@@ -4,6 +4,7 @@ add_executable(photonstack
   StarLayersCommand.cpp
   MasterRegistrationCommand.cpp
   LinearMatchCommand.cpp
+  PsfMeasurementCommand.cpp
   ChannelCommand.cpp
   NarrowbandCommand.cpp
   FrequencyStackCommand.cpp

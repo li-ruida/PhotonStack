@@ -22,6 +22,7 @@
 #include "ChannelCommand.hpp"
 #include "MasterRegistrationCommand.hpp"
 #include "LinearMatchCommand.hpp"
+#include "PsfMeasurementCommand.hpp"
 #include "StarLayersCommand.hpp"
 #include "BackgroundReviewCommand.hpp"
 #include "MosaicDiagnosticsJSON.hpp"
@@ -314,6 +315,8 @@ void printUsage() {
               << "  photonstack suppress-grid --input <display.tiff|png> --output <new.tiff|png> [--amount 1]\n"
               << "  photonstack denoise-nonlocal --input <linear RGB FITS> --blend-map <FITS> --output <new FITS> --h <distance units> [--mode luminance|conservative-rgb] [--red-weight 0.2126] [--green-weight 0.7152] [--blue-weight 0.0722]\n"
               << "  photonstack psf-match --input <linear.fits> --output <linear.fits> --cov-xx <px2> --cov-yy <px2> --cov-xy <px2> [--strength 0.7]\n"
+              << "  photonstack psf-measure --input <linear.fits> --output-dir <new-directory> [--channel luminance|red|green|blue --sigma 5 --saturation 0 --exclude 1,7,9]\n"
+              << "  photonstack psf-inspect --recipe <recipe.txt>\n"
               << "  photonstack deconvolve --input <image> --output <image> [--iterations 8] [--radius 2] [--sigma 1.2]\n"
               << "  photonstack color neutralize --input <image> --output <image> [--strength 1]\n"
               << "  photonstack color saturate --input <image> --output <image> [--amount 0.2]\n"
@@ -7074,6 +7077,10 @@ int runCommandImpl(const std::vector<std::string>& args) {
     if (args[0] == "star-layers") {
         try { return runStarLayers(args); }
         catch (const std::exception& error) { printError("StarLayersFailed", error.what()); return 1; }
+    }
+    if (args[0] == "psf-measure" || args[0] == "psf-inspect") {
+        try { return runPsfMeasurement(args); }
+        catch (const std::exception& error) { printError("PsfMeasurementFailed", error.what()); return 1; }
     }
     if (args[0] == "channel-match" || args[0] == "channel-match-inspect" || args[0] == "channel-match-replay") {
         try { return runLinearMatch(args); }

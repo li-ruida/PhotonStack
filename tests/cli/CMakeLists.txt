@@ -63,4 +63,6 @@ if(Python3_Interpreter_FOUND)
     "${CMAKE_CURRENT_SOURCE_DIR}/test_narrowband.py" "$<TARGET_FILE:photonstack>")
   add_test(NAME photonstack_linear_match COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/test_linear_match.py" "$<TARGET_FILE:photonstack>")
+  add_test(NAME photonstack_psf_measurement COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_psf_measurement.py" "$<TARGET_FILE:photonstack>")
 endif()

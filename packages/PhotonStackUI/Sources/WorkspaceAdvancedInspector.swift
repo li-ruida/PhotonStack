@@ -32,6 +32,7 @@ enum AdvancedTool: String, CaseIterable {
 @MainActor
 final class AdvancedToolSettings: ObservableObject {
     let starLayers = StarLayerSession()
+    let psf = PsfMeasurementSession()
     let channels = ChannelCompositionSession()
     let narrowband = NarrowbandSession()
     @Published var tool: AdvancedTool = .finishing
@@ -492,6 +493,7 @@ struct AdvancedProcessingSection: View {
                         .foregroundStyle(.secondary)
                 }
             case .deconvolve:
+                PsfMeasurementControl(model: model, session: settings.psf)
                 Text(model.localized(.deconvolutionSection))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)

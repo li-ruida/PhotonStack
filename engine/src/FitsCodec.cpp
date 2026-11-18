@@ -432,6 +432,28 @@ float normalizeForDisplay(float value, const SampleRange& range) {
 
 } // namespace
 
+LinearScienceImage readLinearScienceImage(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    const auto header = parseHeader(file);
+    if (!header.ok) throw std::runtime_error(header.message);
+    const auto description = imageDescription(header);
+    if (!description || (description->channels != 1 && description->channels != 3 && description->channels != 4) || header.values.contains("BAYERPAT"))
+        throw std::invalid_argument("Select a linear mono/RGB master, not a CFA exposure");
+    const auto profile = header.values.find("PSCOLOR");
+    if (profile != header.values.end() && profile->second != "Linear" && profile->second != "LINEAR-SRGB")
+        throw std::invalid_argument("Select a linear FITS master");
+    LinearScienceImage result;
+    for (const auto* key : {"CTYPE1", "CTYPE2", "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2",
+                            "CD1_1", "CD1_2", "CD2_1", "CD2_2", "CDELT1", "CDELT2",
+                            "PC1_1", "PC1_2", "PC2_1", "PC2_2", "A_ORDER", "B_ORDER", "WCSAXES"})
+        if (header.values.contains(key)) { result.sky = readSolvedPanel(path); break; }
+    FitsDecodeOptions options; options.mode = FitsDecodeMode::Scientific; options.maskNonFinitePixels = true;
+    auto decoded = FitsCodec().read(path, options);
+    if (!decoded.ok) throw std::runtime_error(decoded.message);
+    result.image = std::move(decoded.image);
+    return result;
+}
+
 LinearMonoMaster readLinearMonoMaster(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     const auto header = parseHeader(file);

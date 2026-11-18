@@ -2,6 +2,7 @@ add_library(photonstack_engine STATIC
   src/AstroDevelop.cpp
   src/MasterRegistration.cpp
   src/LinearMatch.cpp
+  src/PsfMeasurement.cpp
   src/ChannelComposer.cpp
   src/ChannelAlignment.cpp
   src/ArtifactTrailRemover.cpp

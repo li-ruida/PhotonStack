@@ -181,3 +181,7 @@ if(APPLE)
     add_test(NAME photonstack_metal_workflow_tests COMMAND photonstack_metal_workflow_tests)
     set_tests_properties(photonstack_metal_workflow_tests PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+
+add_executable(photonstack_measured_deconvolution_tests MeasuredDeconvolutionTests.cpp)
+target_link_libraries(photonstack_measured_deconvolution_tests PRIVATE photonstack_engine)
+add_test(NAME photonstack_measured_deconvolution_tests COMMAND photonstack_measured_deconvolution_tests)

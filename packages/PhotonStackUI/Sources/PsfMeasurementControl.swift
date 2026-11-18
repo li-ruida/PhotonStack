@@ -40,8 +40,7 @@ struct PsfMeasurementControl:View {
                     model.startChannelCompositionJob {service in try await session.open(url,using:service)}
                 }.accessibilityIdentifier("psf.open")
                 if let report=session.report { summary(report) }
-                Text(zh ? "本入口保存测量、星点审查图和总和为 1 的 PSF 核。下方仍为手动高斯反卷积，尚不自动采用此核。" : "Save measurements, star review and a unit-sum PSF. Manual Gaussian deconvolution below does not yet use this kernel.")
-                    .font(.caption2).foregroundStyle(.secondary)
+                PsfRestorationControl(model:model,session:session)
             }.padding(.top,4)
         }.disabled(model.hasActiveProcessing)
     }

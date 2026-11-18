@@ -66,3 +66,5 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME photonstack_psf_measurement COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/test_psf_measurement.py" "$<TARGET_FILE:photonstack>")
 endif()
+add_test(NAME photonstack_psf_restoration COMMAND ${Python3_EXECUTABLE}
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_psf_restoration.py $<TARGET_FILE:photonstack>)

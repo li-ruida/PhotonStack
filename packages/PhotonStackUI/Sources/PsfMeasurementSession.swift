@@ -41,6 +41,12 @@ struct PsfMeasurementReport: Decodable {
     @Published var saturation = 0.0 { didSet { if oldValue != saturation {excluded=[]} } }
     @Published var excluded:Set<Int> = []
     @Published private(set) var report:PsfMeasurementReport?
+    @Published var restoration:PsfRestorationReport?
+    @Published var restoreIterations=8
+    @Published var restoreAmount=0.7
+    @Published var restorePedestal=0.0
+    @Published var restoreNoise=0.0
+    @Published var restoreProtect=0.0
     var canEditExclusions:Bool {
         guard let report else {return false}
         return channel==report.channel && sigma==report.sigma && saturation==report.saturation
@@ -51,7 +57,7 @@ struct PsfMeasurementReport: Decodable {
         guard canEditExclusions,let report else {return false}
         return excluded.allSatisfy {report.stars.indices.contains($0) && ["accepted","excluded"].contains(report.stars[$0].status)}
     }
-    func choose(_ url:URL) {source=url.path;report=nil;excluded=[]}
+    func choose(_ url:URL) {source=url.path;report=nil;excluded=[];restoration=nil}
     private func inspect(_ directory:URL,using service:any ProcessingService) async throws -> PsfMeasurementReport {
         let result=try await service.runCLI(arguments:["psf-inspect","--recipe",directory.appendingPathComponent("recipe.txt").path])
         try Task.checkCancellation()
@@ -61,6 +67,7 @@ struct PsfMeasurementReport: Decodable {
     }
     func open(_ directory:URL,using service:any ProcessingService) async throws -> URL {
         let value=try await inspect(directory,using:service)
+        if report?.directory != value.directory {restoration=nil}
         report=value;source=value.source;channel=value.channel;sigma=value.sigma;saturation=value.saturation
         excluded=Set(value.stars.filter{$0.status=="excluded"}.map(\.id))
         return directory.appendingPathComponent("stars-preview.tiff")

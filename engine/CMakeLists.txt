@@ -3,6 +3,7 @@ add_library(photonstack_engine STATIC
   src/MasterRegistration.cpp
   src/LinearMatch.cpp
   src/PsfMeasurement.cpp
+  src/MeasuredDeconvolution.cpp
   src/ChannelComposer.cpp
   src/ChannelAlignment.cpp
   src/ArtifactTrailRemover.cpp

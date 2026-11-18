@@ -45,3 +45,30 @@ func measuredPsfCanBeReviewedExcludedReopenedAndNeverOverwritesSources() async t
     do {_ = try await fresh.measure(output:root.appendingPathComponent("changed"),using:service);Issue.record("Changed PSF source accepted")}catch{}
     #expect(!FileManager.default.fileExists(atPath:root.appendingPathComponent("changed").path))
 }
+
+@Test(.enabled(if:ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil)) @MainActor
+func measuredPsfRestorationPreservesSourcesAndRestoresSavedSettings() async throws {
+    let service=CLIProcessingService(executableURL:URL(fileURLWithPath:try #require(ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"])))
+    let root=FileManager.default.temporaryDirectory.appendingPathComponent("PsfRestoration-\(UUID())",isDirectory:true)
+    try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true);defer {try? FileManager.default.removeItem(at:root)}
+    let source=root.appendingPathComponent("source.fits");try psfFixture(source);let before=try Data(contentsOf:source)
+    let session=PsfMeasurementSession();#expect(!session.canRestore);session.choose(source)
+    let measured=root.appendingPathComponent("measurement");_ = try await session.measure(output:measured,using:service)
+    #expect(session.canRestore)
+    session.excluded=[0];#expect(!session.canRestore);session.excluded=[]
+    session.sigma=6;#expect(!session.canRestore);session.sigma=5
+    session.restoreIterations=5;session.restoreAmount=0.6;session.restoreNoise=2;session.restoreProtect=300
+    let directory=root.appendingPathComponent("restored");let output=try await session.restore(output:directory,using:service)
+    #expect(output.lastPathComponent=="restored.fits")
+    let report=try #require(session.restoration);#expect(report.iterations==5 && report.protectedPixels>0)
+    let reopened=PsfMeasurementSession();_ = try await reopened.openRestoration(directory,using:service)
+    #expect(reopened.restoreIterations==5 && reopened.restoreAmount==0.6 && reopened.restoreNoise==2 && reopened.restoreProtect==300)
+    #expect(reopened.canRestore && URL(fileURLWithPath:reopened.report?.directory ?? "").resolvingSymlinksInPath()==measured.resolvingSymlinksInPath())
+    let residual=try await reopened.restoredOutput("residual.fits",using:service);#expect(FileManager.default.fileExists(atPath:residual.path))
+    do {_ = try await reopened.restore(output:directory,using:service);Issue.record("Overwrote restoration")}catch{}
+    #expect(try Data(contentsOf:source)==before)
+    reopened.restoreAmount=Double.nan;#expect(!reopened.canRestore)
+    reopened.choose(source);#expect(reopened.restoration==nil && !reopened.canRestore)
+    var changed=try Data(contentsOf:residual);changed[changed.count-1] ^= 1;try changed.write(to:residual)
+    do {_ = try await session.restoredOutput("restored.fits",using:service);Issue.record("Changed restoration product accepted")}catch{}
+}

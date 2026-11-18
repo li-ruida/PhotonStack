@@ -3,6 +3,7 @@ add_library(photonstack_engine STATIC
   src/AstrometricValidation.cpp
   src/SkyAnnotation.cpp
   src/SpectralCalibration.cpp
+  src/SpectralCalibrator.cpp
   src/StellarPhotometry.cpp
   src/MasterRegistration.cpp
   src/LinearMatch.cpp

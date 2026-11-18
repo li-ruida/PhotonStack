@@ -3,6 +3,7 @@
 #include "photonstack/StarCentroid.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <vector>
 namespace photonstack {
@@ -171,6 +172,22 @@ StellarApertureResult measureStellarAperture(const ImageBuffer& im, double px, d
         std::array<double, 3> influence{};
         if (r.skyUsed[c] < 30 || !solve(matrix, beta) || !solve(covarianceSystem, influence))
             return fail("sky-samples");
+        // A single RGB channel can clip while luminance still has a smooth
+        // peak. Detect a flat core separately without inventing an ADC ceiling
+        // for stacked values. Four equal samples remain valid at half phase.
+        double corePeak = -std::numeric_limits<double>::infinity();
+        for (const auto& s : samples)
+            if (std::abs(s.x) <= 2.5 && std::abs(s.y) <= 2.5)
+                corePeak = std::max(corePeak, s.rgb[c]);
+        const double coreContrast = corePeak - beta[0];
+        unsigned plateau = 0;
+        if (coreContrast > 0)
+            for (const auto& s : samples)
+                if (std::abs(s.x) <= 2.5 && std::abs(s.y) <= 2.5 &&
+                    std::abs(s.rgb[c] - corePeak) <= coreContrast * 1e-6)
+                    ++plateau;
+        if (plateau >= 5)
+            return fail("clipped-channel");
         std::vector<double> residuals;
         double skyVariance = 0;
         for (std::size_t i = 0; i < samples.size(); ++i) {

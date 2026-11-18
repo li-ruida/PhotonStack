@@ -1,5 +1,6 @@
 #include "photonstack/SpectralCalibration.hpp"
 #include "photonstack/StellarPhotometry.hpp"
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -110,6 +111,12 @@ int main() {
                     "tilted sky not recovered");
         }
         auto polluted = image;
+        auto clipped = image;
+        for (std::size_t p = 0; p < clipped.pixelCount(); ++p)
+            clipped.pixels[p * 4] = std::min(clipped.pixels[p * 4], 20.F);
+        const auto clippedMeasurement = measureStellarAperture(clipped, cx, cy);
+        require(!clippedMeasurement.valid && clippedMeasurement.status == "clipped-channel",
+                "single-channel clipped core passed luminance validation");
         for (unsigned y = 38; y < 42; ++y)
             for (unsigned x = 52; x < 54; ++x)
                 for (unsigned c = 0; c < 3; ++c)

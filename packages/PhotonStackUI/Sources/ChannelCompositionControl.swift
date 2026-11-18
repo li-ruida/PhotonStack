@@ -37,6 +37,9 @@ struct ChannelCompositionControl: View {
                 let master = ChannelMaster(name: name); session.masters.append(master); chooseMaster(master.id)
             }.disabled(session.masters.count >= 16).accessibilityIdentifier("channels.add")
             MasterRegistrationControl(model: model, composition: session, session: session.registration)
+            Toggle(zh ? "确认母片已配准到相同网格" : "Masters are registered on the same grid", isOn: $session.aligned)
+                .toggleStyle(.checkbox).accessibilityIdentifier("channels.aligned")
+            LinearMatchControl(model: model, composition: session, session: session.intensity)
             ForEach(0..<3, id: \.self) { channel in
                 HStack {
                     Text(["R", "G", "B"][channel]).frame(width: 16)
@@ -53,8 +56,6 @@ struct ChannelCompositionControl: View {
                      : "LRGB scales RGB by L / (0.2126R + 0.7152G + 0.0722B), preserving ratios. Match intensities first; zero denominators are invalid.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
-            Toggle(zh ? "确认母片已配准到相同网格" : "Masters are registered on the same grid", isOn: $session.aligned)
-                .toggleStyle(.checkbox).accessibilityIdentifier("channels.aligned")
             Button(zh ? "合色并另存线性母片…" : "Compose & save linear master…") {
                 guard let output = chooseOutput() else { return }
                 model.startChannelCompositionJob { service in try await session.compose(output: output, using: service) }

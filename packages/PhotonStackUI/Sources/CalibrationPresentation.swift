@@ -2,7 +2,7 @@ import Foundation
 
 enum CalibrationPresentation {
     static func role(_ value: String, chinese: Bool) -> String {
-        chinese ? ["bias":"偏置", "dark":"暗场", "flat":"平场"][value] ?? value : value.capitalized
+        chinese ? ["bias":"偏置", "dark":"暗场", "dark-flat":"暗平场", "flat":"平场"][value] ?? value : value.capitalized
     }
     static func status(_ value: String, chinese: Bool) -> String {
         let zh = ["compatible":"参数匹配", "review":"待核对", "incompatible":"不匹配", "conflict":"冲突", "invalid":"无效", "missing":"缺失",

@@ -7,6 +7,8 @@ struct CalibrationLibraryView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var reviewing = false
     @State private var importing = false
+    @State private var building = false
+    @State private var constructionEntry: CalibrationLibrary.Entry?
     init(library: CalibrationLibrary, lights: [URL], chinese: Bool) {
         _session = StateObject(wrappedValue: CalibrationLibrarySession(library: library, lights: lights))
         self.chinese = chinese
@@ -37,7 +39,7 @@ struct CalibrationLibraryView: View {
             if let error = session.error {
                 Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled).lineLimit(4)
             }
-            Text(t("当前检查拍摄条件与母片候选，尚不执行校准。原片不会被修改。", "Reviews acquisition conditions and master candidates; does not apply calibration. Source files stay unchanged."))
+            Text(t("支持制作、管理母片和匹配审查；尚未按分组执行亮场校准。原片不会被修改。", "Build and manage masters and review matches; grouped light calibration is not yet applied. Source files stay unchanged."))
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(18).frame(width: 1040, height: 760)
             .task { session.perform { try await session.reload() } }
@@ -49,12 +51,22 @@ struct CalibrationLibraryView: View {
             .sheet(isPresented: $importing) {
                 CalibrationMasterImportView(session: session, chinese: chinese, close: { importing = false })
             }
+            .sheet(isPresented: $building, onDismiss: { session.perform { try await session.reload() } }) {
+                CalibrationMasterBuildView(library: session.library, entries: session.entries, chinese: chinese) { id in
+                    session.perform { try await session.reload(); session.selection = id }
+                }
+            }
+            .sheet(item: $constructionEntry) { entry in
+                CalibrationConstructionView(library: session.library, entry: entry, chinese: chinese)
+            }
     }
     private var masters: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Button(t("添加母片…", "Add master…")) { session.clearError(); importing = true }.disabled(session.busy || session.archived)
                     .accessibilityIdentifier("calibration.add-master")
+                Button(t("制作母片…", "Build master…")) { session.clearError(); building = true }.disabled(session.busy || session.archived)
+                    .accessibilityIdentifier("calibration.build-master")
                 Button(t("重新载入", "Reload")) { session.perform { try await session.reload() } }.disabled(session.busy)
                 Spacer()
                 Toggle(t("已归档", "Archived"), isOn: $session.archived).disabled(session.busy).accessibilityIdentifier("calibration.archived")
@@ -63,7 +75,7 @@ struct CalibrationLibraryView: View {
                 List(selection: $session.selection) {
                     ForEach(session.entries) { entry in
                         HStack {
-                            if !entry.archived, entry.receipt != nil {
+                            if !entry.archived, CalibrationPlanReport.roles.contains(entry.receipt?.role ?? "") {
                                 Toggle("", isOn: Binding(get: { session.selectedMasters.contains(entry.id) }, set: { value in
                                     if value { session.selectedMasters.insert(entry.id) } else { session.selectedMasters.remove(entry.id) }
                                 })).labelsHidden().help(t("参与本次匹配", "Include in this review"))
@@ -93,6 +105,10 @@ struct CalibrationLibraryView: View {
                                         session.perform { try await session.library.archive(entry); try await session.reload() }
                                     }.accessibilityIdentifier("calibration.archive")
                                 }.disabled(session.busy)
+                                if r.construction != nil {
+                                    Button(t("制作记录…", "Construction record…")) { constructionEntry = entry }
+                                        .disabled(session.busy).accessibilityIdentifier("calibration.construction")
+                                }
                                 Text(session.verified != nil ? t("文件和导入记录一致。", "File matches the import record.") : t("下方为导入时参数；匹配前会重新核对文件。", "Parameters recorded at import; files are rechecked before matching."))
                                     .font(.caption).foregroundStyle(.secondary)
                                 CalibrationAcquisitionDetails(source: session.verified ?? r.acquisition, chinese: chinese)
@@ -130,7 +146,7 @@ struct CalibrationLibraryView: View {
                 if let report = session.report {
                     VStack {
                         CalibrationReviewView(report: report, chinese: chinese,
-                            masterLabels: Dictionary(uniqueKeysWithValues: session.entries.map { ($0.id, $0.label) }),
+                            masterLabels: masterLabels,
                             groupSelection: $session.groupSelection, frameSelection: $session.frameSelection)
                     }.accessibilityElement(children: .contain)
                         .opacity(session.reportIsCurrent ? 1 : 0).allowsHitTesting(session.reportIsCurrent)
@@ -151,6 +167,15 @@ struct CalibrationLibraryView: View {
                 }
             }
         }
+    }
+    private var masterLabels: [String: String] {
+        var labels: [String: String] = [:]
+        for entry in session.entries {
+            if let sha = entry.receipt?.acquisition.sha, labels[sha] == nil || session.selectedMasters.contains(entry.id) {
+                labels[sha] = entry.label
+            }
+        }
+        return labels
     }
     private func chooseLights() {
         let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true

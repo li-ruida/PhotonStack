@@ -256,6 +256,7 @@ int runSensorMaster(const std::vector<std::string>& args) {
     }
     for (const auto& [key, value] : options)
         if (key != (fresh ? "--manifest" : "--recipe") && key != "--output-dir" &&
+            !(inspect && key == "--verify-sources") &&
             (inspect || (key != "--threads" && key != "--memory-mib" && key != "--tile-pixels")))
             throw std::invalid_argument("Unknown sensor option: " + key);
     const auto source = options.find(fresh ? "--manifest" : "--recipe");
@@ -264,12 +265,20 @@ int runSensorMaster(const std::vector<std::string>& args) {
     const fs::path recipePath = fs::canonical(source->second);
     const auto recipeSHA = fileSHA256(recipePath);
     auto r = read(recipePath, !fresh);
-    bind(r);
+    bool verifySources = true;
+    if (options.contains("--verify-sources")) {
+        if (options.at("--verify-sources") != "0" && options.at("--verify-sources") != "1")
+            throw std::invalid_argument("Source verification must be 0 or 1");
+        verifySources = options.at("--verify-sources") == "1";
+    }
+    if (verifySources)
+        bind(r);
     if (fileSHA256(recipePath) != recipeSHA)
         throw std::runtime_error("Sensor recipe changed while reading");
     if (!fresh)
         for (const auto& [name, sha] : r.products)
-            if (fileSHA256(recipePath.parent_path() / name) != sha)
+            if (!fs::is_regular_file(recipePath.parent_path() / name) ||
+                fs::is_symlink(recipePath.parent_path() / name) || fileSHA256(recipePath.parent_path() / name) != sha)
                 throw std::runtime_error("Saved sensor product changed: " + name);
     if (!fresh) {
         auto config = r;
@@ -286,7 +295,16 @@ int runSensorMaster(const std::vector<std::string>& args) {
         if (options.contains("--output-dir"))
             throw std::invalid_argument("Inspect does not write output");
         std::ifstream in(recipePath.parent_path() / "report.json");
-        std::cout << in.rdbuf();
+        const std::string savedReport{std::istreambuf_iterator<char>(in), {}};
+        if (savedReport.empty() || savedReport.front() != '{' ||
+            fileSHA256(recipePath.parent_path() / "report.json") != r.products.at("report.json") ||
+            fileSHA256(recipePath) != recipeSHA)
+            throw std::runtime_error("Saved master report changed during inspection");
+        std::cout << "{\"inspection\":{\"schema\":1,\"sourcesVerified\":" << (verifySources ? "true" : "false")
+                  << ",\"productsVerified\":true,\"files\":{\"recipe.txt\":" << channelJSON(recipeSHA);
+        for (const auto& [name, sha] : r.products)
+            std::cout << ',' << channelJSON(name) << ':' << channelJSON(sha);
+        std::cout << "}}," << savedReport.substr(1);
         return 0;
     }
     if (!options.contains("--output-dir"))

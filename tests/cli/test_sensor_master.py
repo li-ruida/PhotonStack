@@ -176,6 +176,23 @@ class SensorMasters(unittest.TestCase):
             run('sensor-master-build','--manifest',m,'--output-dir',root/'overflow',ok=False)
             self.assertFalse((root/'overflow').exists())
 
+    def test_offline_inspection_preserves_provenance_without_claiming_source_verification(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);paths=[frame(root/f'd{i}.fits',[20+i]*120) for i in range(3)]
+            out=build(root,paths)
+            fresh=run('sensor-master-inspect','--recipe',out/'recipe.txt')
+            self.assertTrue(fresh['inspection']['sourcesVerified'])
+            self.assertEqual(set(fresh['inspection']['files']),{'master.fits','accepted.fits','inputs.txt','report.json','recipe.txt'})
+            paths[0].unlink()
+            run('sensor-master-inspect','--recipe',out/'recipe.txt',ok=False)
+            offline=run('sensor-master-inspect','--recipe',out/'recipe.txt','--verify-sources','0')
+            self.assertFalse(offline['inspection']['sourcesVerified']);self.assertTrue(offline['inspection']['productsVerified'])
+            self.assertEqual(offline['sources'],fresh['sources'])
+            run('sensor-master-replay','--recipe',out/'recipe.txt','--output-dir',root/'replay','--verify-sources','0',ok=False)
+            run('sensor-master-inspect','--recipe',out/'recipe.txt','--verify-sources','2',ok=False)
+            (out/'accepted.fits').write_bytes(b'changed')
+            run('sensor-master-inspect','--recipe',out/'recipe.txt','--verify-sources','0',ok=False)
+
     def test_limits_invalid_ranges_and_input_permutation(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);paths=[frame(root/f'd{i}.fits',[20+i]*120) for i in range(3)]

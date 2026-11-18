@@ -11,6 +11,8 @@ struct CalibrationMasterImportView: View {
     @State private var role = "dark"
     @State private var biasState = "unknown"
     @State private var notes = ""
+    @State private var construction = false
+    @State private var report: CalibrationMasterReport?
     private func t(_ zh: String, _ en: String) -> String { chinese ? zh : en }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -19,14 +21,33 @@ struct CalibrationMasterImportView: View {
                 Button(t("选择 FITS…", "Choose FITS…")) {
                     let panel = NativeFilePanels.makeRelinkAssetPanel(message: t("选择尚未去马赛克的单通道母片。", "Choose a single-plane master before debayering."))
                     panel.allowedContentTypes = ["fit", "fits", "fts"].compactMap { UTType(filenameExtension: $0) }
-                    if panel.runModal() == .OK, let url = panel.url { source = url; name = url.deletingPathExtension().lastPathComponent }
+                    if panel.runModal() == .OK, let url = panel.url {
+                        session.clearError(); construction = false; report = nil
+                        source = url; name = url.deletingPathExtension().lastPathComponent
+                    }
                 }.accessibilityIdentifier("calibration.import-file")
+                Button(t("选择制作目录…", "Choose construction folder…")) {
+                    let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true
+                    if panel.runModal() == .OK, let url = panel.url {
+                        source = url; name = url.lastPathComponent; construction = true; report = nil
+                        session.perform {
+                            let value = try await session.library.inspectConstructionFiles(url)
+                            try Task.checkCancellation(); report = value
+                        }
+                    }
+                }.accessibilityIdentifier("calibration.import-construction")
                 Text(source?.lastPathComponent ?? t("未选择", "No file chosen")).lineLimit(1)
             }.disabled(session.busy)
             Form {
                 TextField(t("名称", "Name"), text: $name).accessibilityIdentifier("calibration.import-name")
+                if construction {
+                    if let report {
+                        Text(CalibrationPresentation.role(report.role, chinese: chinese) + " · \(report.sources.count) " + t("帧", "frames"))
+                        Text(report.biasState == "removed" ? t("已扣除偏置", "Bias removed") : t("仍含偏置", "Bias included"))
+                    }
+                } else {
                 Picker(t("用途", "Role"), selection: $role) {
-                    ForEach(CalibrationPlanReport.roles, id: \.self) { Text(CalibrationPresentation.role($0, chinese: chinese)).tag($0) }
+                    ForEach(CalibrationLibrary.roles, id: \.self) { Text(CalibrationPresentation.role($0, chinese: chinese)).tag($0) }
                 }.accessibilityIdentifier("calibration.import-role")
                 if role != "bias" {
                     Picker(t("偏置状态", "Bias state"), selection: $biasState) {
@@ -35,11 +56,17 @@ struct CalibrationMasterImportView: View {
                         Text(t("已扣除偏置", "Bias removed")).tag("removed")
                     }.accessibilityIdentifier("calibration.import-bias")
                 }
+                }
                 TextField(t("制作说明（可选）", "Preparation notes (optional)"), text: $notes, axis: .vertical).lineLimit(2...4)
                     .accessibilityIdentifier("calibration.import-notes")
             }.formStyle(.grouped).disabled(session.busy)
+            if construction {
+                Text(t("完整保留母片、有效样本图、原始路径、摘要与制作参数。用途和偏置状态从已核对的制作记录读取；导入时不要求原片仍在原路径。", "Preserves the master, sample-count map, source paths, digests and parameters. Role and bias state come from the verified record; original files need not remain at their recorded paths."))
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
             Text(t("母片会保存独立副本，重复文件沿用已有记录。用途和偏置状态是你的制作记录，不会根据图像亮度猜测；文件中的明确偏置标记必须相符；未标记时可先记录未知状态，使用前仍需核对。", "Stores an independent copy; duplicate files retain their existing record. Role and bias state are your preparation record, never inferred from brightness. Explicit bias tags in the file must agree; untagged files can retain an unknown state for later review."))
                 .font(.caption).foregroundStyle(.secondary)
+            }
             if let error = session.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
                 if session.busy { ProgressView().controlSize(.small) }
@@ -49,10 +76,16 @@ struct CalibrationMasterImportView: View {
                     guard let source else { return }
                     let state = role == "bias" ? "included" : biasState
                     session.perform {
-                        let id = try await session.library.importMaster(source, label: name, role: role, biasState: state, notes: notes)
+                        let id: String
+                        if construction {
+                            guard let report else { return }
+                            id = try await session.library.importConstruction(source, label: name, notes: notes, expected: report)
+                        } else {
+                            id = try await session.library.importMaster(source, label: name, role: role, biasState: state, notes: notes)
+                        }
                         try await session.reload(); session.selection = id; close()
                     }
-                }.buttonStyle(.borderedProminent).disabled(session.busy || source == nil || !CalibrationLibrary.validLabel(name) || notes.utf8.count > 4096)
+                }.buttonStyle(.borderedProminent).disabled(session.busy || source == nil || (construction && report == nil) || !CalibrationLibrary.validLabel(name) || notes.utf8.count > 4096)
                     .accessibilityIdentifier("calibration.import-save")
             }
         }.padding(20).frame(width: 540).interactiveDismissDisabled(session.busy)

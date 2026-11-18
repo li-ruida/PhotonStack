@@ -6,14 +6,18 @@ import PhotonStackProcessing
 /// Immutable master snapshots with declared preparation state. Header matching
 /// never upgrades these declarations into evidence of calibrated pixel quality.
 actor CalibrationLibrary {
+    static let roles = ["bias", "dark", "dark-flat", "flat"]
+    var drafts: [UUID: CalibrationMasterDraft] = [:]
     struct Receipt: Codable, Equatable, Sendable {
         var schema = 1
         var id, label, role, biasState, notes: String
         var importedAt: Date
         var acquisition: CalibrationAcquisition
+        var construction: CalibrationMasterConstruction? = nil
         var isValid: Bool {
-            schema == 1 && id == acquisition.sha && acquisition.isValid && acquisition.channels == 1 &&
-            CalibrationPlanReport.roles.contains(role) && ["unknown", "included", "removed"].contains(biasState) &&
+            schema == 1 && id == CalibrationLibrary.identity(masterSHA: acquisition.sha, construction: construction) &&
+            (construction?.isValid ?? true) && acquisition.isValid && acquisition.channels == 1 &&
+            CalibrationLibrary.roles.contains(role) && ["unknown", "included", "removed"].contains(biasState) &&
             (role != "bias" || biasState == "included") && CalibrationLibrary.validLabel(label) &&
             notes.utf8.count <= 4096 && importedAt.timeIntervalSince1970.isFinite
         }
@@ -23,35 +27,40 @@ actor CalibrationLibrary {
         var label: String { receipt?.label ?? String(id.prefix(12)) }
     }
     let root: URL
-    private let service: any ProcessingService
-    private let fm = FileManager.default
+    let service: any ProcessingService
+    let fm = FileManager.default
     init(root: URL? = nil, service: any ProcessingService = CLIProcessingService.makeDefault()) {
         self.root = (root ?? ProcessInfo.processInfo.environment["PHOTONSTACK_CALIBRATION_LIBRARY"].map { URL(fileURLWithPath: $0) } ??
             FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appendingPathComponent("PhotonStack/CalibrationMasters")).resolvingSymlinksInPath()
         self.service = service
     }
+    static func identity(masterSHA: String, construction: CalibrationMasterConstruction?) -> String {
+        guard let construction else { return masterSHA }
+        let text = "PhotonStack-Calibration-Master-1\n" + masterSHA + "\n" + construction.files.sorted { $0.key < $1.key }.map { $0.key + " " + $0.value }.joined(separator: "\n")
+        return SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
     static func validLabel(_ value: String) -> Bool {
         !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && value.utf8.count <= 256 &&
         !value.unicodeScalars.contains { $0.value < 32 || $0.value == 127 }
     }
-    private func fail(_ message: String) -> NSError { CalibrationAcquisition.failure(message) }
-    private func directory(_ url: URL) throws {
+    func fail(_ message: String) -> NSError { CalibrationAcquisition.failure(message) }
+    func directory(_ url: URL) throws {
         let v = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard v.isDirectory == true, v.isSymbolicLink != true else { throw fail("Library directory is missing or linked.") }
     }
-    private func regular(_ url: URL) throws {
+    func regular(_ url: URL) throws {
         let v = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard v.isRegularFile == true, v.isSymbolicLink != true else { throw fail("Library file is missing or linked.") }
     }
-    private func base(_ archived: Bool) -> URL { archived ? root.appendingPathComponent("Archive") : root }
-    private func location(_ entry: Entry) throws -> URL {
+    func base(_ archived: Bool) -> URL { archived ? root.appendingPathComponent("Archive") : root }
+    func location(_ entry: Entry) throws -> URL {
         guard SpectralCalibrationReport.digest(entry.id) else { throw fail("Invalid master identity.") }
         try directory(root); try directory(base(entry.archived))
         let dir = base(entry.archived).appendingPathComponent(entry.id); try directory(dir)
         return dir
     }
-    private func receipt(_ dir: URL, id: String) throws -> Receipt {
+    func receipt(_ dir: URL, id: String) throws -> Receipt {
         let url = dir.appendingPathComponent("entry.json"); try regular(url)
         guard (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max) <= 131072 else { throw fail("Master record is too large.") }
         let data = try Data(contentsOf: url)
@@ -59,9 +68,10 @@ actor CalibrationLibrary {
         let record = try JSONDecoder().decode(Receipt.self, from: data)
         guard record.isValid, record.id == id else { throw fail("Invalid master record.") }
         try regular(dir.appendingPathComponent("master.fits"))
+        if record.construction != nil { for name in CalibrationMasterConstruction.names { try regular(dir.appendingPathComponent(name)) } }
         return record
     }
-    private func publish(_ stage: URL, to destination: URL) throws {
+    func publish(_ stage: URL, to destination: URL) throws {
         guard renamex_np(stage.path, destination.path, UInt32(RENAME_EXCL)) == 0 else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
@@ -108,6 +118,10 @@ actor CalibrationLibrary {
         let dir = try location(entry), record = try receipt(dir, id: entry.id), url = dir.appendingPathComponent("master.fits")
         let actual = try await CalibrationAcquisition.inspect([url], service: service)[0]
         guard actual == (try record.acquisition.at(url)), record == entry.receipt else { throw fail("Master or its record changed; reload the library.") }
+        if let construction = record.construction {
+            let report = try await inspectConstructionFiles(dir, expected: construction)
+            guard report.matches(actual), report.role == record.role else { throw fail("Construction record does not match the master.") }
+        }
         return actual
     }
     func importMaster(_ url: URL, label: String, role: String, biasState: String, notes: String) async throws -> String {
@@ -122,7 +136,7 @@ actor CalibrationLibrary {
         // absence or an unknown label remains an explicit user declaration.
         var kind = original.text["frameType", default: ""].uppercased().filter { $0.isLetter || $0.isNumber }
         if kind.hasPrefix("MASTER") { kind.removeFirst(6) }; if kind.hasSuffix("FRAME") { kind.removeLast(5) }
-        let known = ["LIGHT":"light", "DARK":"dark", "BIAS":"bias", "OFFSET":"bias", "FLAT":"flat"]
+        let known = ["LIGHT":"light", "DARK":"dark", "BIAS":"bias", "OFFSET":"bias", "DARKFLAT":"dark-flat", "FLATDARK":"dark-flat", "FLAT":"flat"]
         if let headerRole = known[kind], headerRole != role { throw fail("The selected role contradicts IMAGETYP in the FITS header.") }
         try fm.createDirectory(at: root, withIntermediateDirectories: true); try directory(root)
         let stage = root.appendingPathComponent(".import-" + UUID().uuidString)
@@ -157,16 +171,21 @@ actor CalibrationLibrary {
         let from = try location(entry), stage = destination.deletingLastPathComponent().appendingPathComponent(".calibration-export-" + UUID().uuidString)
         try fm.createDirectory(at: stage, withIntermediateDirectories: false)
         defer { try? fm.removeItem(at: stage) }
-        for name in ["master.fits", "entry.json"] { try fm.copyItem(at: from.appendingPathComponent(name), to: stage.appendingPathComponent(name)) }
+        for name in ["master.fits", "entry.json"] + (entry.receipt?.construction == nil ? [] : Array(CalibrationMasterConstruction.names).sorted()) { try fm.copyItem(at: from.appendingPathComponent(name), to: stage.appendingPathComponent(name)) }
         let r = try receipt(stage, id: entry.id), copy = stage.appendingPathComponent("master.fits")
         let actual = try await CalibrationAcquisition.inspect([copy], service: service)[0]
         guard r == entry.receipt, actual == (try r.acquisition.at(copy)) else { throw fail("Master changed during export.") }
+        if let construction = r.construction {
+            let report = try await inspectConstructionFiles(stage, expected: construction)
+            guard report.matches(actual), report.role == r.role else { throw fail("Construction changed during export.") }
+        }
         try Task.checkCancellation(); try publish(stage, to: destination)
     }
     func plan(lights: [URL], entries: [Entry], tolerance: Double) async throws -> CalibrationPlanReport {
         guard !lights.isEmpty, lights.count <= 4096, entries.count <= 256, lights.count * entries.count <= 262144,
               tolerance.isFinite, (0...10).contains(tolerance), Set(lights.map { $0.resolvingSymlinksInPath() }).count == lights.count,
-              Set(entries.map(\.id)).count == entries.count, entries.allSatisfy({ !$0.archived && $0.receipt != nil }) else {
+              Set(entries.map(\.id)).count == entries.count, entries.allSatisfy({ !$0.archived && CalibrationPlanReport.roles.contains($0.receipt?.role ?? "") }),
+              Set(entries.compactMap { $0.receipt?.acquisition.sha }).count == entries.count else {
             throw fail("Choose distinct light frames and active masters, and a temperature tolerance within 0–10°C.")
         }
         func quote(_ value: String) throws -> String {
@@ -179,9 +198,13 @@ actor CalibrationLibrary {
         for entry in entries {
             let dir = try location(entry), r = try receipt(dir, id: entry.id)
             guard r == entry.receipt else { throw fail("Master record changed; reload before matching.") }
+            if let construction = r.construction {
+                let report = try await inspectConstructionFiles(dir, expected: construction)
+                guard report.role == r.role, report.matches(r.acquisition) else { throw fail("Master construction record changed.") }
+            }
             let url = dir.appendingPathComponent("master.fits")
             expectedMasters[try CalibrationAcquisition.canonicalPath(url)] = r
-            manifest += "\(r.role) \(try quote(url.path)) \(r.id)\n"
+            manifest += "\(r.role) \(try quote(url.path)) \(r.acquisition.sha)\n"
         }
         let scratch = fm.temporaryDirectory.appendingPathComponent("PhotonStack-Calibration-" + UUID().uuidString)
         try fm.createDirectory(at: scratch, withIntermediateDirectories: false)

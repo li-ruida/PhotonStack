@@ -6,6 +6,8 @@
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/CalibrationMetadata.hpp"
 #include "photonstack/SensorMasterBuilder.hpp"
+#include "photonstack/SensorCalibration.hpp"
+#include "photonstack/FileDigest.hpp"
 #include "DemosaicMenon.hpp"
 #include "DemosaicRatio.hpp"
 #include "DemosaicStarGuard.hpp"
@@ -667,7 +669,7 @@ CalibrationAcquisition inspectCalibrationAcquisition(const std::filesystem::path
     text("object", "OBJECT"); text("observedAt", "DATE-OBS"); text("timeSystem", "TIMESYS"); text("frameType", "IMAGETYP");
     text("units", "BUNIT"); text("domain", "PSCOLOR"); text("declaredLayout", "PSLAYOUT");
     text("bayer", "BAYERPAT"); text("temperatureUnit", "TEMPUNIT");
-    text("biasState", "PSBIAS"); text("normalization", "PSNORM");
+    text("biasState", "PSBIAS"); text("normalization", "PSNORM"); text("calibration", "PSCALIB");
     if (r.text.contains("biasState") && !std::set<std::string>{"included","removed"}.contains(r.text.at("biasState")))
         issue("biasState", "invalid", "PSBIAS must be included or removed");
     number("exposure", {"EXPTIME", "EXPOSURE"}, 0, 1e8);
@@ -1667,6 +1669,58 @@ void writeSensorMaster(const SensorMasterResult& result, const std::filesystem::
         throw std::invalid_argument("Invalid sensor master product");
     const auto written = writeFitsProduct(result.master, path, nullptr, nullptr, FitsOutputDomain::LinearScience, &result);
     if (!written.ok) throw std::runtime_error(written.message);
+}
+
+void writeCalibratedSensor(const SensorCalibrationResult& result, const std::filesystem::path& path) {
+    const auto& image = result.calibrated;
+    if (image.empty() || image.channels != 1 || image.colorEncoding != ColorEncoding::Linear ||
+        image.width != result.acquisition.width || image.height != result.acquisition.height ||
+        image.pixels.size() != image.pixelCount() || result.input.sha.empty() || fileSHA256(result.input.path) != result.input.sha)
+        throw std::invalid_argument("Invalid or changed calibrated sensor source");
+    std::ifstream in(result.input.path, std::ios::binary);
+    const auto parsed = parseHeader(in);
+    const auto description = imageDescription(parsed);
+    if (!parsed.ok || parsed.dataOffset > 1024 * 1024 || !description || description->channels != 1 ||
+        description->width != image.width || description->height != image.height)
+        throw std::invalid_argument("Invalid calibrated sensor header");
+    // No resampling: sky and sensor-coordinate cards remain valid. Storage
+    // scaling, checksum, count and range cards no longer describe the pixels.
+    const std::set<std::string> replaced{"BITPIX", "BSCALE", "BZERO", "BLANK", "CHECKSUM", "DATASUM", "DATAMIN", "DATAMAX",
+        "NEXTEND", "STACKCNT", "PSCOLOR", "PSBIAS", "PSCALIB", "PSNORM"};
+    std::vector<unsigned char> header;
+    in.clear(); in.seekg(0);
+    for (std::size_t offset = 0; offset < parsed.dataOffset; offset += 80) {
+        std::string card(80, ' '); in.read(card.data(), 80);
+        if (!in) throw std::runtime_error("Cannot read sensor source header");
+        const auto key = trim(card.substr(0, 8)); if (key == "END") break;
+        if (key == "BITPIX") appendCard(header, makeCard("BITPIX", "-32"));
+        else if (!replaced.contains(key)) appendCard(header, card);
+    }
+    appendCard(header, makeCard("BSCALE", "1")); appendCard(header, makeCard("BZERO", "0"));
+    appendCard(header, makeCard("PSCOLOR", "'Linear'")); appendCard(header, makeCard("PSBIAS", "'removed'"));
+    appendCard(header, makeCard("PSCALIB", "'sensor-v1'"));
+    appendCard(header, makeEndCard()); header.resize((header.size() + 2879) / 2880 * 2880, ' ');
+    auto* out = std::fopen(path.c_str(), "wbx");
+    if (!out) throw std::runtime_error("Choose a new calibrated output file");
+    try {
+        if (std::fwrite(header.data(), 1, header.size(), out) != header.size()) throw std::runtime_error("Cannot write calibrated header");
+        std::vector<std::uint32_t> block(16384);
+        for (std::size_t start = 0; start < image.pixels.size(); start += block.size()) {
+            if (result.options.checkCancelled) result.options.checkCancelled();
+            const auto n = std::min(block.size(), image.pixels.size() - start);
+            for (std::size_t p = 0; p < n; ++p) {
+                const auto bits = std::bit_cast<std::uint32_t>(image.pixels[start + p]);
+                if constexpr (std::endian::native == std::endian::big) block[p] = bits;
+                else block[p] = (bits >> 24) | ((bits >> 8) & 0xff00u) | ((bits << 8) & 0xff0000u) | (bits << 24);
+            }
+            if (std::fwrite(block.data(), 4, n, out) != n) throw std::runtime_error("Cannot write calibrated pixels");
+        }
+        const auto padding = (2880 - (image.pixels.size() * 4) % 2880) % 2880;
+        const std::array<char, 2880> zeros{};
+        if (std::fwrite(zeros.data(), 1, padding, out) != padding || std::fflush(out)) throw std::runtime_error("Cannot save calibrated pixels");
+        const auto status = std::fclose(out); out = nullptr;
+        if (status || fileSHA256(result.input.path) != result.input.sha) throw std::runtime_error("Calibrated source changed during output");
+    } catch (...) { if (out) std::fclose(out); std::error_code ec; std::filesystem::remove(path, ec); throw; }
 }
 
 } // namespace photonstack

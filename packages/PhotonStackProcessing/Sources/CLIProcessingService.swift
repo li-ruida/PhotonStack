@@ -13,10 +13,10 @@ private struct AtomicOutputTransaction: Sendable {
     let requiresNewDestination: Bool
 
     init?(arguments: [String], workingDirectory: URL, externalOutputIndex: Int? = nil) {
-        // The shared workflow owns a new directory and stores absolute paths in
-        // its durable report. Moving a staging directory would invalidate that
-        // report and discard the reviewable failure diagnostics.
-        if externalOutputIndex == nil && arguments.first == "deep-sky" { return nil }
+        // These workflows own their new directories and durable journals.
+        // Moving generic staging directories breaks stored paths; deleting
+        // them on failure/cancellation also destroys resumable completed work.
+        if externalOutputIndex == nil && (arguments.first == "deep-sky" || arguments.first == "calibration-run") { return nil }
         let outputIndex: Int
         let isDirectory: Bool
         if let externalOutputIndex, arguments.indices.contains(externalOutputIndex) {
@@ -1070,7 +1070,7 @@ public final class CLIProcessingService: ProcessingService {
     private static func expectedOutput(in arguments: [String]) -> (path: String, isDirectory: Bool)? {
         // Assessment-only runs intentionally contain no image. The typed shared
         // workflow service validates the report and any required image outputs.
-        if arguments.first == "deep-sky" { return nil }
+        if arguments.first == "deep-sky" || arguments.first == "calibration-run" { return nil }
         if let index = arguments.firstIndex(of: "--output"), arguments.indices.contains(index + 1) {
             return (arguments[index + 1], false)
         }

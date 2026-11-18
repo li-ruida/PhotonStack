@@ -36,6 +36,7 @@ add_library(photonstack_engine STATIC
   src/FitsCodec.cpp
   src/CalibrationMetadata.cpp
   src/SensorMasterBuilder.cpp
+  src/SensorCalibration.cpp
   src/FileDigest.cpp
   src/FrameQualityAnalyzer.cpp
   src/SequenceQualityAnalyzer.cpp

@@ -178,3 +178,28 @@ func constructionChangedProductsRejectReviewSaveExportAndMatching() async throws
     let retained = await library.drafts
     #expect(!model.busy && model.draft == nil && retained.isEmpty)
 }
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func calibrationJobNativeServiceRetainsPartialProductsAndResumes() async throws {
+    let root = try constructionRoot(), fm = FileManager.default; defer { try? fm.removeItem(at: root) }
+    let service = try constructionService(), library = CalibrationLibrary(root: root.appendingPathComponent("library"), service: service)
+    let draft = try await library.buildMaster(.init(frames: constructionFrames(root, role: "Bias", name: "bias", values: [10,11,12]), role: "bias"))
+    let id = try await library.saveDraft(draft.id, label: "Bias", notes: "")
+    let bias = root.appendingPathComponent("library/\(id)/master.fits")
+    let lights = try constructionFrames(root, role: "Light", name: "lights")
+    let manifest = root.appendingPathComponent("job-input.txt")
+    let text = "PhotonStack-CalibrationJob-1\nmaster b bias \"\(bias.path)\" - included\n" + lights.map { "light \"\($0.path)\" - b - -\n" }.joined()
+    try text.write(to: manifest, atomically: true, encoding: .utf8)
+    let job = root.appendingPathComponent("job")
+    let first = try await service.runCLI(arguments: ["calibration-run", "--manifest", manifest.path, "--output-dir", job.path, "--max-frames", "1"])
+    let partial = try #require(JSONSerialization.jsonObject(with: Data(first.standardOutput.utf8)) as? [String: Any])
+    #expect(partial["status"] as? String == "partial" && partial["completed"] as? Int == 1)
+    let committed = job.appendingPathComponent("frame-000001/calibrated.fits"), bytes = try Data(contentsOf: committed)
+    let result = try await service.runCLI(arguments: ["calibration-resume", "--job", job.path])
+    let complete = try #require(JSONSerialization.jsonObject(with: Data(result.standardOutput.utf8)) as? [String: Any])
+    #expect(complete["status"] as? String == "complete" && complete["completed"] as? Int == 3)
+    #expect(try Data(contentsOf: committed) == bytes)
+    let acquisition = try await CalibrationAcquisition.inspect([committed], service: service)[0]
+    #expect(acquisition.text["calibration"] == "sensor-v1" && acquisition.text["biasState"] == "removed")
+    #expect(try fm.contentsOfDirectory(atPath: root.path).allSatisfy { !$0.contains("photonstack-output") })
+}

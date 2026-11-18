@@ -915,8 +915,8 @@ private func writeSolidTestPNG(to url: URL, red: CGFloat, green: CGFloat, blue: 
       fi
       shift
     done
-    printf 'partial replacement' > "$output"
     trap '' TERM
+    printf 'partial replacement' > "$output"
     deadline=$((SECONDS + 5))
     while [ "$SECONDS" -lt "$deadline" ]; do
       :
@@ -935,7 +935,9 @@ private func writeSolidTestPNG(to url: URL, red: CGFloat, green: CGFloat, blue: 
             targetBackground: 0.25
         )
     }
-    let deadline = ContinuousClock.now + .seconds(15)
+    // Child startup competes with the other process integration tests. Allow
+    // that setup time without relaxing the cancellation deadline below.
+    let deadline = ContinuousClock.now + .seconds(30)
     var partialOutputExists = false
     while ContinuousClock.now < deadline {
         let entries = try FileManager.default.contentsOfDirectory(atPath: directory.path)

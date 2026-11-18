@@ -1,6 +1,6 @@
 # 校准库：素材检查与匹配规划
 
-当前提供原生 FITS 拍摄信息检查、逐张母片匹配、批量分组与候选规划，以及 App 内的母片制作、保存和匹配审查。**尚未按组执行亮场校准或接入一键成片**。`compatible` 只表示已声明的拍摄条件相符，不证明像素有效、文件确实是母片、偏置扣除状态正确或校准已执行。匹配和规划报告均明确返回 `scope: acquisition-only`、`canApply: false`、`pixelsValidated: false`。
+当前提供原生 FITS 拍摄信息检查、逐张母片匹配、批量分组与候选规划，以及 App 内的母片制作、保存和匹配审查。[逐帧校准与任务恢复 CLI](calibration-jobs.md) 已可执行明确的母片分配；**App 尚未接通执行界面或一键成片**。`compatible` 只表示已声明的拍摄条件相符，不证明像素有效、文件确实是母片、偏置扣除状态正确或校准已执行。匹配和规划报告均明确返回 `scope: acquisition-only`、`canApply: false`、`pixelsValidated: false`。
 
 ## App 母片库与匹配审查
 

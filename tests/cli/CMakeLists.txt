@@ -79,3 +79,4 @@ add_test(NAME photonstack_narrowband_profile_cli COMMAND ${Python3_EXECUTABLE} $
 add_test(NAME photonstack_calibration_metadata_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_calibration_metadata.py $<TARGET_FILE:photonstack>)
 
 add_test(NAME photonstack_sensor_master_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_sensor_master.py $<TARGET_FILE:photonstack>)
+add_test(NAME photonstack_calibration_job_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_calibration_job.py $<TARGET_FILE:photonstack>)

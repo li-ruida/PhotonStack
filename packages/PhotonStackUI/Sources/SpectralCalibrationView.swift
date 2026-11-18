@@ -27,6 +27,8 @@ struct SpectralCalibrationView: View {
     private var zh: Bool { model.language == .simplifiedChinese }
     private func text(_ zh: String, _ en: String) -> String { self.zh ? zh : en }
     private var locked: Bool { session.busy || operation != nil }
+    private var canCompare: Bool { session.report?.fit.valid == true && session.afterImage != nil }
+    private var showingBefore: Bool { before || !canCompare }
     init(model: PhotonStackWorkspaceModel, source: URL) {
         self.model = model; _session = StateObject(wrappedValue: SpectralCalibrationSession(source: source))
     }
@@ -75,16 +77,16 @@ struct SpectralCalibrationView: View {
     private var preview: some View {
         VStack(spacing: 8) {
             HStack {
-                Picker(text("对比", "Compare"), selection: $before) {
+                Picker(text("对比", "Compare"), selection: Binding(get: { showingBefore }, set: { before = $0 })) {
                     Text(text("校准前", "Before")).tag(true); Text(text("校准后", "After")).tag(false)
-                }.pickerStyle(.segmented).disabled(session.afterImage == nil).accessibilityIdentifier("spcc.compare")
+                }.pickerStyle(.segmented).disabled(!canCompare).accessibilityIdentifier("spcc.compare")
                 Toggle(text("星点", "Stars"), isOn: $showStars).toggleStyle(.button).accessibilityIdentifier("spcc.markers")
             }
-            if let report = session.report, let image = before ? session.beforeImage : (session.afterImage ?? session.beforeImage) {
+            if let report = session.report, let image = showingBefore ? session.beforeImage : session.afterImage {
                 SpectralCalibrationCanvas(report: report, image: image, showStars: showStars, selected: $selected)
                 Text(text("黄色：拟合　青色：独立留出　橙色：剔除 · 点击星点可查看原因", "Yellow: fit · Cyan: held out · Orange: rejected · Click a star for details")).font(.caption2).foregroundStyle(.secondary)
                 if report.fit.valid {
-                    SpectralResidualPlot(report: report, before: before, selected: selected).frame(height: 115)
+                    SpectralResidualPlot(report: report, before: showingBefore, selected: selected).frame(height: 115)
                     Text(text("相对白参考的对数颜色残差。留出星不参与增益拟合。", "Log color residuals relative to the white reference. Held-out stars do not fit the gains.")).font(.caption2).foregroundStyle(.secondary)
                 }
             } else {
@@ -125,8 +127,13 @@ struct SpectralCalibrationView: View {
             Text(text("拟合 \(r.fit.training) · 留出 \(r.fit.validation) · 覆盖 \(r.fit.regions)/16 区", "Fit \(r.fit.training) · Held out \(r.fit.validation) · Regions \(r.fit.regions)/16")).font(.caption)
             if r.fit.valid {
                 Text("RGB " + triplet(r.fit.gains)).font(.caption).monospacedDigit()
-                Text("P90 ln(R/G), ln(B/G): " + [r.fit.validationP90[0],r.fit.validationP90[2]].map { $0.map { String(format:"%.4f",$0) } ?? "—" }.joined(separator: " / ")).font(.caption2)
-            } else { Text(r.fit.reason).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
+            } else {
+                Text(r.fit.reason == "Held-out colors do not support the selected spectral response and a single multiplicative calibration"
+                     ? text("留出恒星的颜色残差过大，当前响应配置与统一通道增益未通过验证。", r.fit.reason)
+                     : r.fit.reason).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+            }
+            Text("P90 ln(R/G), ln(B/G): " + [r.fit.validationP90[0],r.fit.validationP90[2]].map { $0.map { String(format:"%.4f",$0) } ?? "—" }.joined(separator: " / ")
+                 + String(format: " · ≤ %.4f", r.options.maxValidationLogError)).font(.caption2).monospacedDigit().textSelection(.enabled)
             DisclosureGroup(text("响应与来源", "Response & provenance")) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(r.profile.name + " · " + r.profile.quality)

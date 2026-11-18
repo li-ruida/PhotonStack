@@ -22,6 +22,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for key in ['directory','gaia-catalog','cli','output-dir']:
         parser.add_argument('--'+key,required=True,type=Path)
+    parser.add_argument('--expect-rejected', action='store_true', help='Audit held-out rejection and refusal to export instead of a successful calibration')
     args=parser.parse_args(); root=args.directory; out=args.output_dir
     if out.exists(): raise ValueError('Choose a new audit directory')
     report=json.loads((root/'report.json').read_text()); source=Path(report['source'])
@@ -62,7 +63,7 @@ def main():
     white=np.array([integrate(wx,wy,b)[0] for b in bands])
     np.testing.assert_allclose(report['whiteFlux'],white,rtol=3e-13)
     with fits.open(source) as f: pixels=np.array(f[0].data,dtype=float); source_header=f[0].header.copy()
-    assert report['fit']['valid'], report['fit']['reason']
+    assert report['fit']['valid'] != args.expect_rejected, report['fit']['reason']
     candidates=[]; flux_differences=[]
     for star in report['stars']:
         sid=star['id']; ra,dec,spectrum=stars[sid]
@@ -84,6 +85,24 @@ def main():
     fit_stars=sorted((s for s in report['stars'] if s['status'] in ['fit','fit-outlier','validation']),
                      key=lambda s:(s['photometry']['y'],s['photometry']['x'],s['id']))
     audit_fit(dict(stars=candidates,fit=dict(report['fit'],stars=fit_stars)),white,report['width'],report['height'])
+    if args.expect_rejected:
+        # audit_fit independently recomputes the held-out residuals above.
+        assert max(report['fit']['validationP90']) > report['options']['maxValidationLogError']
+        assert not (root/'calibrated.fits').exists() and not (root/'after.tiff').exists()
+        out.mkdir(parents=True)
+        inspected=json.loads(subprocess.check_output([str(args.cli),'spcc-inspect','--recipe',str(root/'recipe.txt')],text=True))
+        assert inspected['report']==report
+        subprocess.run([str(args.cli),'spcc-replay','--recipe',str(root/'recipe.txt'),'--output-dir',str(out/'replayed')],check=True,capture_output=True)
+        for p in root.iterdir(): assert p.read_bytes()==(out/'replayed'/p.name).read_bytes()
+        for command,name in [('spcc-export','exported.fits'),('spcc-preview','calibrated-display.tiff')]:
+            attempted=subprocess.run([str(args.cli),command,'--recipe',str(root/'recipe.txt'),'--output',str(out/name)],capture_output=True,text=True)
+            assert attempted.returncode != 0 and not (out/name).exists()
+        assert all(sha(Path(p))==digest for p,digest in original.items())
+        result=dict(maximumMotionDifferenceArcsec=motion_error,maximumRelativeApertureDifference=max(flux_differences),
+                    rejected=True,rejectionIndependentlyVerified=True,replayAllFilesEqual=True,exportAndCalibratedPreviewRejected=True,
+                    allInputHashesUnchanged=True,sourceSHA256=report['sourceSHA'],profileQuality=report['profile']['quality'],fit=report['fit'])
+        (out/'audit.json').write_text(json.dumps(result,indent=2)+'\n'); print(json.dumps(result,indent=2))
+        return
     with fits.open(root/'calibrated.fits') as f: calibrated=np.array(f[0].data); output_header=f[0].header.copy()
     expected=pixels.astype(np.float32)
     for c,gain in enumerate(report['fit']['gains']): expected[c]=(pixels[c]*gain).astype(np.float32)

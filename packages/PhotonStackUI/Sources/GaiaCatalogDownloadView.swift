@@ -62,7 +62,12 @@ struct GaiaCatalogDownloadView: View {
             HStack {
                 if operation != nil {
                     ProgressView().controlSize(.small)
-                    if let progress { Text(t("请求 \(progress.completed)/\(progress.total) · 缓存 \(progress.cacheHits)", "Requests \(progress.completed)/\(progress.total) · Cached \(progress.cacheHits)")).font(.caption) }
+                    if let progress {
+                        VStack(alignment: .leading) {
+                            Text(t("请求 \(progress.completed)/\(progress.total) · 缓存 \(progress.cacheHits)", "Requests \(progress.completed)/\(progress.total) · Cached \(progress.cacheHits)"))
+                            Text(t("已接收 \(progress.receivedBytes / 1024) KB · 重试 \(progress.retries)", "Received \(progress.receivedBytes / 1024) KB · Retries \(progress.retries)"))
+                        }.font(.caption).monospacedDigit()
+                    }
                     Button(t("取消", "Cancel")) { operation?.cancel() }.accessibilityIdentifier("gaia.cancel")
                 }
                 Spacer()

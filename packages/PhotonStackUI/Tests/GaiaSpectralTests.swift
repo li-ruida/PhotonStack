@@ -16,7 +16,8 @@ func gaiaLiveDownloadAndOfflineReopen() async throws {
     let downloader = GaiaSpectralDownload(cache: GaiaResponseCache(root: cacheRoot), service: service)
     let result = try await downloader.download(source: source, field: field, query: query, to: output, refresh: false) { _ in }
     #expect(result.manifest.count > 0)
-    let offline = GaiaSpectralDownload(cache: GaiaResponseCache(root: cacheRoot) { _ in
+    print("Gaia snapshot: \(result.manifest.count) stars, \(result.manifest.skipped.count) skipped, \(result.cacheHits)/\(result.manifest.files.count) cache hits")
+    let offline = GaiaSpectralDownload(cache: GaiaResponseCache(root: cacheRoot) { _, _ in
         throw GaiaDataError.invalid("Offline reopen must not access the network")
     }, service: service)
     let reopened = try await offline.reopen(output, source: source, field: field)
@@ -93,6 +94,108 @@ private actor GaiaFixtureServer {
     func waitNext() { waiting = true }
 }
 
+private actor GaiaRetryFixture {
+    var calls = 0, retries = 0
+    let failure: any Error
+    init(_ failure: any Error) { self.failure = failure }
+    func fetch() throws -> Data {
+        calls += 1
+        if calls == 1 { throw failure }
+        return Data("validated response".utf8)
+    }
+    func observe(_ event: GaiaResponseCache.Transfer) { if case .retry = event { retries += 1 } }
+}
+
+@Test func gaiaTransientRetryIsBoundedAndCancellationStopsBackoff() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let url = GaiaSpectralData.spectrumURL(["123"])
+    let transient = GaiaRetryFixture(URLError(.timedOut))
+    let cache = GaiaResponseCache(root: root.appendingPathComponent("retry")) { _, _ in try await transient.fetch() }
+    let data = try await cache.get(url, refresh: true, observe: { await transient.observe($0) })
+    #expect(data.0 == Data("validated response".utf8) && !data.1)
+    #expect(await transient.calls == 2)
+    #expect(await transient.retries == 1)
+    let permanent = GaiaRetryFixture(GaiaResponseCache.HTTPFailure(status: 404))
+    let rejected = GaiaResponseCache(root: root.appendingPathComponent("permanent")) { _, _ in try await permanent.fetch() }
+    do { _ = try await rejected.get(url, refresh: true); Issue.record("Permanent failure accepted") } catch { }
+    #expect(await permanent.calls == 1)
+    let cancelled = GaiaRetryFixture(URLError(.networkConnectionLost))
+    let interrupted = GaiaResponseCache(root: root.appendingPathComponent("cancelled")) { _, _ in try await cancelled.fetch() }
+    let pending = Task { try await interrupted.get(url, refresh: true, observe: { await cancelled.observe($0) }) }
+    let deadline = Date().addingTimeInterval(3)
+    while await cancelled.retries == 0, Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    #expect(await cancelled.retries == 1)
+    pending.cancel()
+    do { _ = try await pending.value; Issue.record("Cancelled retry succeeded") } catch { #expect(error is CancellationError) }
+    #expect(await cancelled.calls == 1)
+    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("cancelled").path))
+    let repeated = GaiaRetryFixture(URLError(.timedOut))
+    let exhausted = GaiaResponseCache(root: root.appendingPathComponent("exhausted")) { _, _ in
+        _ = try await repeated.fetch(); throw URLError(.timedOut)
+    }
+    do { _ = try await exhausted.get(url, refresh: true); Issue.record("Repeated failure accepted") } catch { }
+    #expect(await repeated.calls == 2)
+    #expect(GaiaResponseCache.retryable(GaiaResponseCache.HTTPFailure(status: 503)))
+    #expect(!GaiaResponseCache.retryable(GaiaResponseCache.HTTPFailure(status: 429)))
+    #expect(!GaiaResponseCache.retryable(GaiaDataError.invalid("bad spectra")))
+}
+
+private actor GaiaParallelFixture {
+    let table: Data, field: GaiaSpectralField
+    var active = 0, peak = 0, order: [String] = []
+    var fail = false
+    var progress: [GaiaSpectralDownload.Progress] = []
+    init(field: GaiaSpectralField) {
+        self.field = field
+        table = gaiaXML((1...121).map { [String(1000+$0), String(field.ra), String(field.dec), "1", "-2", "2016", String(9+Double($0)/100)] })
+    }
+    func fetch(_ url: URL, observe: GaiaResponseCache.Observe) async throws -> Data {
+        if url.path.contains("tap-server") { await observe(.bytes(table.count)); return table }
+        let ids = URLComponents(url: url, resolvingAgainstBaseURL: false)!.queryItems!.first { $0.name == "ID" }!.value!.split(separator: ",").map(String.init)
+        active += 1; peak = max(peak, active); defer { active -= 1 }
+        if fail {
+            if ids[0] == "1001" { try await Task.sleep(for: .milliseconds(30)); throw GaiaDataError.invalid("invalid batch") }
+            try await Task.sleep(for: .seconds(30))
+        }
+        try await Task.sleep(for: .milliseconds(ids[0] == "1001" ? 150 : 20))
+        let data = Data(String(decoding: gaiaXP(ids), as: UTF8.self).replacingOccurrences(of: ",30,20,", with: ",\(field.ra),\(field.dec),").utf8)
+        await observe(.bytes(data.count)); order.append(ids[0]); return data
+    }
+    func record(_ p: GaiaSpectralDownload.Progress) { progress.append(p) }
+    func failNext() { fail = true }
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil && ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_SPCC_SOURCE"] != nil))
+func gaiaParallelBatchesKeepStableSnapshotsAndCancelSiblingsOnFailure() async throws {
+    let env = ProcessInfo.processInfo.environment, fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? fm.removeItem(at: root) }
+    let source = URL(fileURLWithPath: try #require(env["PHOTONSTACK_TEST_SPCC_SOURCE"]))
+    let service = CLIProcessingService(executableURL: URL(fileURLWithPath: try #require(env["PHOTONSTACK_TEST_CLI"])))
+    let field = try await GaiaSpectralField.read(source, service: service), fixture = GaiaParallelFixture(field: field)
+    let cache = GaiaResponseCache(root: root.appendingPathComponent("cache")) { url, observe in try await fixture.fetch(url, observe: observe) }
+    let downloader = GaiaSpectralDownload(cache: cache, service: service)
+    let query = GaiaSpectralQuery(observationUTC: "2026-08-18", maximumStars: 120)
+    let first = try await downloader.download(source: source, field: field, query: query, to: root.appendingPathComponent("first"), refresh: false) { await fixture.record($0) }
+    #expect(await fixture.peak == 2)
+    #expect(await fixture.order == ["1041", "1081", "1001"])
+    #expect(first.manifest.files.map(\.name) == ["gaia.xml", "xp-0000.csv", "xp-0001.csv", "xp-0002.csv"])
+    let last = try #require(await fixture.progress.last)
+    #expect(last.completed == 4 && last.total == 4 && last.cacheHits == 0 && last.receivedBytes > 0)
+    let second = try await downloader.download(source: source, field: field, query: query, to: root.appendingPathComponent("second"), refresh: false) { _ in }
+    #expect(second.cacheHits == 4 && second.manifest.catalogSHA == first.manifest.catalogSHA && second.manifest.acquisitionSHA == first.manifest.acquisitionSHA)
+    _ = try await downloader.reopen(first.directory, source: source, field: field)
+    await fixture.failNext()
+    let start = Date()
+    do { _ = try await downloader.download(source: source, field: field, query: query, to: root.appendingPathComponent("failed"), refresh: true) { _ in }; Issue.record("Failed batch published") } catch { }
+    #expect(Date().timeIntervalSince(start) < 5)
+    #expect(await fixture.active == 0)
+    #expect(!fm.fileExists(atPath: root.appendingPathComponent("failed").path))
+    #expect(try fm.contentsOfDirectory(atPath: root.path).allSatisfy { !$0.hasPrefix(".gaia-download-") })
+}
+
 @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil && ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_SPCC_SOURCE"] != nil))
 func gaiaDownloadReopenCacheCancellationAndSourceGuards() async throws {
     let fm = FileManager.default, root = fm.temporaryDirectory.appendingPathComponent("Gaia integration ' \(UUID())")
@@ -106,7 +209,7 @@ func gaiaDownloadReopenCacheCancellationAndSourceGuards() async throws {
     let rows = (1...21).map { [String(1000+$0), String(field.ra), String(field.dec), "1", "-2", "2016", String(9.0+Double($0)/100)] }
     let server = GaiaFixtureServer(table: gaiaXML(rows))
     let cacheRoot = root.appendingPathComponent("cache")
-    let cache = GaiaResponseCache(root: cacheRoot) { url in
+    let cache = GaiaResponseCache(root: cacheRoot) { url, _ in
         let data = try await server.fetch(url)
         if url.path.contains("tap-server") { return data }
         return Data(String(decoding: data, as: UTF8.self).replacingOccurrences(of: ",30,20,", with: ",\(field.ra),\(field.dec),").utf8)

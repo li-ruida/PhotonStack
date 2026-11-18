@@ -3,7 +3,13 @@ import Foundation
 import PhotonStackProcessing
 
 actor GaiaResponseCache {
-    typealias Fetch = @Sendable (URL) async throws -> Data
+    enum Transfer: Sendable { case bytes(Int), retry }
+    typealias Observe = @Sendable (Transfer) async -> Void
+    typealias Fetch = @Sendable (URL, Observe) async throws -> Data
+    struct HTTPFailure: LocalizedError {
+        let status: Int
+        var errorDescription: String? { "Gaia service returned HTTP \(status); retry the download" }
+    }
     struct Receipt: Codable { var url, sha: String }
     let root: URL
     private let fetch: Fetch
@@ -15,33 +21,42 @@ actor GaiaResponseCache {
         url.scheme == "https" && url.host == "gea.esac.esa.int" && url.user == nil && url.password == nil && url.port == nil &&
         ["/tap-server/tap/sync", "/data-server/data"].contains(url.path)
     }
-    static func network(_ url: URL) async throws -> Data {
+    static func network(_ url: URL, observe: Observe) async throws -> Data {
         guard allowed(url) else { throw GaiaDataError.invalid("Unsupported Gaia endpoint") }
         let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 45; config.timeoutIntervalForResource = 90; config.httpShouldSetCookies = false
+        // A measured 40-source response took 108 s while still transferring.
+        // Retain an idle timeout and cancellation, but allow a slow full batch.
+        config.timeoutIntervalForRequest = 60; config.timeoutIntervalForResource = 300; config.httpShouldSetCookies = false
         let session = URLSession(configuration: config)
         defer { session.invalidateAndCancel() }
         var request = URLRequest(url: url); request.setValue("PhotonStack/GaiaDR3", forHTTPHeaderField: "User-Agent")
         let (bytes, response) = try await session.bytes(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200, let final = http.url, allowed(final) else {
-            throw GaiaDataError.invalid("Gaia service returned HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0); retry the download")
-        }
+        guard let http = response as? HTTPURLResponse, let final = http.url, allowed(final) else { throw GaiaDataError.invalid("Unsupported Gaia response endpoint") }
+        guard http.statusCode == 200 else { throw HTTPFailure(status: http.statusCode) }
         let limit = url.path.contains("tap-server") ? 2 * 1024 * 1024 : 4 * 1024 * 1024
         guard response.expectedContentLength <= limit else { throw GaiaDataError.invalid("Gaia response exceeds the download limit") }
         var data = Data(), buffer: [UInt8] = []; buffer.reserveCapacity(8192)
         for try await byte in bytes {
             buffer.append(byte)
             if buffer.count == 8192 {
-                try Task.checkCancellation(); data.append(contentsOf: buffer); buffer.removeAll(keepingCapacity: true)
+                try Task.checkCancellation(); data.append(contentsOf: buffer)
+                await observe(.bytes(buffer.count)); buffer.removeAll(keepingCapacity: true)
                 guard data.count <= limit else { throw GaiaDataError.invalid("Gaia response exceeds the download limit") }
             }
         }
         data.append(contentsOf: buffer)
+        await observe(.bytes(buffer.count))
         guard !data.isEmpty, data.count <= limit else { throw GaiaDataError.invalid("Empty or oversized Gaia response") }
         try Task.checkCancellation(); return data
     }
-    func get(_ url: URL, refresh: Bool, validate: @Sendable (Data) throws -> Void = { _ in }) async throws -> (Data, Bool) {
+    static func retryable(_ error: any Error) -> Bool {
+        if let http = error as? HTTPFailure { return [500, 502, 503, 504].contains(http.status) }
+        guard let url = error as? URLError else { return false }
+        return [.timedOut, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost].contains(url.code)
+    }
+    func get(_ url: URL, refresh: Bool, observe: Observe = { _ in }, validate: @Sendable (Data) throws -> Void = { _ in }) async throws -> (Data, Bool) {
         guard Self.allowed(url) else { throw GaiaDataError.invalid("Unsupported Gaia endpoint") }
+        try Task.checkCancellation()
         let index = root.appendingPathComponent(gaiaSHA(Data(url.absoluteString.utf8)) + ".json")
         if !refresh, let metadata = try? Self.read(index, limit: 16384),
            let record = try? JSONDecoder().decode(Receipt.self, from: metadata), record.url == url.absoluteString,
@@ -49,7 +64,15 @@ actor GaiaResponseCache {
             try Task.checkCancellation()
             if (try? validate(data)) != nil { return (data, true) }
         }
-        let data = try await fetch(url)
+        let data: Data
+        do { data = try await fetch(url, observe) }
+        catch {
+            try Task.checkCancellation()
+            guard Self.retryable(error) else { throw error }
+            await observe(.retry)
+            try await Task.sleep(for: .seconds(2))
+            data = try await fetch(url, observe)
+        }
         guard !data.isEmpty, data.count <= 4 * 1024 * 1024 else { throw GaiaDataError.invalid("Empty or oversized Gaia response") }
         try Task.checkCancellation()
         try validate(data)
@@ -81,7 +104,21 @@ actor GaiaSpectralDownload {
         var catalogSHA, acquisitionSHA: String
     }
     struct Result: Sendable { var directory: URL; var manifest: Manifest; var cacheHits: Int }
-    struct Progress: Sendable { var completed, total, cacheHits: Int }
+    struct Progress: Sendable { var completed, total, cacheHits: Int; var receivedBytes = 0, retries = 0 }
+    private actor Meter {
+        var value = Progress(completed: 0, total: 1, cacheHits: 0)
+        let send: @Sendable (Progress) async -> Void
+        init(_ send: @escaping @Sendable (Progress) async -> Void) { self.send = send }
+        func update(_ event: GaiaResponseCache.Transfer) async {
+            switch event { case .bytes(let count): value.receivedBytes += count; case .retry: value.retries += 1 }
+            await send(value)
+        }
+        func complete(cached: Bool, total: Int) async {
+            value.completed += 1; value.total = total
+            if cached { value.cacheHits += 1 }
+            await send(value)
+        }
+    }
     private let cache: GaiaResponseCache
     private let service: any ProcessingService
     init(cache: GaiaResponseCache = GaiaResponseCache(), service: any ProcessingService = CLIProcessingService.makeDefault()) {
@@ -97,7 +134,7 @@ actor GaiaSpectralDownload {
         guard r.type == "complete", r.command == "spcc-catalog-inspect", r.schema == 1, r.sha == gaiaSHA(catalog.data), r.count == catalog.count, r.epoch == query.epoch else { throw GaiaDataError.invalid("Native catalog validation differs from the download") }
     }
     func download(source: URL, field: GaiaSpectralField, query: GaiaSpectralQuery, to output: URL, refresh: Bool,
-                  progress: @Sendable (Progress) async -> Void) async throws -> Result {
+                  progress: @escaping @Sendable (Progress) async -> Void) async throws -> Result {
         let fm = FileManager.default
         guard !fm.fileExists(atPath: output.path) else { throw GaiaDataError.invalid("Choose a new Gaia output directory") }
         let tap = try query.tapURL(field)
@@ -105,25 +142,42 @@ actor GaiaSpectralDownload {
         try fm.createDirectory(at: stage, withIntermediateDirectories: false)
         defer { try? fm.removeItem(at: stage) }
         _ = try await GaiaSpectralField.read(source, expected: field.sha, service: service)
+        let meter = Meter(progress)
         await progress(.init(completed: 0, total: 1, cacheHits: 0))
-        let (table, tapCached) = try await cache.get(tap, refresh: refresh) { _ = try GaiaSpectralData.candidates($0, query: query, field: field) }
+        let (table, tapCached) = try await cache.get(tap, refresh: refresh, observe: { await meter.update($0) }) { _ = try GaiaSpectralData.candidates($0, query: query, field: field) }
         let candidates = try GaiaSpectralData.candidates(table, query: query, field: field)
         var hits = tapCached ? 1 : 0, files = [File(name: "gaia.xml", url: tap.absoluteString, sha: gaiaSHA(table))]
         try table.write(to: stage.appendingPathComponent("gaia.xml"), options: .withoutOverwriting)
         try candidates.csv.write(to: stage.appendingPathComponent("gaia.csv"), options: .withoutOverwriting)
         var spectra: [String: GaiaSpectralData.Spectrum] = [:]
         let batches = (candidates.stars.count + 39) / 40
-        for start in stride(from: 0, to: candidates.stars.count, by: 40) {
-            try Task.checkCancellation()
-            await progress(.init(completed: start / 40 + 1, total: batches + 1, cacheHits: hits))
-            let batch = Array(candidates.stars[start..<min(start + 40, candidates.stars.count)])
-            let url = GaiaSpectralData.spectrumURL(batch.map(\.id)), (data, cached) = try await cache.get(url, refresh: refresh) { _ = try GaiaSpectralData.spectra($0, expected: batch) }
-            let parsed = try GaiaSpectralData.spectra(data, expected: batch)
-            for (id, spectrum) in parsed { spectra[id] = spectrum }
-            let name = String(format: "xp-%04d.csv", start / 40)
-            try data.write(to: stage.appendingPathComponent(name), options: .withoutOverwriting)
-            files.append(File(name: name, url: url.absoluteString, sha: gaiaSHA(data))); if cached { hits += 1 }
+        await meter.complete(cached: tapCached, total: batches + 1)
+        let stars = candidates.stars, cache = self.cache
+        try await withThrowingTaskGroup(of: (Int, URL, Data, Bool).self) { group in
+            func enqueue(_ index: Int) {
+                group.addTask {
+                    try Task.checkCancellation()
+                    let batch = Array(stars[index * 40..<min((index + 1) * 40, stars.count)])
+                    let url = GaiaSpectralData.spectrumURL(batch.map(\.id))
+                    let (data, cached) = try await cache.get(url, refresh: refresh, observe: { await meter.update($0) }) { _ = try GaiaSpectralData.spectra($0, expected: batch) }
+                    return (index, url, data, cached)
+                }
+            }
+            var next = min(2, batches)
+            for index in 0..<next { enqueue(index) }
+            while let (index, url, data, cached) = try await group.next() {
+                try Task.checkCancellation()
+                let batch = Array(stars[index * 40..<min((index + 1) * 40, stars.count)])
+                for (id, spectrum) in try GaiaSpectralData.spectra(data, expected: batch) { spectra[id] = spectrum }
+                let name = String(format: "xp-%04d.csv", index)
+                try data.write(to: stage.appendingPathComponent(name), options: .withoutOverwriting)
+                files.append(File(name: name, url: url.absoluteString, sha: gaiaSHA(data))); if cached { hits += 1 }
+                await meter.complete(cached: cached, total: batches + 1)
+                if next < batches { enqueue(next); next += 1 }
+            }
         }
+        // Completion order must not alter the snapshot identity or star order.
+        files.sort { $0.name < $1.name }
         let sha = acquisition(files), catalog = try GaiaSpectralData.catalog(candidates, spectra: spectra, query: query, provenance: sha)
         let catalogURL = stage.appendingPathComponent("catalog.txt")
         try catalog.data.write(to: catalogURL, options: .withoutOverwriting)
@@ -135,7 +189,6 @@ actor GaiaSpectralDownload {
         try encoder.encode(manifest).write(to: stage.appendingPathComponent("query.json"), options: .withoutOverwriting)
         try Task.checkCancellation()
         guard renamex_np(stage.path, output.path, UInt32(RENAME_EXCL)) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-        await progress(.init(completed: batches + 1, total: batches + 1, cacheHits: hits))
         return Result(directory: output, manifest: manifest, cacheHits: hits)
     }
     func reopen(_ directory: URL, source: URL, field: GaiaSpectralField) async throws -> Result {

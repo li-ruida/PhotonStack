@@ -20,6 +20,7 @@
 #include "FrequencyStackCommand.hpp"
 #include "NarrowbandCommand.hpp"
 #include "ChannelCommand.hpp"
+#include "MasterRegistrationCommand.hpp"
 #include "StarLayersCommand.hpp"
 #include "BackgroundReviewCommand.hpp"
 #include "MosaicDiagnosticsJSON.hpp"
@@ -289,6 +290,9 @@ void printUsage() {
                  "[--channel rgb|red|green|blue|luminance] [--preserve-gamut on|off]\n"
               << "  photonstack local-contrast --input <image> --output <image> [--amount 0.25] [--radius 8] [--protect-structure on|off] [--fine-radius 6] [--star-chroma 1] [--continuum-curve 0:0,0.5:0.6,1:1]\n"
               << "  photonstack protect-reconstruction --input <linear.fits> --reference <direct.fits> --mask <weights.fits> --output <protected.fits> [--background-sigma 8] [--amount 1]\n"
+              << "  photonstack channel-register --mode stars|wcs --reference Ha --input Ha=<mono.fits> --input OIII=<mono.fits> --output-dir <new-directory>\n"
+              << "  photonstack channel-registration-inspect --recipe recipe.txt\n"
+              << "  photonstack channel-registration-replay --recipe recipe.txt --output-dir <new-directory>\n"
               << "  photonstack channel-compose --aligned --input Ha=<mono.fits> --input OIII=<mono.fits> --red Ha --green OIII --blue OIII --output-dir <new-directory> [--workers 1..64]\n"
               << "  photonstack channel-replay --recipe recipe.txt --output-dir <new-directory> [--red <expression>] [--green <expression>] [--blue <expression>]\n"
               << "  photonstack channel-inspect --recipe recipe.txt\n"
@@ -7066,6 +7070,10 @@ int runCommandImpl(const std::vector<std::string>& args) {
     if (args[0] == "star-layers") {
         try { return runStarLayers(args); }
         catch (const std::exception& error) { printError("StarLayersFailed", error.what()); return 1; }
+    }
+    if (args[0] == "channel-register" || args[0] == "channel-registration-inspect" || args[0] == "channel-registration-replay") {
+        try { return runMasterRegistration(args); }
+        catch (const std::exception& error) { printError("MasterRegistrationFailed", error.what()); return 1; }
     }
     if (args[0] == "channel-compose" || args[0] == "channel-inspect" || args[0] == "channel-replay") {
         try { return runChannels(args); }

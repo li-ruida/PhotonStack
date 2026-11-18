@@ -44,6 +44,7 @@ struct ChannelCompositionReport: Decodable {
     }
 }
 @MainActor final class ChannelCompositionSession: ObservableObject {
+    let registration = MasterRegistrationSession()
     @Published var masters = ChannelPreset.hoo.symbols.map { ChannelMaster(name: $0) }
     @Published var expressions = ChannelPreset.hoo.expressions
     @Published var aligned = false

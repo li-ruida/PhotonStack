@@ -31,6 +31,7 @@ let package = Package(
             path: "engine",
             sources: [
                 "src/AstroDevelop.cpp",
+                "src/MasterRegistration.cpp",
                 "src/ChannelComposer.cpp",
                 "src/ChannelAlignment.cpp",
                 "src/ArtifactTrailRemover.cpp",

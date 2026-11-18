@@ -36,6 +36,7 @@ struct ChannelCompositionControl: View {
                 let name = (1...17).map { "M\($0)" }.first { !existing.contains($0) } ?? "Master"
                 let master = ChannelMaster(name: name); session.masters.append(master); chooseMaster(master.id)
             }.disabled(session.masters.count >= 16).accessibilityIdentifier("channels.add")
+            MasterRegistrationControl(model: model, composition: session, session: session.registration)
             ForEach(0..<3, id: \.self) { channel in
                 HStack {
                     Text(["R", "G", "B"][channel]).frame(width: 16)

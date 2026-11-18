@@ -14,6 +14,7 @@ struct SpectralProfileLibraryView: View {
     @State private var name = ""
     @State private var error: String?
     @State private var operation: Task<Void, Never>?
+    @State private var creatingNarrowband = false
     private var selected: SpectralProfileLibrary.Entry? { entries.first { $0.id == selection } }
     private func t(_ zh: String, _ en: String) -> String { chinese ? zh : en }
     var body: some View {
@@ -21,6 +22,10 @@ struct SpectralProfileLibraryView: View {
             HStack {
                 Text(t("光谱响应配置库", "Spectral response library")).font(.headline)
                 Spacer()
+                Button(t("新建窄带…", "New narrowband…")) { creatingNarrowband = true }
+                    .disabled(operation != nil || archived || inspected?.inspection.profile.mode != "broadband")
+                    .help(t("先选择不含待建模窄带滤镜的基础响应。", "First select a base response without the narrowband filter being modeled."))
+                    .accessibilityIdentifier("spcc.library.narrowband")
                 Button(t("导入配置…", "Import profile…")) { importProfile() }.disabled(operation != nil).accessibilityIdentifier("spcc.library.import")
                 Button(t("关闭", "Close")) { dismiss() }.keyboardShortcut(.cancelAction)
             }
@@ -72,6 +77,13 @@ struct SpectralProfileLibraryView: View {
             .onChange(of: selection) { _, _ in if operation == nil { perform { try await inspectSelection() } } }
             .onChange(of: archived) { _, _ in perform { try await reload() } }
             .onDisappear { operation?.cancel() }
+            .sheet(isPresented: $creatingNarrowband) {
+                if let e = selected, let s = inspected {
+                    SpectralNarrowbandProfileView(chinese: chinese, library: library, base: e, inspected: s) { id in
+                        perform { try await reload(prefer: id) }
+                    }
+                }
+            }
     }
     private func quality(_ value: String) -> String {
         switch value {
@@ -85,6 +97,11 @@ struct SpectralProfileLibraryView: View {
         return VStack(alignment: .leading, spacing: 10) {
             Text(r.profile.name).font(.subheadline.bold()).textSelection(.enabled)
             Text(quality(r.profile.quality)).font(.caption).foregroundStyle(r.profile.quality == "measured" ? Color.secondary : .orange)
+            if let model = r.profile.narrowband {
+                Text(model.title(chinese: chinese)).font(.caption.bold())
+                Text(zip(model.centers, model.widths).map { String(format: "%.2f / %.2f nm", $0.0, $0.1) }.joined(separator: " · ")).font(.caption).monospacedDigit()
+                Text(t("名义中心 / 宽度；单位透过率梯形通带为近似模型。恒星平衡不恢复宽带颜色，也不代替 HOO / SHO 调色。", "Nominal center / width; unit-transmission trapezoidal passbands are approximate. Stellar balance does not recover broadband colors or replace HOO / SHO palette work.")).font(.caption2).foregroundStyle(.orange)
+            }
             Text(t("R / G / B 总响应（各组件透过率相乘）", "R / G / B combined response (product of components)")).font(.caption)
             SpectralResponsePlot(series: r.bands.map(\.samples), colors: [.red, .green, .blue], low: low, high: high, minimum: 0).frame(height: 135)
             Grid(alignment: .leading, horizontalSpacing: 15, verticalSpacing: 4) {

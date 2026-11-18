@@ -32,7 +32,7 @@ def integral(a, b, low, high):
     return (a-350*slope)*(high*high-low*low)/2+slope*(high**3-low**3)/3
 
 
-def fixture(root, count=64):
+def fixture(root, count=64, photon_flux=None):
     bands = [(600, 700), (500, 600), (400, 500)]
     profile = ['PhotonStack-SpectralProfile-1', '"Analytic test" "broadband" "synthetic" "Analytic top-hat responses" "CC0"']
     for lo, hi in bands: profile += ['1', '2', f'{lo} 1', f'{hi} 1']
@@ -52,7 +52,8 @@ def fixture(root, count=64):
         de = math.degrees(math.atan2(math.sin(dec)+eta*math.cos(dec), math.hypot(denominator, xi)))
         if i < count:
             catalog += [f'"{i}" {ra:.17g} {de:.17g} 2', f'350 {a:.17g} .001', f'750 {b:.17g} .001']
-        amplitudes = [integral(a, b, lo, hi)/(300*g) for (lo, hi), g in zip(bands, gain)]
+        fluxes = photon_flux(a, b) if photon_flux else [integral(a, b, lo, hi) for lo, hi in bands]
+        amplitudes = [f/(300*g) for f, g in zip(fluxes, gain)]
         for dy in range(-12, 13):
             for dx in range(-12, 13):
                 px, py = int(x)+dx, int(y)+dy

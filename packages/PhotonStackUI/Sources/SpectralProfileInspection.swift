@@ -1,11 +1,39 @@
 import Foundation
 import PhotonStackProcessing
 
+struct SpectralNarrowbandModel: Codable, Equatable, Sendable {
+    var layout: String
+    var baseSHA: String
+    var model = "trapezoid-edge-1e-4"
+    var centers: [Double]
+    var widths: [Double]
+    var isValid: Bool {
+        guard ["mono", "osc-dual", "extracted-hoo"].contains(layout),
+              model == "trapezoid-edge-1e-4", SpectralCalibrationReport.digest(baseSHA),
+              centers.count == 3, widths.count == 3 else { return false }
+        for c in 0..<3 {
+            guard centers[c].isFinite, widths[c].isFinite, (3...100).contains(widths[c]),
+                  centers[c] - widths[c]/2 >= 336, centers[c] + widths[c]/2 <= 1020 else { return false }
+        }
+        return layout == "mono" || (centers[1] == centers[2] && widths[1] == widths[2] &&
+            abs(centers[0] - centers[1]) > (widths[0] + widths[1])/2)
+    }
+    func title(chinese: Bool) -> String {
+        switch layout {
+        case "mono": chinese ? "单色滤镜合色" : "Mono filter composite"
+        case "osc-dual": chinese ? "OSC 双窄带 RGB" : "OSC dual-band RGB"
+        default: chinese ? "提取后的 HOO" : "Extracted HOO"
+        }
+    }
+}
+
 struct SpectralProfileMetadata: Codable, Equatable, Sendable {
     var name, mode, quality, provenance, license, sha: String
     var whiteName, whiteProvenance, whiteLicense: String
+    var narrowband: SpectralNarrowbandModel?
     var isValid: Bool {
-        mode == "broadband" && ["measured", "approximate", "synthetic"].contains(quality) &&
+        ((mode == "broadband" && narrowband == nil && ["measured", "approximate", "synthetic"].contains(quality)) ||
+         (mode == "narrowband" && quality == "approximate" && narrowband?.isValid == true)) &&
         SpectralCalibrationReport.digest(sha) &&
         [name, provenance, license, whiteName, whiteProvenance, whiteLicense].allSatisfy {
             !$0.isEmpty && $0.utf8.count <= 4096 && !$0.unicodeScalars.contains { $0.value < 32 || $0.value == 127 }

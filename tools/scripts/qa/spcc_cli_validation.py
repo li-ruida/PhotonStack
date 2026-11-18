@@ -29,15 +29,18 @@ def main():
     original={str(p.resolve()):sha(p) for p in [source,args.gaia_catalog,*root.iterdir()]}
     assert original[str(source.resolve())]==report['sourceSHA']
     profile=iter(shlex.split((root/'profile.txt').read_text()))
-    assert next(profile)=='PhotonStack-SpectralProfile-1'
+    version=next(profile)
     meta=[next(profile) for _ in range(5)]
     assert meta==[report['profile'][k] for k in ['name','mode','quality','provenance','license']]
+    from spectral_profile_validation import narrowband_metadata, narrowband_curves
+    model=narrowband_metadata(profile, version, report['profile'])
 
     def curve(tokens):
         n=int(next(tokens)); xy=np.array([[float(next(tokens)),float(next(tokens))] for _ in range(n)])
         return xy[:,0],xy[:,1]
 
     bands=[[curve(profile) for _ in range(int(next(profile)))] for c in range(3)]
+    narrowband_curves(model, bands)
     white_meta=[next(profile) for _ in range(3)]; wx,wy=curve(profile)
     assert white_meta==[report['profile'][k] for k in ['whiteName','whiteProvenance','whiteLicense']]
     assert list(profile)==[]

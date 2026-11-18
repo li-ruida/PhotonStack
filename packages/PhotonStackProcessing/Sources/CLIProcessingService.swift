@@ -1000,7 +1000,7 @@ public final class CLIProcessingService: ProcessingService {
                         } else if process.terminationStatus == 0 {
                             if let expectedOutput = externalOutputIndex.map({ (path: processArguments[$0], isDirectory: false) }) ?? Self.expectedOutput(in: processArguments) {
                                 let outputPath = outputTransaction?.destinationURL.path ?? expectedOutput.path
-                                switch Self.validateOutput(expectedOutput, relativeTo: workingDirectory) {
+                                switch Self.validateOutput(expectedOutput, relativeTo: workingDirectory, command: arguments.first) {
                                 case .valid:
                                     break
                                 case .missing:
@@ -1082,7 +1082,8 @@ public final class CLIProcessingService: ProcessingService {
 
     private static func validateOutput(
         _ expectedOutput: (path: String, isDirectory: Bool),
-        relativeTo workingDirectory: URL
+        relativeTo workingDirectory: URL,
+        command: String? = nil
     ) -> ExpectedOutputValidation {
         let url = URL(fileURLWithPath: expectedOutput.path, relativeTo: workingDirectory).standardizedFileURL
         var isDirectory = ObjCBool(false)
@@ -1092,6 +1093,21 @@ public final class CLIProcessingService: ProcessingService {
             return .missing
         }
         guard expectedOutput.isDirectory == false else {
+            if command == "spcc-narrowband-profile" {
+                // This command creates response data, not an image. The UI
+                // subsequently inspects the full scientific profile with the CLI.
+                for (name, header) in [("profile.txt", "PhotonStack-SpectralProfile-2"),
+                                       ("base-profile.txt", "PhotonStack-SpectralProfile-1")] {
+                    let file = url.appendingPathComponent(name)
+                    guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
+                          values.isRegularFile == true, values.isSymbolicLink != true,
+                          let size = values.fileSize, size > 0, size <= 16 * 1024 * 1024,
+                          let bytes = try? Data(contentsOf: file), bytes.count <= 16 * 1024 * 1024,
+                          let text = String(data: bytes, encoding: .utf8),
+                          text.split(maxSplits: 1, whereSeparator: \.isWhitespace).first == Substring(header) else { return .invalid }
+                }
+                return .valid
+            }
             guard let enumerator = FileManager.default.enumerator(
                 at: url,
                 includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],

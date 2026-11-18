@@ -75,3 +75,4 @@ add_test(NAME photonstack_sky_annotation_cli COMMAND ${Python3_EXECUTABLE} ${CMA
 add_test(NAME photonstack_spectral_calibration_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_spectral_calibration.py $<TARGET_FILE:photonstack>)
 add_test(NAME photonstack_spectral_profile_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_spectral_profile.py $<TARGET_FILE:photonstack>)
 add_test(NAME photonstack_gaia_field_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_gaia_field.py $<TARGET_FILE:photonstack>)
+add_test(NAME photonstack_narrowband_profile_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_narrowband_profile.py $<TARGET_FILE:photonstack>)

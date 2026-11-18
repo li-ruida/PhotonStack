@@ -21,9 +21,7 @@ struct SpectralCalibrationSettings: Codable, Equatable, Sendable {
 }
 
 struct SpectralCalibrationReport: Decodable, Sendable {
-    struct Profile: Decodable, Sendable {
-        var name, mode, quality, provenance, license, sha, whiteName, whiteProvenance, whiteLicense: String
-    }
+    typealias Profile = SpectralProfileMetadata
     struct Catalog: Decodable, Sendable { var name, provenance, license, sha: String; var epoch: Double }
     struct Fit: Decodable, Sendable {
         var valid: Bool
@@ -77,7 +75,7 @@ struct SpectralCalibrationReport: Decodable, Sendable {
     var isValid: Bool {
         guard schema == 1, algorithm == "PhotonStack-SPCC-1", source.hasPrefix("/"), Self.digest(sourceSHA),
               (1...100_000).contains(width), (1...100_000).contains(height), (0...100_000).contains(detected),
-              profile.mode == "broadband", ["measured", "approximate", "synthetic"].contains(profile.quality),
+              profile.isValid,
               Self.digest(profile.sha), Self.digest(catalog.sha), catalog.epoch.isFinite, (1800...2200).contains(catalog.epoch),
               options.isValid, stars.count <= 10_000, Set(stars.map(\.id)).count == stars.count, stars.allSatisfy(\.isValid),
               Set(options.excluded).isSubset(of: Set(stars.map(\.id))),

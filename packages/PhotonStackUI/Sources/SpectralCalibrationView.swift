@@ -50,7 +50,7 @@ struct SpectralCalibrationView: View {
                         starList(r).frame(height: 220)
                         if let star = r.stars.first(where: { $0.id == selected }) { detail(star) }
                     } else {
-                        Text(text("使用已解算的宽带线性 RGB FITS。响应应包含相机、滤镜等光路；星表坐标须对应拍摄日期。", "Use a solved broadband linear RGB FITS. Supply the camera/filter response and catalog positions at the observation epoch.")).font(.caption).foregroundStyle(.secondary)
+                        Text(text("使用已解算、未拉伸的线性 RGB FITS。响应须与相机、滤镜和合色方式一致；星表坐标须对应拍摄日期。", "Use a solved, unstretched linear RGB FITS. Match the response to the camera, filter and channel mapping, and catalog positions to the observation epoch.")).font(.caption).foregroundStyle(.secondary)
                         Spacer()
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading) }.frame(width: 360)
@@ -144,6 +144,10 @@ struct SpectralCalibrationView: View {
                     Text(String(format: "P90 ≤ %.3f · Δ aperture ≤ %.3f · spectral error ≤ %.3f", r.options.maxValidationLogError, r.options.maxApertureColorChange, r.options.maxRelativeSpectralError))
                 }.font(.caption2).textSelection(.enabled)
             }.font(.caption)
+            if let model = r.profile.narrowband {
+                Text(model.title(chinese: zh) + text(" · 名义通带近似；恒星平衡不等于 HOO / SHO 艺术混色。", " · Nominal passbands; stellar balance is separate from artistic HOO / SHO mixing.")).font(.caption2).foregroundStyle(.orange)
+                Text(zip(model.centers, model.widths).map { String(format: "%.2f / %.2f nm", $0.0, $0.1) }.joined(separator: " · ")).font(.caption2).monospacedDigit()
+            }
             if r.profile.quality != "measured" { Text(text("当前响应为近似或模拟配置，不等同于整机实测响应。", "Approximate or synthetic response; not a measured full optical system.")).font(.caption2).foregroundStyle(.orange) }
             Text(text("通过拟合不代表已验证仪器响应或绝对星色精度。", "Passing the fit does not verify the response or absolute color accuracy.")).font(.caption2).foregroundStyle(.secondary)
         }

@@ -333,6 +333,7 @@ void printUsage() {
               << "  photonstack spcc-inspect|spcc-replay|spcc-export --recipe <recipe.txt> [--output-dir <new-directory> | --output <new.fits>] [--expected-sha sha256]\n"
               << "  photonstack spcc-preview --recipe <recipe.txt> --output <new.tiff> [--full-resolution 0|1 --expected-sha sha256]\n"
               << "  photonstack spcc-profile-inspect --profile <profile.txt> [--expected-sha sha256]\n"
+              << "  photonstack spcc-narrowband-profile --profile <base.txt> --layout mono|osc-dual|extracted-hoo --centers r,g,b --widths r,g,b --name <name> --output-dir <new-directory> [--expected-sha sha256]\n"
               << "  photonstack spcc-field --input <solved-linear-rgb.fits> [--expected-sha sha256]\n"
               << "  photonstack spcc-catalog-inspect --catalog <catalog.txt> [--expected-sha sha256]\n"
               << "  photonstack ghs-stretch --input <master.fits|developed.tiff> --output-dir <new-directory> [--log-stretch 3 --local-intensity 1 --symmetry 0 --shadow-protection 0 --highlight-protection 1 --mode luminance|independent --black value --white value --preview-width 1200]\n"
@@ -7118,6 +7119,10 @@ int runCommandImpl(const std::vector<std::string>& args) {
     }
     if (args[0] == "spcc-profile-inspect") {
         try { return runSpectralProfileInspection(args); }
+        catch (const std::exception& error) { printError("SpectralProfileFailed", error.what()); return 1; }
+    }
+    if (args[0] == "spcc-narrowband-profile") {
+        try { return runNarrowbandProfile(args); }
         catch (const std::exception& error) { printError("SpectralProfileFailed", error.what()); return 1; }
     }
     if (args[0] == "spcc-field" || args[0] == "spcc-catalog-inspect") {

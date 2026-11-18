@@ -143,6 +143,29 @@ actor SpectralProfileLibrary {
         var r = try receipt(dir, id: entry.id); r.label = label.trimmingCharacters(in: .whitespaces)
         try JSONEncoder().encode(r).write(to: dir.appendingPathComponent("entry.json"), options: .atomic)
     }
+    func createNarrowband(from entry: Entry, name: String, layout: String, centers: [Double], widths: [Double]) async throws -> String {
+        let selected = try await select(entry)
+        let metadata = selected.inspection.profile
+        let model = SpectralNarrowbandModel(layout: layout, baseSHA: metadata.sha, centers: centers, widths: widths)
+        guard metadata.mode == "broadband", model.isValid, validLabel(name) else {
+            throw failure("Choose a base response and valid narrowband passbands")
+        }
+        let stage = fm.temporaryDirectory.appendingPathComponent("PhotonStack-Narrowband-" + UUID().uuidString)
+        try fm.createDirectory(at: stage, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: stage) }
+        let base = stage.appendingPathComponent("base"), output = stage.appendingPathComponent("generated")
+        // The verified independent snapshot also retains the optional source license.
+        try await export(entry, to: base)
+        _ = try await service.runCLI(arguments: ["spcc-narrowband-profile", "--profile", base.appendingPathComponent("profile.txt").path,
+            "--expected-sha", metadata.sha, "--layout", layout, "--name", name.trimmingCharacters(in: .whitespaces),
+            "--centers", centers.map { String($0) }.joined(separator: ","),
+            "--widths", widths.map { String($0) }.joined(separator: ","), "--output-dir", output.path])
+        try Task.checkCancellation()
+        let profile = output.appendingPathComponent("profile.txt")
+        let generated = try await SpectralProfileInspection.read(profile, service: service)
+        guard generated.profile.narrowband == model else { throw failure("Generated passbands differ from the request") }
+        return try await importProfile(profile)
+    }
     func archive(_ entry: Entry) throws {
         let from = try directory(entry.id, archived: entry.archived), target = base(!entry.archived)
         try fm.createDirectory(at: target, withIntermediateDirectories: true); try requireDirectory(target)

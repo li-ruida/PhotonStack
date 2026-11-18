@@ -185,8 +185,9 @@ std::string report(const Recipe& recipe, const SpectralProfile& p, const Spectra
         << ",\"license\":" << channelJSON(p.license)
         << ",\"sha\":" << channelJSON(recipe.dependencies.at("profile.txt"))
         << ",\"whiteName\":" << channelJSON(p.whiteName) << ",\"whiteProvenance\":" << channelJSON(p.whiteProvenance)
-        << ",\"whiteLicense\":" << channelJSON(p.whiteLicense)
-        << "},\"catalog\":{\"name\":" << channelJSON(catalog.name) << ",\"epoch\":" << catalog.epoch
+        << ",\"whiteLicense\":" << channelJSON(p.whiteLicense);
+    narrowbandJSON(out, p.narrowband);
+    out << "},\"catalog\":{\"name\":" << channelJSON(catalog.name) << ",\"epoch\":" << catalog.epoch
         << ",\"provenance\":" << channelJSON(catalog.provenance) << ",\"license\":" << channelJSON(catalog.license)
         << ",\"sha\":" << channelJSON(recipe.dependencies.at("catalog.txt")) << "},\"options\":{\"radius\":" << a.radius
         << ",\"skyInner\":" << a.skyInner << ",\"skyOuter\":" << a.skyOuter << ",\"saturation\":" << a.saturation
@@ -261,7 +262,9 @@ std::string report(const Recipe& recipe, const SpectralProfile& p, const Spectra
            "response accuracy.\","
         << "\"Catalog coordinates are supplied at the stated epoch; verify compatibility with the image.\","
         << "\"Background noise excludes source shot noise and resampling covariance; undetected companions and "
-           "variability may remain.\"]}\n";
+           "variability may remain.\"";
+    if (p.narrowband) out << ",\"Nominal passbands are approximate. Sample spacing is not spectral resolving power; unresolved spectral features and filter/QE errors are not included in the quoted errors.\",\"Narrowband stellar balance does not recover broadband star colors, physical emission-line fluxes or an artistic SHO/HOO palette.\"";
+    out << "]}\n";
     return out.str();
 }
 ImageBuffer resized(const ImageBuffer& image) {

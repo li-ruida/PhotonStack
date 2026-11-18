@@ -1,5 +1,6 @@
 #pragma once
 #include "ChannelRecipe.hpp"
+#include "SpectralNarrowband.hpp"
 #include "photonstack/SpectralCalibrator.hpp"
 #include <cmath>
 namespace photonstack::cli {
@@ -8,6 +9,7 @@ struct SpectralProfile {
     std::string whiteName, whiteProvenance, whiteLicense;
     std::array<SpectralBand, 3> response;
     SampledSpectrum white;
+    std::optional<NarrowbandModel> narrowband;
 };
 struct SpectralCatalog {
     std::string name, provenance, license;
@@ -51,13 +53,23 @@ inline SpectralProfile readSpectralProfile(const std::filesystem::path& path) {
     std::ifstream in(path);
     std::string magic;
     SpectralProfile p;
-    if (!(in >> magic) || magic != "PhotonStack-SpectralProfile-1" ||
+    if (!(in >> magic) || (magic != "PhotonStack-SpectralProfile-1" && magic != "PhotonStack-SpectralProfile-2") ||
         !(in >> std::quoted(p.name) >> std::quoted(p.mode) >> std::quoted(p.quality) >> std::quoted(p.provenance) >>
           std::quoted(p.license)))
         throw std::invalid_argument("Invalid spectral profile header");
     for (const auto& s : {p.name, p.mode, p.quality, p.provenance, p.license})
         spectralText(s);
-    if (p.mode != "broadband" || !std::set<std::string>{"measured", "approximate", "synthetic"}.contains(p.quality))
+    if (magic == "PhotonStack-SpectralProfile-2") {
+        NarrowbandModel m;
+        if (p.mode != "narrowband" || p.quality != "approximate" || !(in >> std::quoted(m.layout) >> m.baseSHA))
+            throw std::invalid_argument("Version 2 requires an explicitly approximate narrowband response");
+        for (unsigned c = 0; c < 3; ++c)
+            if (!(in >> m.centers[c] >> m.widths[c]))
+                throw std::invalid_argument("Missing narrowband passband");
+        validateNarrowband(m);
+        p.narrowband = m;
+    } else if (p.mode != "broadband" ||
+               !std::set<std::string>{"measured", "approximate", "synthetic"}.contains(p.quality))
         throw std::invalid_argument("Select a broadband profile with measured, approximate or synthetic provenance");
     std::size_t total = 0;
     for (auto& band : p.response) {
@@ -74,6 +86,19 @@ inline SpectralProfile readSpectralProfile(const std::filesystem::path& path) {
         spectralText(s);
     p.white.flux = spectralCurve(in, total);
     spectralEnd(in);
+    if (p.narrowband) {
+        for (unsigned c = 0; c < 3; ++c) {
+            const auto expected = narrowbandWindow(*p.narrowband, c);
+            if (p.response[c].size() < 2 || !sameCurve(p.response[c].back(), expected))
+                throw std::invalid_argument("Narrowband transmission does not match its declared model");
+            for (std::size_t i = 0; i + 1 < p.response[c].size(); ++i)
+                if (p.response[c][i].wavelength.front() > expected.wavelength.front() ||
+                    p.response[c][i].wavelength.back() < expected.wavelength.back())
+                    throw std::invalid_argument("Base response does not cover the complete narrowband filter");
+        }
+        if (p.narrowband->layout == "extracted-hoo" && !sameBand(p.response[1], p.response[2]))
+            throw std::invalid_argument("Extracted HOO requires identical effective OIII responses in G and B");
+    }
     for (const auto& band : p.response)
         if (integratePhotonSpectrum(p.white, band).value <= 0)
             throw std::invalid_argument("White reference must give positive signal in each channel");

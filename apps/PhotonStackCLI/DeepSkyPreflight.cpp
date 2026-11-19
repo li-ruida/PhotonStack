@@ -1,5 +1,7 @@
 #include "DeepSkyPreflight.hpp"
 #include "photonstack/ImageInspector.hpp"
+#include "photonstack/CalibrationMetadata.hpp"
+#include "photonstack/FitsCodec.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -84,6 +86,17 @@ DeepSkyPreflight inspectDeepSkyPlan(const photonstack::DeepSkyRecipe& recipe, co
                 continue;
             }
             ++result.inspectedCount;
+            if (lights && (result.calibrationCount || o.sensorPattern) && isFitsPath(path)) {
+                try {
+                    if (inspectCalibrationAcquisition(path).text.contains("calibration")) {
+                        complete = false;
+                        result.issues.push_back({"AlreadyCalibrated", path.string(), "Disable calibration masters and sensor pattern correction for calibrated lights"});
+                    }
+                } catch (const std::exception& e) {
+                    complete = false;
+                    result.issues.push_back({"HeaderUnavailable", path.string(), e.what()});
+                }
+            }
             const auto& m = inspected.metadata;
             // Scientific intermediates are float RGBA even for a mono/CFA source.
             largestFrame = std::max(largestFrame, multiply(multiply(m.width, m.height), 16));

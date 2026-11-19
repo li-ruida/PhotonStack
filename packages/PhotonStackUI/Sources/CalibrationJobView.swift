@@ -5,11 +5,14 @@ import PhotonStackProcessing
 struct CalibrationJobView: View {
     @StateObject private var model: CalibrationJobSession
     let chinese: Bool
+    let openProject: (URL) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var group = 0
     @State private var frame: Int? = 0
-    init(library: CalibrationLibrary, launch: CalibrationJobLaunch, chinese: Bool) {
+    @State private var stacking = false
+    init(library: CalibrationLibrary, launch: CalibrationJobLaunch, chinese: Bool, openProject: @escaping (URL) -> Void) {
         _model = StateObject(wrappedValue: CalibrationJobSession(library: library, launch: launch)); self.chinese = chinese
+        self.openProject = openProject
     }
     private func t(_ zh: String, _ en: String) -> String { chinese ? zh : en }
     var body: some View {
@@ -56,6 +59,11 @@ struct CalibrationJobView: View {
             .task { if model.directory != nil { model.refresh() } }
             .onDisappear { model.cancel() }
             .interactiveDismissDisabled(model.busy)
+            .sheet(isPresented: $stacking) {
+                if let directory = model.directory, let report = model.report {
+                    CalibrationStackProjectView(library: model.library, directory: directory, report: report, chinese: chinese, openProject: openProject)
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .photonStackProcessingProgress).receive(on: RunLoop.main)) { notification in
                 if let event = notification.object as? ProcessingProgressEvent { model.accept(event) }
             }
@@ -215,6 +223,10 @@ struct CalibrationJobView: View {
             HStack {
                 if model.stopped { Text(t("已停止，完成帧已保留。", "Stopped; completed frames retained.")).font(.caption).foregroundStyle(.secondary) }
                 Spacer()
+                if let report = model.report, report.completed >= 3 {
+                    Button(t("进入堆栈…", "Continue to stacking…")) { stacking = true }.disabled(model.busy)
+                        .accessibilityIdentifier("calibration.job-stack")
+                }
                 if model.report == nil, model.draft != nil, let directory = model.directory, !FileManager.default.fileExists(atPath: directory.path) {
                     Button(t("返回分配", "Back to assignments")) { model.retryPreparation() }.disabled(model.busy)
                 }

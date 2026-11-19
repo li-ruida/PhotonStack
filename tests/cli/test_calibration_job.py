@@ -78,6 +78,11 @@ class CalibrationJobs(unittest.TestCase):
             self.assertEqual(header['PSBIAS'],"'removed'");self.assertEqual(header['PSCALIB'],"'sensor-v1'")
             self.assertEqual(header['BITPIX'],'-32');self.assertEqual(header['BSCALE'],'1');self.assertEqual(header['BZERO'],'0')
             self.assertNotIn('DATAMIN',header);self.assertNotIn('DATAMAX',header)
+            # A calibrated sensor product must not have its bias subtracted again.
+            rejected = run('calibrate', '--light', output/'calibrated.fits', '--bias', bias,
+                           '--output', root/'double-calibrated.fits', ok=False)
+            self.assertIn('AlreadyCalibrated', rejected)
+            self.assertFalse((root/'double-calibrated.fits').exists())
             for p,raw in before.items(): self.assertEqual(p.read_bytes(),raw)
             # Equivalent explicit bias-removed dark and raw flat paths.
             darkRemoved = frame(root/'dark-removed.fits',[3]*120,'Master Dark',PSBIAS="'removed'")

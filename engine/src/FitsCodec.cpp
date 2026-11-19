@@ -969,6 +969,7 @@ FitsSensorIdentity FitsCodec::inspectSensor(const std::filesystem::path& path) c
     if (!stream) return fail("Cannot open sensor FITS input");
     const auto header = parseHeader(stream);
     if (!header.ok) return fail("Cannot parse sensor FITS header");
+    if (header.values.contains("PSCALIB")) return fail("Sensor pattern estimation requires uncalibrated sensor frames");
     const auto description = imageDescription(header);
     if (!description || description->channels != 1) return fail("Sensor model requires a single CFA plane");
     const auto get = [&](const char* key) {
@@ -1077,6 +1078,11 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
     const auto header = parseHeader(file);
     if (!header.ok) {
         return readError(header.errorCode, header.message);
+    }
+
+    if (header.values.contains("PSCALIB") &&
+        (sensorPattern || (calibration && (calibration->bias || calibration->dark || calibration->flat)))) {
+        return readError("AlreadyCalibrated", "This sensor frame is already calibrated; disable calibration masters and sensor pattern correction");
     }
 
     const auto description = imageDescription(header);

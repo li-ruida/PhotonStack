@@ -4,15 +4,17 @@ import SwiftUI
 struct CalibrationLibraryView: View {
     @StateObject private var session: CalibrationLibrarySession
     let chinese: Bool
+    let openProject: (URL) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var reviewing = false
     @State private var importing = false
     @State private var building = false
     @State private var constructionEntry: CalibrationLibrary.Entry?
     @State private var calibrationJob: CalibrationJobLaunch?
-    init(library: CalibrationLibrary, lights: [URL], chinese: Bool) {
+    init(library: CalibrationLibrary, lights: [URL], chinese: Bool, openProject: @escaping (URL) -> Void) {
         _session = StateObject(wrappedValue: CalibrationLibrarySession(library: library, lights: lights))
         self.chinese = chinese
+        self.openProject = openProject
     }
     private func t(_ zh: String, _ en: String) -> String { chinese ? zh : en }
     var body: some View {
@@ -63,7 +65,7 @@ struct CalibrationLibraryView: View {
                 CalibrationConstructionView(library: session.library, entry: entry, chinese: chinese)
             }
             .sheet(item: $calibrationJob) { launch in
-                CalibrationJobView(library: session.library, launch: launch, chinese: chinese)
+                CalibrationJobView(library: session.library, launch: launch, chinese: chinese, openProject: openProject)
             }
     }
     private var masters: some View {

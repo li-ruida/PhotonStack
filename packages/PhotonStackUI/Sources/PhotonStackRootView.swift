@@ -101,6 +101,7 @@ public struct PhotonStackRootView: View {
     @State private var deepSkyReviewFilter: DeepSkyReviewFilter?
     @State private var isWorkflowLibraryPresented = false
     @State private var isCalibrationLibraryPresented = false
+    @State private var pendingCalibrationStackProject: URL?
     @StateObject private var workflowBatch = WorkflowBatchRun()
     @State private var newProjectDraft = NewProjectDraft(name: "", template: .deepSky)
     @State private var pendingProjectCreation: NewProjectDraft?
@@ -242,10 +243,18 @@ public struct PhotonStackRootView: View {
             WorkflowLibrarySheet(model: model, batch: workflowBatch, presented: $isWorkflowLibraryPresented,
                                  repository: workflowRepository)
         }
-        .sheet(isPresented: $isCalibrationLibraryPresented) {
+        .sheet(isPresented: $isCalibrationLibraryPresented, onDismiss: {
+            if let directory = pendingCalibrationStackProject {
+                pendingCalibrationStackProject = nil
+                model.requestOpenProject(from: directory)
+            }
+        }) {
             CalibrationLibraryView(library: model.calibrationLibrary,
                 lights: model.lightAssets.flatMap { $0.mosaicFolder?.frames ?? [$0.originalURL] },
-                chinese: model.language == .simplifiedChinese)
+                chinese: model.language == .simplifiedChinese, openProject: { directory in
+                    pendingCalibrationStackProject = directory
+                    isCalibrationLibraryPresented = false
+                })
         }
         .sheet(isPresented: $isCreatingProject, onDismiss: createPendingProject) {
             NewProjectSheet(

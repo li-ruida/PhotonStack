@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import PhotonStackAppCore
 import PhotonStackProcessing
 @testable import PhotonStackUI
 
@@ -45,6 +46,54 @@ private func ready(_ source: CalibrationJobDraft) -> CalibrationJobDraft {
     var draft = source; draft.fillUniqueCandidates()
     draft.assign(CalibrationJobDraft.omitted, role: 0, frames: Array(draft.choices.indices))
     return draft
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func calibrationStackProjectCopiesOnlyScienceAndVerifiesOfflineInputs() async throws {
+    let f = try await jobFixture(), fm = FileManager.default
+    defer { try? fm.removeItem(at: f.root) }
+    let lights = try (0..<4).map { i in
+        let url = f.root.appendingPathComponent("light-\(i).fits")
+        try jobFITS(url, role: "Light", value: Float(100 + i), exposure: 60, day: i < 2 ? 15 : 16, sequence: i)
+        return url
+    }
+    let entries = try await f.library.list()
+    let review = try await f.library.plan(lights: lights, entries: entries, tolerance: 1)
+    let draft = ready(try CalibrationJobDraft(review: review, entries: entries))
+    let job = f.root.appendingPathComponent("job")
+    let report = try await f.library.runCalibration(draft, to: job)
+    let plan = try await f.library.stackPlan(directory: job, expected: report)
+    let groups = Set(plan.groups.map(\.id))
+    #expect(plan.groups.count == 2)
+    #expect(try plan.frames(in: groups).count == 4)
+    #expect(throws: (any Error).self) { try plan.frames(in: [plan.groups[0].id]) }
+    let destination = f.root.appendingPathComponent("Stack project")
+    _ = try await f.library.createStackProject(plan, groups: groups, name: "Stack project", destination: destination)
+    let project = try await ProjectRepository().load(from: destination)
+    #expect(project.assets.count == 4 && project.assets.allSatisfy { $0.role == .light })
+    #expect(project.deepSkySettings?.values["calibration.sensor-pattern"] == "off")
+    for (i, asset) in project.assets.enumerated() {
+        #expect(try Data(contentsOf: asset.originalURL) == Data(contentsOf: job.appendingPathComponent(report.frames[i].directory + "/calibrated.fits")))
+        #expect(!asset.originalURL.path.contains(".calibration-stack-"))
+    }
+    await #expect(throws: (any Error).self) {
+        try await f.library.createStackProject(plan, groups: groups, name: "Stack project", destination: destination)
+    }
+    try fm.removeItem(at: job)
+    for light in lights { try fm.removeItem(at: light) }
+    try await f.library.verifyStackProject(project)
+    let science = project.assets[0].originalURL
+    try Data("changed".utf8).write(to: science)
+    await #expect(throws: (any Error).self) { try await f.library.verifyStackProject(project) }
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func calibrationStackProjectRejectsMixedExposureGroups() async throws {
+    let f = try await jobFixture(); defer { try? FileManager.default.removeItem(at: f.root) }
+    let job = f.root.appendingPathComponent("job")
+    let report = try await f.library.runCalibration(ready(f.draft), to: job)
+    let plan = try await f.library.stackPlan(directory: job, expected: report)
+    #expect(throws: (any Error).self) { try plan.frames(in: Set(plan.groups.map(\.id))) }
 }
 
 @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))

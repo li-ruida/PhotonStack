@@ -4297,6 +4297,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     public func runDeepSkyWorkflow(analyzeOnly: Bool) async {
         guard !rejectMissingAsset(in: lightAssets) else { return }
         await runJob(title: analyzeOnly ? "Deep Sky Frame Assessment" : "Deep Sky Recipe", kind: .stack) {
+            try await self.calibrationLibrary.verifyStackProject(self.project)
             if self.deepSkySchema == nil { self.deepSkySchema = try await self.processingService.deepSkySchema() }
             let recipe = try self.deepSkyRecipeText()
             let root = self.currentProjectDirectory?.appendingPathComponent("processing", isDirectory: true) ?? self.previewDirectory

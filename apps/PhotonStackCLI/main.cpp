@@ -42,6 +42,7 @@
 #include "photonstack/AstroDevelop.hpp"
 #include "photonstack/BackgroundExtractor.hpp"
 #include "photonstack/Calibrator.hpp"
+#include "photonstack/CalibrationMetadata.hpp"
 #include "photonstack/CloudRemoval.hpp"
 #include "photonstack/ComaReducer.hpp"
 #include "photonstack/ColorAdjuster.hpp"
@@ -710,6 +711,18 @@ int calibrateImage(const std::vector<std::string>& args) {
         flatBiasState == photonstack::CalibrationBiasState::Included) {
         printError("ArgumentMissing", "--flat-bias included requires --bias <image>");
         return 1;
+    }
+
+    if (photonstack::isFitsPath(*lightPath)) {
+        try {
+            if (photonstack::inspectCalibrationAcquisition(*lightPath).text.contains("calibration")) {
+                printError("AlreadyCalibrated", "This sensor frame is already calibrated; send it directly to registration and stacking");
+                return 1;
+            }
+        } catch (const std::exception& error) {
+            printError("InputInvalid", error.what());
+            return 1;
+        }
     }
 
     const photonstack::ImageCodec codec;

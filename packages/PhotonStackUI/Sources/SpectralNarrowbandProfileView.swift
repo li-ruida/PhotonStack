@@ -46,7 +46,7 @@ struct SpectralNarrowbandProfileView: View {
             Text(t("宽度 3–100 nm；完整通带须在 336–1020 nm 及基础响应范围内。双窄带的 G / B 参数联动，两条通带必须分离。", "Widths: 3–100 nm; full passbands must lie within 336–1020 nm and the base response. Dual-band G / B settings are linked, and the two passbands must be separate.")).font(.caption).foregroundStyle(.secondary)
             Text(t("此配置使用单位透过率梯形近似，边缘占名义宽度的 0.01%，不代表实测滤镜。Gaia 光谱采样间隔不等于光谱分辨率；未分辨谱线及响应模型误差不包含在通量误差条中。", "This uses unit-transmission trapezoidal approximations with edges 0.01% of nominal width, not measured filters. Gaia sampling interval is not resolving power; unresolved lines and response-model errors are not included in flux error bars.")).font(.caption).foregroundStyle(.orange)
             Text(t("用于未拉伸线性图的恒星平衡，不恢复宽带色彩或绝对发射线通量。HOO / SHO 的艺术混色请在通道合成与后期调整中完成。", "Use for stellar balance in unstretched linear images, not recovery of broadband colors or absolute emission-line flux. Use channel composition and finishing for artistic HOO / SHO palettes.")).font(.caption).foregroundStyle(.secondary)
-            if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled).lineLimit(4) }
+            if let error { ProcessingErrorNotice(message:error,chinese:chinese) }
             HStack {
                 if operation != nil { ProgressView().controlSize(.small) }
                 Spacer()

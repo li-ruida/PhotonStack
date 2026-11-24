@@ -156,6 +156,9 @@ std::vector<Binding> fields(DeepSkyWorkflowOptions& o) {
     f.numeric("registration.minimum-matches", "Minimum star matches", "最少匹配星点", "registration", o.stack.registration.minimumMatches, 3, 10000);
     f.numeric("registration.match-tolerance", "Match tolerance", "星点匹配容差", "registration", o.stack.registration.matchTolerance, .1, 100);
     f.boolean("registration.refine-centroids", "Refine centroids", "细化星点中心", "registration", o.stack.registration.refineSimilarityCentroids);
+    f.boolean("stack.cfa-drizzle", "CFA Drizzle (original sensor samples)", "CFA Drizzle（原始传感器采样）", "stack", o.cfaDrizzle);
+    f.numeric("stack.drizzle-scale", "Drizzle output scale", "Drizzle 输出倍率", "stack", o.drizzleScale, 1, 3);
+    f.numeric("stack.drizzle-pixfrac", "Drizzle drop fraction", "Drizzle 像素足迹比例", "stack", o.drizzlePixfrac, .1, 1);
     f.choice<StackMethod>("stack.method", "Stack method", "合成方法", "stack", o.stack.method,
         {{"average", StackMethod::Average}, {"weighted", StackMethod::WeightedAverage}, {"median", StackMethod::Median},
          {"sigma", StackMethod::SigmaClip}, {"winsorized", StackMethod::WinsorizedSigmaClip}, {"percentile", StackMethod::PercentileClip},
@@ -306,6 +309,11 @@ DeepSkyRecipe DeepSkyRecipe::parse(const std::string& text, const std::filesyste
         throw std::invalid_argument("Bias-included flat requires bias frames");
     if (o.sensorPattern && (!o.darks.empty() || !o.biases.empty() || !o.flats.empty() || !o.stack.debayerFits))
         throw std::invalid_argument("Sensor pattern correction requires uncalibrated CFA FITS with debayer enabled");
+    if (o.cfaDrizzle && (o.stack.method != StackMethod::Average || o.stack.normalizeBackground ||
+        o.stack.collectRejectionMaps || o.stack.sigma.medianMad || !o.stack.debayerFits ||
+        o.sensorPattern || o.stack.alignDistortion || o.noiseModel != DeepSkyNoiseModel::Scene ||
+        !o.darks.empty() || !o.biases.empty() || !o.flats.empty()))
+        throw std::invalid_argument("CFA Drizzle requires average, debayer for analysis, no normalization/rejection/distortion/sensor model; calibrate CFA lights first in Calibration Management");
     o.stack.winsorizedSigma = {o.stack.sigma.sigmaLow, o.stack.sigma.sigmaHigh};
     if (o.denoiseH < 0 && o.denoiseH != -1) throw std::invalid_argument("Denoise h must be -1, zero, or positive");
     if (o.stack.sigma.medianMad && o.stack.method != StackMethod::SigmaClip) throw std::invalid_argument("MAD rejection requires sigma method");

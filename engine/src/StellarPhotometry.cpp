@@ -194,6 +194,7 @@ StellarApertureResult measureStellarAperture(const ImageBuffer& im, double px, d
             const auto& s = samples[i];
             const double value = s.rgb[c] - beta[0] - beta[1] * s.x - beta[2] * s.y;
             r.flux[c] += s.weight * value;
+            r.sourceShotCoefficient[c] += s.weight * s.weight * std::max(0., value);
             if (s.sky) {
                 residuals.push_back(value);
                 skyVariance += std::pow(weights[i] * (influence[0] + influence[1] * s.x + influence[2] * s.y), 2);

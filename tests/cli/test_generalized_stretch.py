@@ -47,6 +47,32 @@ class GHS(unittest.TestCase):
             display=run('ghs-stretch','--input',p/'full/developed.tiff','--output-dir',p/'display','--log-stretch',0)
             self.assertEqual(display['sourceDomain'],'display-srgb');self.assertEqual((display['black'],display['white']),(0,1))
 
+    def test_inverse_chain_prefix_and_legacy_recipe(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d);source=p/'source.fits';values=[i/47 for i in range(48)];write(source,values)
+            first=run('ghs-stretch','--input',source,'--output-dir',p/'first','--log-stretch',2,'--mode','independent')
+            second=run('ghs-stretch','--input',source,'--chain-recipe',p/'first/recipe.txt','--output-dir',p/'second','--log-stretch',2,'--mode','independent','--inverse','on')
+            self.assertEqual(second['stepCount'],2);self.assertTrue(second['inverse'])
+            for actual,expected in zip(read(p/'second/display.fits')[1][0],values):self.assertAlmostEqual(actual,expected,delta=4e-7)
+            run('ghs-replay','--recipe',p/'second/recipe.txt','--output-dir',p/'replay')
+            self.assertEqual((p/'second/display.fits').read_bytes(),(p/'replay/display.fits').read_bytes())
+            replaced=run('ghs-stretch','--input',source,'--chain-recipe',p/'second/recipe.txt','--chain-prefix-only','on','--output-dir',p/'replaced','--log-stretch',0)
+            self.assertEqual(replaced['stepCount'],2)
+            self.assertEqual(read(p/'first/display.fits')[1],read(p/'replaced/display.fits')[1])
+            # A monochrome HSV saturation step must leave normalized values unchanged.
+            saturation=run('ghs-stretch','--input',source,'--output-dir',p/'sat','--mode','saturation')
+            self.assertTrue(saturation['saturation']);self.assertFalse(saturation['luminance'])
+            for actual,expected in zip(read(p/'sat/display.fits')[1][0],values):self.assertAlmostEqual(actual,expected,delta=4e-8)
+            # Old one-step recipes remain readable/replayable, with no inferred new flags.
+            lines=(p/'first/recipe.txt').read_text().splitlines()
+            legacy=['PhotonStack-GHS-1',lines[1],' '.join(lines[3].split()[:-1])+' 0',*lines[4:]]
+            (p/'first/legacy.txt').write_text('\n'.join(legacy)+'\n')
+            run('ghs-replay','--recipe',p/'first/legacy.txt','--output-dir',p/'legacy')
+            self.assertEqual(read(p/'first/display.fits')[1],read(p/'legacy/display.fits')[1])
+            write(p/'other.fits',[1+i/47 for i in range(48)])
+            run('ghs-stretch','--input',p/'other.fits','--chain-recipe',p/'first/recipe.txt','--output-dir',p/'wrong',ok=False)
+            self.assertFalse((p/'wrong').exists())
+
     def test_guards_and_tampering(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d);source=p/'source.fits';write(source,[i/47 for i in range(48)])

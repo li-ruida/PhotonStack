@@ -68,7 +68,7 @@ struct WorkflowLibrarySheet: View {
                     selection = workflows.first?.id
                 }
             }
-        } message: { Text(t("只删除配方，不删除照片或已生成的结果。", "Only the recipe is deleted, never photos or results.")) }
+        } message: { Text(t("只删除工作流，保留照片和处理结果。", "Only the workflow is deleted. Photos and results are kept.")) }
     }
 
     private var captureSection: some View {
@@ -93,7 +93,7 @@ struct WorkflowLibrarySheet: View {
                                 self.draft = nil
                             }
                         }.buttonStyle(.borderedProminent).disabled(locked)
-                        Text(t("保存的是上方已应用步骤，不是尚未执行的滑块值。", "Saves applied steps, not unexecuted slider changes.")).font(.caption).foregroundStyle(.secondary)
+                        Text(t("保存已应用的处理步骤，未应用的调整不会保存。", "Saves applied steps, not unexecuted slider changes.")).font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }.padding(6)
@@ -108,12 +108,12 @@ struct WorkflowLibrarySheet: View {
             HStack {
                 Text(t("2 · 选择工作流", "2 · Choose a workflow")).font(.headline)
                 Spacer()
-                Button(t("导入配方", "Import recipe")) { importWorkflow() }.disabled(locked)
-                Button(t("导出配方", "Export recipe")) { exportWorkflow() }.disabled(locked || selected == nil)
+                Button(t("导入工作流…", "Import workflow…")) { importWorkflow() }.disabled(locked)
+                Button(t("导出工作流…", "Export workflow…")) { exportWorkflow() }.disabled(locked || selected == nil)
                 Button(t("删除", "Delete"), role: .destructive) { confirmDelete = true }.disabled(locked || selected == nil)
             }
             if workflows.isEmpty {
-                Text(t("还没有工作流。先处理一组照片后保存，或导入已有配方。", "No workflows yet. Process a set and save its steps, or import a recipe.")).foregroundStyle(.secondary)
+                Text(t("暂无工作流。可保存当前处理步骤，或导入已有工作流。", "No workflows yet. Process a set and save its steps, or import a recipe.")).foregroundStyle(.secondary)
             } else {
                 Picker(t("已保存", "Saved"), selection: $selection) {
                     ForEach(workflows) { workflow in Text(workflow.name).tag(Optional(workflow.id)) }

@@ -2,6 +2,8 @@ import SwiftUI
 
 struct WorkspaceToolbar: ToolbarContent {
     @ObservedObject var model: PhotonStackWorkspaceModel
+    @State private var showSERImport=false
+    @State private var showXisfExchange=false
     let onNewProject: () -> Void
     let onImportFiles: () -> Void
     let onImportFolder: () -> Void
@@ -31,12 +33,18 @@ struct WorkspaceToolbar: ToolbarContent {
                     Label(model.localized(.importFolderAction), systemImage: "folder.badge.plus")
                 }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
+                Button(model.language == .simplifiedChinese ? "导入 SER 视频…":"Import SER video…") {showSERImport=true}
+                    .accessibilityIdentifier("workspace.import-ser")
+                Button(model.language == .simplifiedChinese ? "XISF 文件交换…":"XISF exchange…") {showXisfExchange=true}
+                    .accessibilityIdentifier("workspace.xisf")
             } label: {
                 Label(model.localized(.importAction), systemImage: "plus")
                     .labelStyle(.titleAndIcon)
             }
             .help(model.localized(.importAction))
             .accessibilityIdentifier("workspace.import")
+            .sheet(isPresented:$showSERImport) {SerImportView(model:model)}
+            .sheet(isPresented:$showXisfExchange) {XisfExchangeView(model:model)}
             .disabled(model.hasActiveProcessing)
 
             Button(action: onOpenWorkflows) {

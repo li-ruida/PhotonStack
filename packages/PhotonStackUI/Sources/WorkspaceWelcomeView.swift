@@ -47,7 +47,7 @@ struct WorkspaceWelcomeView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Label(chinese ? "堆栈一组照片" : "Stack a sequence", systemImage: "square.3.layers.3d")
                     .font(.title3.weight(.semibold))
-                Text(chinese ? "导入同一目标的至少 3 张亮场，分析星点与噪声，再筛片、对齐与合成。" : "Import at least 3 lights of one target. Review stars and noise, then align and combine.")
+                Text(chinese ? "导入同一天体的至少 3 张照片，筛选后对齐、堆栈。" : "Import at least 3 lights of one target. Review stars and noise, then align and combine.")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button(action: onImport) { Label(chinese ? "导入照片…" : "Import photos…", systemImage: "plus") }
@@ -64,7 +64,7 @@ struct WorkspaceWelcomeView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Label(chinese ? "调整已有成片" : "Finish an image", systemImage: "slider.horizontal.3")
                     .font(.title3.weight(.semibold))
-                Text(chinese ? "打开已堆好的 FITS / TIFF 或单张照片，直接调整亮度、色彩与细节。" : "Open a FITS / TIFF master or a single photo to adjust brightness, color and detail.")
+                Text(chinese ? "打开 FITS、TIFF 或单张照片，调整亮度、色彩和细节。" : "Open a FITS / TIFF master or a single photo to adjust brightness, color and detail.")
                     .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Button(chinese ? "选择图像…" : "Choose image…", action: onEditMaster)
                     .controlSize(.large).accessibilityIdentifier("journey.import-master")

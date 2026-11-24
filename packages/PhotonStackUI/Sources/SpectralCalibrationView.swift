@@ -38,8 +38,8 @@ struct SpectralCalibrationView: View {
                 Text(text("光谱星色校准 · SPCC", "Spectral color calibration · SPCC")).font(.headline)
                 Spacer()
                 Button(text("选择线性母片…", "Choose linear master…")) { chooseSource() }.disabled(locked).accessibilityIdentifier("spcc.source")
-                Button(text("打开审查结果…", "Open review…")) { open() }.disabled(locked).accessibilityIdentifier("spcc.reopen")
-                Button(text("关闭", "Close")) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(text("打开校准结果…", "Open calibration result…")) { open() }.disabled(locked).accessibilityIdentifier("spcc.reopen")
+                ToolSheetCloseButton(chinese: zh, busy: locked) { dismiss() }
             }
             HStack(alignment: .top, spacing: 14) {
                 preview
@@ -55,17 +55,18 @@ struct SpectralCalibrationView: View {
                     }
                 }.frame(maxWidth: .infinity, alignment: .leading) }.frame(width: 360)
             }
-            if let error = session.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(3).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-            HStack {
-                if locked { ProgressView().controlSize(.small); Button(text("取消", "Cancel")) { session.cancel(); operation?.cancel() } }
-                if !session.isCurrent, session.report != nil { Text(text("设置已变更，请重新审查。", "Settings changed; review again.")).font(.caption).foregroundStyle(.orange) }
+            if let error = session.error { ProcessingErrorNotice(message:error,chinese:zh) }
+            ToolActionBar {
+                if locked { ToolTaskStatus(title: text("正在处理…", "Processing…"), chinese: zh) { session.cancel(); operation?.cancel() } }
+                if !session.isCurrent, session.report != nil { Text(text("设置已更改，请重新校准。", "Settings changed; review again.")).font(.caption).foregroundStyle(.orange) }
                 if let saved { Button(text("查看保存位置", "Show saved review")) { NSWorkspace.shared.activateFileViewerSelecting([saved]) } }
                 Spacer()
-                Button(text("保存审查与配方…", "Save review & recipe…")) { save(use: false) }.disabled(locked || !session.isCurrent).accessibilityIdentifier("spcc.save")
-                Button(text("另存并使用校准母片…", "Save & use calibrated master…")) { save(use: true) }
-                    .buttonStyle(.borderedProminent).disabled(locked || !session.isCurrent || session.report?.fit.valid != true).accessibilityIdentifier("spcc.use")
+                Button(text("保存检查结果…", "Save review…")) { save(use: false) }.disabled(locked || !session.isCurrent).accessibilityIdentifier("spcc.save")
+                Button(text("保存并使用…", "Save & use result…")) { save(use: true) }
+                    .toolPrimaryAction().disabled(locked || !session.isCurrent || session.report?.fit.valid != true).accessibilityIdentifier("spcc.use")
             }
         }.padding(18).frame(width: 1140, height: 800)
+            .interactiveDismissDisabled(locked)
             .sheet(isPresented: $libraryPresented) {
                 SpectralProfileLibraryView(chinese: zh, library: SpectralProfileLibrary()) { session.chooseProfile($0.url, name: $0.inspection.profile.name) }
             }
@@ -90,8 +91,8 @@ struct SpectralCalibrationView: View {
                     Text(text("相对白参考的对数颜色残差。留出星不参与增益拟合。", "Log color residuals relative to the white reference. Held-out stars do not fit the gains.")).font(.caption2).foregroundStyle(.secondary)
                 }
             } else {
-                ContentUnavailableView(text("审查恒星颜色与仪器响应", "Review star colors and system response"), systemImage: "star.leadinghalf.filled",
-                    description: Text(text("选择离线响应配置和星表后，点击“校准并审查”。", "Choose an offline response profile and catalog, then calibrate and review."))).frame(maxHeight: .infinity)
+                ContentUnavailableView(text("检查恒星颜色与设备响应", "Review star colors and system response"), systemImage: "star.leadinghalf.filled",
+                    description: Text(text("选择离线响应配置和星表后，点击“校准并检查”。", "Choose an offline response profile and catalog, then calibrate and review."))).frame(maxHeight: .infinity)
             }
             Text(session.source.lastPathComponent).font(.caption).lineLimit(1).textSelection(.enabled)
             Text(text("预览使用共同显示尺度；保存的科学母片保留线性值、负值和覆盖，不做拉伸。", "Previews share a display scale. Scientific masters preserve linear values, negative pixels and coverage without stretching.")).font(.caption2).foregroundStyle(.secondary)
@@ -113,8 +114,8 @@ struct SpectralCalibrationView: View {
                 }.padding(.top, 5)
             }.font(.caption)
             HStack {
-                Button(text("校准并审查", "Calibrate & review")) { session.begin() }.buttonStyle(.borderedProminent).disabled(!session.canReview).accessibilityIdentifier("spcc.run")
-                if !session.settings.excluded.isEmpty { Button(text("清除排除", "Clear exclusions")) { session.settings.excluded = [] } }
+                Button(text("校准并检查", "Calibrate & review")) { session.begin() }.buttonStyle(.borderedProminent).disabled(!session.canReview).accessibilityIdentifier("spcc.run")
+                if !session.settings.excluded.isEmpty { Button(text("取消全部排除", "Clear exclusions")) { session.settings.excluded = [] } }
             }
         }
     }
@@ -123,7 +124,7 @@ struct SpectralCalibrationView: View {
     }
     private func summary(_ r: SpectralCalibrationReport) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(r.fit.valid ? text("通过当前质量门限", "Passed current quality limits") : text("未通过校准验收", "Calibration did not pass")).font(.subheadline.bold()).foregroundStyle(r.fit.valid ? Color.primary : .orange)
+            Text(r.fit.valid ? text("校准检查通过", "Passed current quality limits") : text("校准检查未通过", "Calibration did not pass")).font(.subheadline.bold()).foregroundStyle(r.fit.valid ? Color.primary : .orange)
             Text(text("拟合 \(r.fit.training) · 留出 \(r.fit.validation) · 覆盖 \(r.fit.regions)/16 区", "Fit \(r.fit.training) · Held out \(r.fit.validation) · Regions \(r.fit.regions)/16")).font(.caption)
             if r.fit.valid {
                 Text("RGB " + triplet(r.fit.gains)).font(.caption).monospacedDigit()
@@ -195,7 +196,7 @@ struct SpectralCalibrationView: View {
     }
     private func folder() -> URL? { let p = NSOpenPanel(); p.canChooseFiles = false; p.canChooseDirectories = true; p.canCreateDirectories = true; return p.runModal() == .OK ? p.url : nil }
     private func open() {
-        guard let folder = folder() else { return }; operation = Task { defer { operation = nil }; do { try await session.open(folder); session.error = nil; selected = nil; saved = nil } catch { session.error = error.localizedDescription } }
+        guard let folder = folder() else { return }; operation = Task { defer { operation = nil }; do { try await session.open(folder); session.error = nil; selected = nil; saved = nil } catch is CancellationError {} catch { session.error = error.localizedDescription } }
     }
     private func save(use: Bool) {
         guard let parent = folder() else { return }; let destination = parent.appendingPathComponent("SPCC-"+UUID().uuidString.prefix(8))
@@ -204,7 +205,7 @@ struct SpectralCalibrationView: View {
             do {
                 let image = try await session.save(to: destination); saved = destination; session.error = nil
                 if use, let image { model.showDerivedImage(image); dismiss() }
-            } catch { session.error = error.localizedDescription }
+            } catch is CancellationError {} catch { session.error = error.localizedDescription }
         }
     }
 }

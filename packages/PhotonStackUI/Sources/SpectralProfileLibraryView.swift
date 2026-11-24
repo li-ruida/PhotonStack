@@ -57,7 +57,7 @@ struct SpectralProfileLibraryView: View {
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading) }
+            if let error { ProcessingErrorNotice(message:error,chinese:chinese) }
             HStack {
                 if operation != nil { ProgressView().controlSize(.small) }
                 if let e = selected {

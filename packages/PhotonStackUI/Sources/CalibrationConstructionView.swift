@@ -77,7 +77,7 @@ struct CalibrationConstructionView: View {
             Text(entry.label).font(.title3)
             ScrollView {
                 if let report { CalibrationMasterReportView(report: report, chinese: chinese).padding(.trailing, 8) }
-                if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+                if let error { ProcessingErrorNotice(message:error,chinese:chinese) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             Button(t("重新核对原始输入", "Verify original inputs")) { verifySources = true; inspectionID = UUID() }
                 .disabled(busy).accessibilityIdentifier("calibration.verify-originals")

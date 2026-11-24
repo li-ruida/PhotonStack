@@ -1,6 +1,7 @@
 import Foundation
 
 struct CalibrationJobReport: Codable, Sendable {
+    struct BadPixels: Codable, Sendable { var path, sha: String }
     struct Master: Codable, Sendable { var role, path, sha, biasState: String }
     struct Frame: Codable, Sendable {
         var index, group: Int
@@ -14,7 +15,9 @@ struct CalibrationJobReport: Codable, Sendable {
     var sourcesVerified, productsVerified: Bool
     var masters: [String: Master]
     var frames: [Frame]
+    var badPixels: BadPixels? = nil
     var isValid: Bool {
+        if let map = badPixels, !Self.path(map.path) || !SpectralCalibrationReport.digest(map.sha) { return false }
         let roles = Set(CalibrationPlanReport.roles)
         let products: Set<String> = ["calibrated.fits", "valid.fits", "report.json"]
         guard schema == 1, command == "calibration-job", domain == "sensor-linear", dateGrouping == "UTC-calendar-date",
@@ -53,6 +56,7 @@ struct CalibrationJobReport: Codable, Sendable {
         return report
     }
     func matches(_ draft: CalibrationJobDraft) -> Bool {
+        guard badPixels?.path == draft.badPixels?.path, badPixels?.sha == draft.badPixels?.sha else { return false }
         guard total == draft.review.lights.count, Set(masters.keys) == Set(draft.usedMasters.map { "m\($0)" }) else { return false }
         for i in draft.usedMasters {
             let expected = draft.review.masters[i]

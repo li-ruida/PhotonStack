@@ -8790,6 +8790,7 @@ import Testing
     )
     let model = PhotonStackWorkspaceModel(
         project: PhotonStackProject(name: "Unsaved Original", assets: [asset]),
+        promptToSaveOnExit: true,
         processingService: RecordingProcessingService()
     )
 
@@ -9047,6 +9048,9 @@ import Testing
     project.addAssets(from: [input])
     let model = PhotonStackWorkspaceModel(project: project, processingService: service)
 
+    model.setRole(.dark, for: try #require(project.assets.first))
+    #expect(model.hasUnsavedChanges)
+    #expect(!model.promptToSaveOnExit)
     model.startAutoStretchPreview()
     try await waitForAutoStretchCall(from: service)
     #expect(model.isProcessing)
@@ -9076,6 +9080,7 @@ import Testing
     let model = PhotonStackWorkspaceModel(
         project: project,
         autosaveEnabled: false,
+        promptToSaveOnExit: true,
         processingService: service
     )
     model.setRole(.dark, for: asset)
@@ -11887,6 +11892,7 @@ import Testing
     }
     let model = PhotonStackWorkspaceModel(
         project: project,
+        promptToSaveOnExit: true,
         processingService: service,
         previewDirectory: previewDirectory
     )
@@ -12003,7 +12009,7 @@ import Testing
     var project = PhotonStackProject(name: "Interrupted Batch State")
     project.addAssets(from: [firstInput, secondInput])
     project.setBatchMaxConcurrentTasks(1)
-    let model = PhotonStackWorkspaceModel(project: project, processingService: service)
+    let model = PhotonStackWorkspaceModel(project: project, promptToSaveOnExit: true, processingService: service)
     model.enqueueAllAssets(.stretch)
 
     model.startBatchQueue()

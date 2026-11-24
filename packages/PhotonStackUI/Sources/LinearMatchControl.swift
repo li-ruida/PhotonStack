@@ -17,18 +17,18 @@ struct LinearMatchControl: View {
                 }.accessibilityIdentifier("intensity.target")
                 HStack {
                     Text(zh ? "采样分位" : "Quantiles")
-                    TextField("Low",value:$session.low,format:.number).accessibilityIdentifier("intensity.low")
+                    TextField(zh ? "下限" : "Low",value:$session.low,format:.number).accessibilityIdentifier("intensity.low")
                     Text("–")
-                    TextField("High",value:$session.high,format:.number).accessibilityIdentifier("intensity.high")
+                    TextField(zh ? "上限" : "High",value:$session.high,format:.number).accessibilityIdentifier("intensity.high")
                 }.textFieldStyle(.roundedBorder)
-                Text(zh ? "按共同像素拟合增益与背景偏移。母片需先配准；不同滤镜的星云结构可能不满足同一线性关系。此操作不作星表标色。"
+                Text(zh ? "匹配两张已对齐母片的亮度和背景。不同滤镜的星云结构可能无法完全匹配。"
                      : "Fit gain and offset from common pixels after registration. Different filters may show different structures; this is not catalog color calibration.")
                     .font(.caption2).foregroundStyle(.secondary)
-                Button(zh ? "匹配并载入这张母片…" : "Match & load target…") {
+                Button(zh ? "匹配并使用…" : "Match & load target…") {
                     guard let output=chooseOutput() else {return}
                     model.startChannelCompositionJob { service in try await session.match(composition,output:output,using:service) }
                 }.disabled(!session.canMatch(composition)).accessibilityIdentifier("intensity.match")
-                Button(zh ? "打开强度匹配结果…" : "Open intensity result…") {
+                Button(zh ? "打开匹配结果…" : "Open intensity result…") {
                     let panel=NativeFilePanels.makeImportFolderPanel(message:zh ? "选择含强度匹配 recipe.txt 的目录。" : "Choose an intensity matching result folder.")
                     guard panel.runModal() == .OK,let directory=panel.url else {return}
                     model.startChannelCompositionJob { service in try await session.open(directory,using:service) }
@@ -55,10 +55,10 @@ struct LinearMatchControl: View {
                                 .font(.caption2).monospacedDigit()
                         }
                     }
-                    Button(zh ? "载入这两张母片，重建 R / G / B 映射" : "Load this pair and reset R / G / B mapping") {
+                    Button(zh ? "载入母片并重设通道" : "Load this pair and reset R / G / B mapping") {
                         model.startChannelCompositionJob { service in try await session.restorePair(into:composition,using:service) }
                     }.accessibilityIdentifier("intensity.restore")
-                    Button(zh ? "按保存的参数重跑…" : "Replay saved coefficients…") {
+                    Button(zh ? "按原参数重跑…" : "Replay saved coefficients…") {
                         guard let output=chooseOutput() else {return}
                         model.startChannelCompositionJob { service in try await session.replay(output:output,using:service) }
                     }.accessibilityIdentifier("intensity.replay")

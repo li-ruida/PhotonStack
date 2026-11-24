@@ -15,7 +15,7 @@ struct DisplayGridControl: View {
         .popover(isPresented: $presented) {
             VStack(alignment: .leading, spacing: 12) {
                 Text(chinese ? "细纹抑制" : "Reduce fine grid patterns").font(.headline)
-                Text(chinese ? "用于已显影的 TIFF 或 PNG。会减轻细纹，也可能减弱最细的真实细节。可在处理历史中调节或撤销。" : "For developed TIFF or PNG images. Reduces grid patterns but may soften the finest real detail. Adjust or undo it in processing history.")
+                Text(chinese ? "减轻 TIFF、PNG 中的细纹。可能损失细节，可在历史中撤销。" : "For developed TIFF or PNG images. Reduces grid patterns but may soften the finest real detail. Adjust or undo it in processing history.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Text(chinese ? "强度" : "Amount")

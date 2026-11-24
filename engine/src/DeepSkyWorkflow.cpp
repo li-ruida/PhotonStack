@@ -7,6 +7,7 @@
 #include "photonstack/SensorPatternBuilder.hpp"
 #include "photonstack/DeepSkyRecipe.hpp"
 #include "DeepSkyNoiseReference.hpp"
+#include "DeepSkyDrizzle.hpp"
 #include "DeepSkyAnalysisScheduling.hpp"
 #include "DemosaicStarGuard.hpp"
 #include <fstream>
@@ -286,6 +287,14 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         if (progress) progress(stage, lastFraction, step, total ? total : inputs.size());
     };
     try {
+        ensure(std::isfinite(o.drizzleScale) && o.drizzleScale>=1 && o.drizzleScale<=3 &&
+               std::isfinite(o.drizzlePixfrac) && o.drizzlePixfrac>=.1 && o.drizzlePixfrac<=1,
+               "ArgumentInvalid", "Invalid CFA Drizzle geometry");
+        ensure(!o.cfaDrizzle || (o.stack.method==StackMethod::Average && !o.stack.normalizeBackground &&
+               !o.stack.collectRejectionMaps && !o.stack.sigma.medianMad && o.stack.debayerFits &&
+               !o.stack.alignDistortion && !o.sensorPattern && o.noiseModel==DeepSkyNoiseModel::Scene &&
+               o.darks.empty() && o.biases.empty() && o.flats.empty()),
+               "CfaDrizzleUnsupported", "CFA Drizzle requires average without rejection, normalization or distortion; calibrate sensor lights first");
         const bool independentNoise=o.noiseModel==DeepSkyNoiseModel::IndependentLuminance && !o.analysisOnly;
         ensure(o.noiseModel==DeepSkyNoiseModel::Scene || o.noiseModel==DeepSkyNoiseModel::IndependentLuminance,
                "ArgumentInvalid", "Invalid luminance noise model");
@@ -452,7 +461,8 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                 if (i == 0) sensorIdentity = sensor;
                 ensure(sensor.sameAcquisition(sensorIdentity), "SensorPatternConflict", "All sensor acquisition settings must match");
             }
-            if(o.sensorPattern || independentNoise) {
+            if(o.cfaDrizzle) detail::validateDrizzleSource(f.input, inputs.front());
+            if(o.sensorPattern || independentNoise || o.cfaDrizzle) {
                 f.sha256=fileSHA256(f.input);
                 ensure(sourceDigests.insert(f.sha256).second,"DuplicateInput","Identical source bytes cannot be independent samples");
                 checkLight(i);
@@ -521,6 +531,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         const auto suffix = directCache ? ".f32" : ".fits";
         std::vector<detail::RegisteredFrame> registered(inputs.size());
         const auto saveAligned = [&](std::size_t index, const ImageBuffer& image) {
+            if (o.cfaDrizzle) return; // Only the measured transform is used; raw CFA is accumulated later.
             aligned[index] = work.path / (std::to_string(index) + suffix);
             if (directCache) {
                 const auto r = detail::writeRegisteredFrame(aligned[index], image, o.stack.normalizeBackground, registered[index]);
@@ -743,8 +754,8 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         stackOptions.registration.refineSimilarityCentroids = false;
         stackOptions.alignmentReference.clear(); stackOptions.frameWeights.clear();
         for (std::size_t i = 0; i < inputs.size(); ++i) if (result.frames[i].assessment.selected) {
-            ensure(!aligned[i].empty(), "SelectionInvalid", "A selected frame has no valid registration output");
-            selected.push_back(aligned[i]); selectedIndices.push_back(i);
+            ensure(o.cfaDrizzle || !aligned[i].empty(), "SelectionInvalid", "A selected frame has no valid registration output");
+            selected.push_back(o.cfaDrizzle ? result.frames[i].input : aligned[i]); selectedIndices.push_back(i);
             if (!o.stack.frameWeights.empty()) {
                 ensure(o.stack.frameWeights.size() == inputs.size(), "ArgumentInvalid", "One weight is required per input");
                 stackOptions.frameWeights.push_back(o.stack.frameWeights[i]);
@@ -784,11 +795,17 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             for (const auto i : selectedIndices) metadata.push_back(registered[i]);
             stackOptions.inputConsumed = {};
         }
-        auto stacked = directCache ? detail::combineRegisteredFrames(selected, metadata, stackOptions)
-                                   : Stacker().stack(selected, stackOptions);
-        if (directCache && stacked.ok) for (auto i : selectedIndices) releaseAligned(i);
+        StackResult stacked;
+        if (o.cfaDrizzle) {
+            stacked.image=detail::combineCfaDrizzle(selectedIndices,o,directory,result,progress);
+            stacked.ok=true;
+        } else {
+            stacked=directCache ? detail::combineRegisteredFrames(selected, metadata, stackOptions)
+                               : Stacker().stack(selected, stackOptions);
+            if (directCache && stacked.ok) for (auto i:selectedIndices) releaseAligned(i);
+        }
         ensure(stacked.ok, stacked.errorCode, stacked.message);
-        result.master = directory / "stack-linear.fits"; write(stacked.image, result.master);
+        if (!o.cfaDrizzle) { result.master = directory / "stack-linear.fits"; write(stacked.image, result.master); }
         ImageBuffer noise;
         if(independentNoise) {
             std::ostringstream provenance;provenance<<std::setprecision(17);
@@ -823,7 +840,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         finishImage(std::move(masterImage), directory, o, result,
             [&](const std::string& stage, double fraction) { emit(stage, fraction); },std::move(noise));
         for (std::size_t i = 0; i < inputs.size(); ++i) checkLight(i);
-        if (o.sensorPattern || independentNoise) for (const auto& f : result.frames)
+        if (o.sensorPattern || independentNoise || o.cfaDrizzle) for (const auto& f : result.frames)
             ensure(fileSHA256(f.input)==f.sha256, "InputChanged", "Source bytes changed during independent-noise or sensor-corrected processing");
         if(independentNoise) for(const auto& f:calibrationIdentities)
             ensure(fileSHA256(f.input)==f.sha256,"InputChanged","Calibration source bytes changed during processing");

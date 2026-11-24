@@ -33,7 +33,7 @@ struct NarrowbandControl: View {
                     }
                 }.disabled(hydrogen == nil || oxygen == nil)
             } else {
-                Text(zh ? "选中一张 Hα/OⅢ 双窄带拜耳 FITS。每个完整的 2×2 像素格生成一个 Hα 和一个 OⅢ 样本。"
+                Text(zh ? "选中一张 Hα/OⅢ 双窄带拜耳 FITS。每个完整的 2×2 像素格生成一个 Hα 和一个 OⅢ 样本，分别保存为两张 FITS。"
                      : "Select an Hα/OⅢ dual-band Bayer FITS. Each complete 2×2 cell yields one sample per line.")
                     .font(.caption)
                 Picker(zh ? "通带采样" : "Line sampling", selection: $session.sampling) {
@@ -46,14 +46,14 @@ struct NarrowbandControl: View {
                         : "Preserve the historical cell average. Its OⅢ sampling center differs from Hα."))
                     .font(.caption2).foregroundStyle(.secondary)
                 NarrowbandCalibrationControl(session: session, chinese: zh)
-                Button(zh ? "提取并保存两张 FITS…" : "Extract and save both FITS…") {
+                Button(zh ? "提取并保存…" : "Extract and save both FITS…") {
                     guard let asset = model.selectedAsset, let dest = chooseOutput(asset.originalURL.deletingPathExtension().lastPathComponent) else { return }
                     model.startNarrowbandJob { service in
                         try await session.run(["narrowband-extract", "--input", asset.originalURL.path, "--output-dir", dest.path] + session.extractionArguments,
                                               output: dest, using: service)
                     }
                 }.disabled(model.selectedAsset?.kind != .fits || !session.canCalibrate).accessibilityIdentifier("narrowband.extract")
-                Button(zh ? "选择多张原片并堆栈…" : "Stack dual-band exposures…") {
+                Button(zh ? "选择原片并堆栈…" : "Stack dual-band exposures…") {
                     let panel = NativeFilePanels.makeImportFilesPanel(message: zh ? "选择至少 3 张同一目标的双窄带亮场。" : "Select at least 3 dual-band exposures of the same target.")
                     panel.title = zh ? "双窄带亮场" : "Dual-band exposures"
                     panel.prompt = zh ? "选择亮场" : "Choose exposures"
@@ -63,7 +63,7 @@ struct NarrowbandControl: View {
                     guard frames.count >= 3 else {
                         let alert = NSAlert()
                         alert.messageText = zh ? "至少选择 3 张亮场" : "Select at least 3 exposures"
-                        alert.informativeText = zh ? "当前选择了 \(frames.count) 张。单张原片可使用“提取并保存两张 FITS”。" : "You selected \(frames.count). Use line extraction for a single exposure."
+                        alert.informativeText = zh ? "当前选择了 \(frames.count) 张。单张原片可使用“提取并保存”。" : "You selected \(frames.count). Use line extraction for a single exposure."
                         alert.runModal()
                         return
                     }
@@ -81,7 +81,7 @@ struct NarrowbandControl: View {
                 model.startNarrowbandJob { service in try await session.open(directory, using: service) }
             }.accessibilityIdentifier("narrowband.open")
             if let report = session.report {
-                Text(zh ? "已保存配方 · \(report.frames) 个输入" : "Recipe saved · \(report.frames) inputs")
+                Text(zh ? "已保存参数 · \(report.frames) 个输入" : "Recipe saved · \(report.frames) inputs")
                     .font(.caption).foregroundStyle(.secondary)
                 if let mode = report.extractionSampling {
                     Text((zh ? "结果采样：" : "Result sampling: ") + mode.title(chinese: zh))
@@ -110,15 +110,15 @@ struct NarrowbandControl: View {
                         }
                     }.accessibilityIdentifier("narrowband.remix")
                 }
-                Button(zh ? "按配方重新运行…" : "Run saved recipe…") {
+                Button(zh ? "按原参数重跑…" : "Run saved recipe…") {
                     guard let dest = chooseOutput("narrowband-replay") else { return }
                     model.startNarrowbandJob { service in try await session.replay(output: dest, using: service) }
                 }.accessibilityIdentifier("narrowband.replay")
                 Text(report.operation == "compose"
                      ? (zh ? "合色阶段不重复应用传感器校准。" : "Sensor calibration is not repeated during composition.")
                      : report.calibration == nil
-                        ? (zh ? "此配方未应用传感器校准。" : "This recipe applies no sensor calibration.")
-                        : (zh ? "此配方已在通带提取前应用传感器校准。" : "Sensor calibration was applied before line extraction."))
+                        ? (zh ? "此结果未应用传感器校准。" : "This recipe applies no sensor calibration.")
+                        : (zh ? "此结果已在通带提取前应用传感器校准。" : "Sensor calibration was applied before line extraction."))
                     .font(.caption).foregroundStyle(.secondary)
                 Text(zh ? "输入与结果均校验摘要。采用权重是 Sigma 剔除后有效覆盖权重之和；几何覆盖率为剔除前的帧覆盖比例。双窄带堆栈只使用两条通带都有效的像素格。"
                      : "Inputs and results are hash-checked. Accepted weights sum post-Sigma coverage; geometric coverage is measured before clipping. Stacking uses cells valid in both bands.")

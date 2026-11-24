@@ -42,6 +42,10 @@ struct PsfMeasurementReport: Decodable {
     @Published var excluded:Set<Int> = []
     @Published private(set) var report:PsfMeasurementReport?
     @Published var restoration:PsfRestorationReport?
+    @Published var restoreSpatialMode="global"
+    @Published var restoreNoiseModel="constant"
+    @Published var restoreGain=1.0
+    @Published var restoreReadNoise=0.0
     @Published var restoreIterations=8
     @Published var restoreAmount=0.7
     @Published var restorePedestal=0.0

@@ -7,7 +7,7 @@ struct GeneralizedStretchControl: View {
     @State private var presented = false
     private var zh: Bool { model.language == .simplifiedChinese }
     var body: some View {
-        Button(zh ? "GHS 拉伸与预览…" : "GHS stretch & preview…") { presented = true }
+        Button(zh ? "GHS 拉伸…" : "GHS stretch & preview…") { presented = true }
             .disabled(model.currentInputURL == nil || model.hasActiveProcessing)
             .accessibilityIdentifier("ghs.open")
             .sheet(isPresented: $presented) {
@@ -20,6 +20,8 @@ struct GeneralizedStretchView: View {
     @StateObject private var session: GeneralizedStretchSession
     @Environment(\.dismiss) private var dismiss
     @State private var saving = false
+    @State private var openingTask: Task<Void, Never>?
+    private var locked: Bool { session.busy || saving || openingTask != nil }
     private var zh: Bool { model.language == .simplifiedChinese }
     init(model: PhotonStackWorkspaceModel, source: URL) {
         self.model = model; _session = StateObject(wrappedValue: GeneralizedStretchSession(source: source))
@@ -29,9 +31,9 @@ struct GeneralizedStretchView: View {
             HStack {
                 Text(zh ? "GHS 广义双曲拉伸" : "Generalized hyperbolic stretch").font(.headline)
                 Spacer()
-                Button(zh ? "选择图像…" : "Choose image…") { chooseImage() }.disabled(session.busy)
-                Button(zh ? "打开结果…" : "Open result…") { openResult() }.disabled(session.busy)
-                Button(zh ? "关闭" : "Close") { dismiss() }.disabled(saving)
+                Button(zh ? "选择图像…" : "Choose image…") { chooseImage() }.disabled(locked)
+                Button(zh ? "打开结果…" : "Open result…") { openResult() }.disabled(locked)
+                ToolSheetCloseButton(chinese: zh, busy: locked) { dismiss() }
             }
             HStack(alignment: .top, spacing: 16) {
                 VStack(spacing: 10) {
@@ -46,7 +48,7 @@ struct GeneralizedStretchView: View {
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                     if let r = session.report {
                         GeneralizedStretchPlot(report: r, zh: zh).frame(height: 130)
-                        Text(zh ? "全图亮度直方图（对数纵轴）：灰色为拉伸前，蓝色为拉伸后。白线为本次曲线。" : "Full-image luminance histogram (log counts): gray before, blue after; white line is the current curve.")
+                        Text(zh ? "灰色：拉伸前；蓝色：拉伸后；白线：当前曲线。" : "Full-image luminance histogram (log counts): gray before, blue after; white line is the current curve.")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
                 }
@@ -64,20 +66,33 @@ struct GeneralizedStretchView: View {
                         control(zh ? "亮部保护 HP" : "Highlight protection HP", \.highlightProtection, 0...1, "highlight")
                         Text(zh ? "保护区间使用平滑衔接的直线；需满足 LP ≤ SP ≤ HP。保护不等于保留原亮度。" : "Protection uses tangent linear segments. Require LP ≤ SP ≤ HP; protected regions still change brightness.")
                             .font(.caption2).foregroundStyle(.secondary)
-                        Picker(zh ? "颜色" : "Color", selection: $session.settings.luminance) {
-                            Text(zh ? "按亮度缩放" : "Luminance scaling").tag(true)
-                            Text(zh ? "RGB 独立" : "Independent RGB").tag(false)
+                        Picker(zh ? "颜色" : "Color", selection: $session.settings.mode) {
+                            Text(zh ? "按亮度缩放" : "Luminance scaling").tag("luminance")
+                            Text(zh ? "RGB 独立" : "Independent RGB").tag("independent")
+                            Text(zh ? "HSV 饱和度" : "HSV saturation").tag("saturation")
+                        }
+                        Toggle(zh ? "反向曲线" : "Inverse curve", isOn: $session.settings.inverse).accessibilityIdentifier("ghs.inverse")
+                        if session.settings.inverse {
+                            Text(zh ? "反向作用于本步曲线；无法恢复此前截断、量化或颜色越界混合丢失的信息，也不会把成片标记回科学线性数据。" : "Inverts this step's curve. Cannot recover clipping, quantization or gamut blending, and does not restore a scientific linear-data label.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Text(zh ? "第 \(session.prefixSteps + 1) 步（最多 32 步）" : "Step \(session.prefixSteps + 1) of up to 32").font(.caption)
+                        HStack {
+                            Button(zh ? "追加下一步" : "Append next step") { session.appendStep() }
+                                .disabled(!session.isCurrent || session.prefixSteps >= 31).accessibilityIdentifier("ghs.next-step")
+                            Button(zh ? "从原图重来" : "Restart from source") { session.choose(session.source); session.begin() }
+                                .disabled(session.prefixSteps == 0)
                         }
                         Toggle(zh ? "自动输入范围" : "Automatic input range", isOn: $session.settings.automaticRange)
                         HStack {
                             Text(zh ? "黑场" : "Black")
-                            TextField("Black", value: $session.settings.black, format: .number.precision(.fractionLength(0...6)))
+                            TextField(zh ? "黑场" : "Black", value: $session.settings.black, format: .number.precision(.fractionLength(0...6)))
                                 .accessibilityIdentifier("ghs.black")
                             Text(zh ? "白场" : "White")
-                            TextField("White", value: $session.settings.white, format: .number.precision(.fractionLength(0...6)))
+                            TextField(zh ? "白场" : "White", value: $session.settings.white, format: .number.precision(.fractionLength(0...6)))
                                 .accessibilityIdentifier("ghs.white")
                         }.textFieldStyle(.roundedBorder).disabled(session.settings.automaticRange)
-                        Text(zh ? "自动范围：线性图取有效最小/最大值；显示图取 0–1。预览后固定范围，可手动调整。" : "Auto: covered min/max for linear data; 0–1 for display images. Preview resolves and fixes the range.")
+                        Text(zh ? "自动设置黑白点，也可手动调整。" : "Auto: covered min/max for linear data; 0–1 for display images. Preview resolves and fixes the range.")
                             .font(.caption2).foregroundStyle(.secondary)
                         HStack {
                             Button(zh ? "重置曲线" : "Reset curve") {
@@ -85,10 +100,13 @@ struct GeneralizedStretchView: View {
                                 session.settings = .init(black: old.black, white: old.white, automaticRange: old.automaticRange)
                             }
                             Button(zh ? "更新预览" : "Update preview") { session.begin() }
-                                .buttonStyle(.borderedProminent).disabled(!session.settings.isValid)
+                                .buttonStyle(.bordered).disabled(!session.settings.isValid)
                                 .accessibilityIdentifier("ghs.preview")
                         }
-                        if !session.isCurrent {
+                        if !session.settings.isValid {
+                            Text(zh ? "请检查参数：暗部保护 ≤ 对称点 ≤ 高光保护，且黑点须小于白点。" : "Check settings: shadow protection ≤ symmetry ≤ highlight protection; black must be below white.")
+                                .foregroundStyle(.orange).font(.caption)
+                        } else if !session.isCurrent {
                             Text(zh ? "参数已更改，预览待更新。" : "Settings changed; update the preview.").foregroundStyle(.orange).font(.caption)
                         }
                         if let r = session.report {
@@ -96,21 +114,23 @@ struct GeneralizedStretchView: View {
                                  : "Clipped: black \(r.belowBlack), white \(r.aboveWhite)\nGamut blended: \(r.gamutBlendedPixels) / \(r.coveredPixels)")
                                 .font(.caption).monospacedDigit()
                         }
-                        Text(zh ? "保存全尺寸 16 位 TIFF、非线性浮点 FITS 和可重跑配方。保留原文件；后续科学处理仍应使用线性母片。" : "Saves full-size 16-bit TIFF, nonlinear float FITS and a replayable recipe. Keep the linear master for scientific processing.")
+                        Text(zh ? "保存 TIFF、拉伸后的 FITS 和处理参数。测光等操作请使用原始线性图。" : "Saves full-size 16-bit TIFF, nonlinear float FITS and a replayable recipe. Keep the linear master for scientific processing.")
                             .font(.caption).foregroundStyle(.secondary)
-                    }.disabled(session.busy || saving)
+                    }.disabled(locked)
                 }.frame(width: 310)
             }
-            if let error = session.error { Text(error).foregroundStyle(.red).font(.caption).textSelection(.enabled).lineLimit(4) }
-            HStack {
-                if session.busy { ProgressView().controlSize(.small); Text(zh ? "正在处理全尺寸图像…" : "Processing full-resolution image…").font(.caption) }
-                if session.busy && !saving { Button(zh ? "取消" : "Cancel") { session.cancel() } }
+            if let error = session.error { ProcessingErrorNotice(message:error,chinese:zh) }
+            ToolActionBar {
+                if locked {
+                    ToolTaskStatus(title: saving ? (zh ? "正在保存…" : "Saving…") : (zh ? "正在处理…" : "Processing…"), chinese: zh,
+                                   cancel: saving ? nil : { session.cancel(); openingTask?.cancel() })
+                }
                 Spacer()
-                Button(zh ? "另存并使用成片…" : "Save & use result…") { save() }
-                    .disabled(!session.isCurrent || session.busy || saving).accessibilityIdentifier("ghs.save")
+                Button(zh ? "保存并使用…" : "Save & use result…") { save() }
+                    .disabled(!session.isCurrent || locked).toolPrimaryAction().accessibilityIdentifier("ghs.save")
             }
         }.padding(18).frame(minWidth: 940, idealWidth: 1100, minHeight: 700, idealHeight: 780)
-            .interactiveDismissDisabled(saving).task { session.begin() }.onDisappear { session.close() }
+            .interactiveDismissDisabled(locked).task { session.begin() }.onDisappear { openingTask?.cancel(); session.close() }
     }
     private func control(_ title: String, _ key: WritableKeyPath<GeneralizedStretchSettings, Double>, _ range: ClosedRange<Double>, _ id: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -136,7 +156,10 @@ struct GeneralizedStretchView: View {
     }
     private func openResult() {
         guard let folder = folder() else { return }
-        Task { do { try await session.open(folder); session.error = nil } catch { session.error = error.localizedDescription } }
+        openingTask = Task {
+            defer { openingTask = nil }
+            do { try await session.open(folder); session.error = nil } catch is CancellationError {} catch { session.error = error.localizedDescription }
+        }
     }
     private func save() {
         guard let folder = folder() else { return }; saving = true

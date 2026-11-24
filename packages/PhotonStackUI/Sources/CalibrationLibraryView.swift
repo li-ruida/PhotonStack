@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct CalibrationLibraryView: View {
     @StateObject private var session: CalibrationLibrarySession
@@ -11,6 +12,10 @@ struct CalibrationLibraryView: View {
     @State private var building = false
     @State private var constructionEntry: CalibrationLibrary.Entry?
     @State private var calibrationJob: CalibrationJobLaunch?
+    @State private var reviewEntry: CalibrationLibrary.Entry?
+    @State private var declaring = false
+    @State private var batchLaunch: CalibrationBatchLaunch?
+    @State private var qualityEntry: CalibrationLibrary.Entry?
     init(library: CalibrationLibrary, lights: [URL], chinese: Bool, openProject: @escaping (URL) -> Void) {
         _session = StateObject(wrappedValue: CalibrationLibrarySession(library: library, lights: lights))
         self.chinese = chinese
@@ -23,10 +28,16 @@ struct CalibrationLibraryView: View {
                 Label(t("校准库", "Calibration library"), systemImage: "externaldrive").font(.headline)
                 Picker("", selection: $reviewing) {
                     Text(t("母片管理", "Masters")).tag(false)
-                    Text(t("匹配审查", "Match review")).tag(true)
+                    Text(t("检查匹配", "Match review")).tag(true)
                 }.pickerStyle(.segmented).frame(width: 260).accessibilityIdentifier("calibration.page")
                 Button(t("打开校准任务…", "Open calibration task…")) { openJob() }.disabled(session.busy)
                     .accessibilityIdentifier("calibration.open-job")
+                Button(t("打开草稿…", "Open draft…")) { openDraft() }.disabled(session.busy)
+                    .accessibilityIdentifier("calibration.open-draft")
+                Button(t("打开批处理…", "Open batch…")) {
+                    let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
+                    if panel.runModal() == .OK, let url = panel.url { batchLaunch = .init(directory: url) }
+                }.disabled(session.busy).accessibilityIdentifier("calibration.open-batch")
                 Spacer()
                 if session.busy {
                     ProgressView().controlSize(.small)
@@ -42,9 +53,9 @@ struct CalibrationLibraryView: View {
                 review.opacity(reviewing ? 1 : 0).allowsHitTesting(reviewing).disabled(!reviewing).accessibilityHidden(!reviewing)
             }
             if let error = session.error {
-                Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled).lineLimit(4)
+                ProcessingErrorNotice(message:error,chinese:chinese)
             }
-            Text(t("制作母片 → 匹配审查 → 分配并校准。任务可重开恢复，原片不会被修改。", "Build masters → review matches → assign and calibrate. Tasks can be reopened and resumed; sources stay unchanged."))
+            Text(t("制作母片 → 检查匹配 → 分配并校准。任务可重开恢复，原片不会被修改。", "Build masters → review matches → assign and calibrate. Tasks can be reopened and resumed; sources stay unchanged."))
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(18).frame(width: 1040, height: 760)
             .task { session.perform { try await session.reload() } }
@@ -67,6 +78,18 @@ struct CalibrationLibraryView: View {
             .sheet(item: $calibrationJob) { launch in
                 CalibrationJobView(library: session.library, launch: launch, chinese: chinese, openProject: openProject)
             }
+            .sheet(item: $reviewEntry, onDismiss: { session.perform { try await session.reload() } }) { entry in
+                CalibrationMasterReviewView(library: session.library, entry: entry, chinese: chinese)
+            }
+            .sheet(isPresented: $declaring) {
+                CalibrationDeclarationView(library: session.library, chinese: chinese)
+            }
+            .sheet(item: $batchLaunch) { launch in
+                CalibrationBatchView(library: session.library, launch: launch, chinese: chinese, openProject: openProject)
+            }
+            .sheet(item: $qualityEntry) { entry in
+                CalibrationQualityView(library: session.library, entry: entry, chinese: chinese)
+            }
     }
     private var masters: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -76,6 +99,8 @@ struct CalibrationLibraryView: View {
                 Button(t("制作母片…", "Build master…")) { session.clearError(); building = true }.disabled(session.busy || session.archived)
                     .accessibilityIdentifier("calibration.build-master")
                 Button(t("重新载入", "Reload")) { session.perform { try await session.reload() } }.disabled(session.busy)
+                Button(t("修正拍摄参数…", "Declare acquisition…")) { declaring = true }.disabled(session.busy)
+                    .accessibilityIdentifier("calibration.declare")
                 Spacer()
                 Toggle(t("已归档", "Archived"), isOn: $session.archived).disabled(session.busy).accessibilityIdentifier("calibration.archived")
             }
@@ -83,7 +108,7 @@ struct CalibrationLibraryView: View {
                 List(selection: $session.selection) {
                     ForEach(session.entries) { entry in
                         HStack {
-                            if !entry.archived, CalibrationPlanReport.roles.contains(entry.receipt?.role ?? "") {
+                            if !entry.archived, entry.receipt?.rejected == false, CalibrationPlanReport.roles.contains(entry.receipt?.role ?? "") {
                                 Toggle("", isOn: Binding(get: { session.selectedMasters.contains(entry.id) }, set: { value in
                                     if value { session.selectedMasters.insert(entry.id) } else { session.selectedMasters.remove(entry.id) }
                                 })).labelsHidden().help(t("参与本次匹配", "Include in this review"))
@@ -104,6 +129,11 @@ struct CalibrationLibraryView: View {
                         if let entry = session.selectedEntry {
                             Text(entry.label).font(.headline)
                             if let r = entry.receipt {
+                                if r.rejected { Label(t("已拒绝参与校准", "Rejected for calibration"), systemImage: "xmark.circle").foregroundStyle(.red) }
+                                Button(t("检查并编辑…", "Review and edit declarations…")) { reviewEntry = entry }
+                                    .disabled(session.busy).accessibilityIdentifier("calibration.edit-review")
+                                Button(t("检查母片质量…", "Inspect pixels and defects…")) { qualityEntry = entry }
+                                    .disabled(session.busy).accessibilityIdentifier("calibration.quality")
                                 Text(t("偏置状态：", "Bias state: ") + (r.biasState == "included" ? t("仍含偏置", "Included") : r.biasState == "removed" ? t("已扣除", "Removed") : t("尚未确认", "Not confirmed")))
                                 if !r.notes.isEmpty { Text(r.notes).font(.callout).textSelection(.enabled) }
                                 HStack {
@@ -171,7 +201,7 @@ struct CalibrationLibraryView: View {
                     Text(t("按 UTC 日期分组；同组内仍逐张核对温度和候选。", "Groups use UTC dates; temperatures and candidates are checked for every frame."))
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button(t("导出审查…", "Export review…")) { exportReview(report) }.disabled(session.busy).accessibilityIdentifier("calibration.export-review")
+                    Button(t("导出检查结果…", "Export review…")) { exportReview(report) }.disabled(session.busy).accessibilityIdentifier("calibration.export-review")
                     Button(t("分配并校准…", "Assign and calibrate…")) {
                         session.perform {
                             let draft = try CalibrationJobDraft(review: report, entries: session.entries.filter { session.selectedMasters.contains($0.id) })
@@ -206,6 +236,16 @@ struct CalibrationLibraryView: View {
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
         panel.message = t("选择包含 job.txt 的校准任务文件夹。", "Choose a calibration task folder containing job.txt.")
         if panel.runModal() == .OK, let url = panel.url { calibrationJob = CalibrationJobLaunch(directory: url) }
+    }
+    private func openDraft() {
+        let panel = NSOpenPanel(); panel.canChooseFiles = true; panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false; panel.allowedContentTypes = [.json]
+        if panel.runModal() == .OK, let url = panel.url {
+            session.perform {
+                let draft = try await session.library.openDraft(url)
+                try Task.checkCancellation(); calibrationJob = CalibrationJobLaunch(draft: draft)
+            }
+        }
     }
     private func exportMaster(_ entry: CalibrationLibrary.Entry) {
         let panel = NSSavePanel(); panel.nameFieldStringValue = entry.label

@@ -80,3 +80,14 @@ add_test(NAME photonstack_calibration_metadata_cli COMMAND ${Python3_EXECUTABLE}
 
 add_test(NAME photonstack_sensor_master_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_sensor_master.py $<TARGET_FILE:photonstack>)
 add_test(NAME photonstack_calibration_job_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_calibration_job.py $<TARGET_FILE:photonstack>)
+add_test(NAME photonstack_acquisition_declaration_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_acquisition_declaration.py $<TARGET_FILE:photonstack>)
+add_test(NAME photonstack_sensor_quality_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_sensor_quality.py $<TARGET_FILE:photonstack>)
+
+add_test(NAME photonstack_cfa_drizzle_workflow_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_cfa_drizzle_workflow.py $<TARGET_FILE:photonstack>)
+
+add_test(NAME photonstack_linear_star_layers_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_linear_star_layers.py $<TARGET_FILE:photonstack>)
+
+add_test(NAME photonstack_ser_sequence_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ser_sequence.py $<TARGET_FILE:photonstack>)
+add_test(NAME photonstack_xisf_exchange_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_xisf_exchange.py $<TARGET_FILE:photonstack>)
+add_test(NAME photonstack_image_plugin_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_image_plugin.py $<TARGET_FILE:photonstack>)
+add_test(NAME photonstack_time_series_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_time_series.py $<TARGET_FILE:photonstack>)

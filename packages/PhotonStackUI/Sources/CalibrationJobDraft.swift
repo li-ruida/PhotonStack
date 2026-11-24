@@ -7,12 +7,24 @@ struct CalibrationJobDraft: Sendable {
     let entries: [CalibrationLibrary.Entry]
     var choices: [[Int]]
     var memoryMiB = 512, workers = 4
+    var badPixels: CalibrationAcquisition?
+    var validBadPixels: Bool {
+        guard let map = badPixels else { return true }
+        guard map.isValid, map.channels == 1, map.issues.isEmpty, map.text["badPixelMap"] == "defect-v1",
+              ["bias", "dark", "flat", "dark-flat"].contains(map.text["badPixelSourceRole"] ?? "") else { return false }
+        return review.lights.allSatisfy { light in
+            light.width == map.width && light.height == map.height &&
+            (map.text["badPixelSourceRole"] != "flat" || ["filter", "opticalTrain"].allSatisfy { light.text[$0] != nil && light.text[$0] == map.text[$0] }) &&
+            ["camera", "cameraSerial", "readoutMode", "sampling"].allSatisfy { light.text[$0] != nil && light.text[$0] == map.text[$0] } &&
+            ["gain", "offset", "binX", "binY", "originX", "originY"].allSatisfy { light.numeric[$0] != nil && light.numeric[$0] == map.numeric[$0] }
+        }
+    }
 
     init(review: CalibrationPlanReport, entries: [CalibrationLibrary.Entry]) throws {
         guard review.isValid else { throw CalibrationAcquisition.failure("Invalid calibration review.") }
         self.review = review
         self.entries = try review.masters.map { master in
-            let matches = entries.filter { !$0.archived && $0.receipt?.acquisition.sha == master.acquisition.sha && $0.receipt?.role == master.role }
+            let matches = entries.filter { !$0.archived && $0.receipt?.rejected == false && $0.receipt?.acquisition.sha == master.acquisition.sha && $0.receipt?.role == master.role }
             guard matches.count == 1 else { throw CalibrationAcquisition.failure("Reload the selected master records before assigning frames.") }
             return matches[0]
         }
@@ -59,7 +71,7 @@ struct CalibrationJobDraft: Sendable {
     }
     var readyCount: Int { choices.indices.filter { issue(frame: $0) == nil }.count }
     var isReady: Bool {
-        choices.count == review.lights.count && readyCount == review.lights.count && (4...8192).contains(memoryMiB) && (1...32).contains(workers)
+        choices.count == review.lights.count && readyCount == review.lights.count && validBadPixels && (4...8192).contains(memoryMiB) && (1...32).contains(workers)
     }
     var usedMasters: [Int] { Array(Set(choices.flatMap { $0 }.filter { $0 >= 0 })).sorted() }
     static func quote(_ value: String) throws -> String {
@@ -69,6 +81,7 @@ struct CalibrationJobDraft: Sendable {
     func manifest() throws -> String {
         guard isReady else { throw CalibrationAcquisition.failure("Resolve every frame's master choices and preparation states before starting.") }
         var text = "PhotonStack-CalibrationJob-1\ntemperature-tolerance \(review.temperatureTolerance)\nmemory-mib \(memoryMiB)\nthreads \(workers)\n"
+        if let map = badPixels { text += "bad-pixels \(try Self.quote(map.path)) \(map.sha)\n" }
         for i in usedMasters {
             let master = review.masters[i]
             text += "master m\(i) \(master.role) \(try Self.quote(master.acquisition.path)) \(master.acquisition.sha) \(entries[i].receipt!.biasState)\n"

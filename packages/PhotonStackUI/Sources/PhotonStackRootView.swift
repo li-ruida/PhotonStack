@@ -31,6 +31,7 @@ public extension Notification.Name {
     static let photonStackPreviewLayerStack = Notification.Name("dev.photonstack.previewLayerStack")
     static let photonStackSetApplicationLanguage = Notification.Name("dev.photonstack.setApplicationLanguage")
     static let photonStackSetAnalysisWorkerCount = Notification.Name("dev.photonstack.setAnalysisWorkerCount")
+    static let photonStackSetPromptToSaveOnExit = Notification.Name("dev.photonstack.setPromptToSaveOnExit")
     static let photonStackSetStackWorkerCount = Notification.Name("dev.photonstack.setStackWorkerCount")
     static let photonStackSetGPUAccelerationEnabled = Notification.Name("dev.photonstack.setGPUAccelerationEnabled")
     static let photonStackRequestApplicationTermination = Notification.Name("dev.photonstack.requestApplicationTermination")

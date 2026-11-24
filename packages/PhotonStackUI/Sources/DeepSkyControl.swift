@@ -138,9 +138,9 @@ struct DeepSkyRecipeSheet: View {
     }
 
     @ViewBuilder private func recipeControls(plannedCount: Int, minimumKept: Int) -> some View {
-        Menu(chinese ? "配方" : "Recipe") {
-            Button(chinese ? "导入配方" : "Import recipe") { importRecipe() }
-            Button(chinese ? "导出配方" : "Export recipe") { exportRecipe() }
+        Menu(chinese ? "参数文件" : "Settings file") {
+            Button(chinese ? "导入参数…" : "Import settings…") { importRecipe() }
+            Button(chinese ? "导出参数…" : "Export settings…") { exportRecipe() }
             Divider()
             Button(chinese ? "恢复默认处理参数" : "Reset processing settings") { model.resetDeepSkySettings() }
         }.disabled(model.isProcessing)

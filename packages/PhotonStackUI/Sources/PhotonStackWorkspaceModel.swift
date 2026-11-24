@@ -411,6 +411,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     @Published public var language: AppLanguage
     @Published public var selectedTemplate: ProjectTemplate
     @Published public var autosaveEnabled: Bool
+    @Published public private(set) var promptToSaveOnExit: Bool
     @Published public private(set) var analysisWorkerCount: Int
     @Published public private(set) var stackWorkerCount: Int
     @Published public private(set) var computeBackend: DeepSkyComputeBackend
@@ -542,6 +543,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         language: AppLanguage = .systemDefault,
         selectedTemplate: ProjectTemplate = .deepSky,
         autosaveEnabled: Bool = true,
+        promptToSaveOnExit: Bool = false,
         analysisWorkerCount: Int = 0,
         stackWorkerCount: Int = 0,
         gpuAccelerationEnabled: Bool? = nil,
@@ -564,6 +566,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         self.language = language
         self.selectedTemplate = selectedTemplate
         self.autosaveEnabled = autosaveEnabled
+        self.promptToSaveOnExit = promptToSaveOnExit
         self.analysisWorkerCount = AppSettings.normalizedAnalysisWorkerCount(analysisWorkerCount)
         self.stackWorkerCount = AppSettings.normalizedStackWorkerCount(stackWorkerCount)
         self.computeBackend = computeBackend ?? DeepSkyComputeBackend(gpuAcceleration: gpuAccelerationEnabled)
@@ -1124,14 +1127,15 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public func localizedMessage(_ message: String) -> String {
-        if message.contains("MosaicInsufficientOverlap"), let start = message.firstIndex(of: "{"),
-           let detail = try? JSONDecoder().decode([String: String].self, from: Data(message[start...].utf8)),
-           detail["code"] == "MosaicInsufficientOverlap", let description = detail["message"],
-           let number = description.split(separator: " ").dropFirst().first.flatMap({ Int($0) }),
+        if let detail = ProcessingFailureSummary.diagnostic(in: message),
+           detail.code == "MosaicInsufficientOverlap" {
+            let description = detail.message
+            if let number = description.split(separator: " ").dropFirst().first.flatMap({ Int($0) }),
            number > 0, let panel = mosaicAssets.dropFirst(number - 1).first {
             return language == .simplifiedChinese
                 ? "未能从「\(panel.displayName)」找到与其他天区相连的共同星点。请检查该天区的原片分组和拍摄重叠区域。"
                 : "No verified star overlap connects \(panel.displayName) to the other panels. Check its frame group and sky coverage."
+            }
         }
         return language.localizedMessage(message)
     }
@@ -1282,6 +1286,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             stackWorkerCount: stackWorkerCount,
             computeBackend: computeBackend,
             performance: lastPerformance,
+            promptToSaveOnExit: promptToSaveOnExit,
             isWorkspaceActive: true,
             canRunBatchRegistration: isProcessing == false && canRegisterBatch(reference: reference),
             canPreviewLayerStack: isProcessing == false && canPreviewVisibleLayerStack
@@ -2051,6 +2056,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             autosaveEnabled = current.autosaveEnabled == baseline.autosaveEnabled
                 ? settings.autosaveEnabled
                 : current.autosaveEnabled
+            promptToSaveOnExit = current.promptToSaveOnExit == baseline.promptToSaveOnExit
+                ? settings.promptToSaveOnExit
+                : current.promptToSaveOnExit
             selectedTemplate = current.selectedTemplate == baseline.selectedTemplate
                 ? settings.selectedTemplate
                 : current.selectedTemplate
@@ -2094,6 +2102,12 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
+    public func setPromptToSaveOnExit(_ enabled: Bool) {
+        guard promptToSaveOnExit != enabled else { return }
+        promptToSaveOnExit = enabled
+        persistUserSettings()
+    }
+
     public func persistUserSettings() {
         scheduleUserSettingsPersistence(currentUserSettingsSnapshot())
     }
@@ -2108,6 +2122,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         AppSettings(
             recentProjects: recentProjects,
             autosaveEnabled: autosaveEnabled,
+            promptToSaveOnExit: promptToSaveOnExit,
             selectedTemplate: selectedTemplate,
             language: language,
             analysisWorkerCount: analysisWorkerCount,
@@ -2261,7 +2276,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             pendingProcessingInterruption = .terminateApplication
             return false
         }
-        guard hasUnsavedChanges else {
+        guard promptToSaveOnExit && hasUnsavedChanges else {
             return true
         }
         pendingProjectTransition = .terminateApplication
@@ -2274,7 +2289,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             pendingProcessingInterruption = .closeWindow
             return false
         }
-        guard hasUnsavedChanges else {
+        guard promptToSaveOnExit && hasUnsavedChanges else {
             return true
         }
         pendingProjectTransition = .closeWindow
@@ -2300,7 +2315,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         case .terminateApplication:
             .terminateApplication
         }
-        guard hasUnsavedChanges else {
+        guard promptToSaveOnExit && hasUnsavedChanges else {
             return transition
         }
         pendingProjectTransition = transition
@@ -2810,7 +2825,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         if let report = project.deepSkySettings?.lastReport {
             for path in [report.master, report.backgroundMaster, report.developed,
                          report.rejectionLow, report.rejectionHigh, report.sensorPatternReport ?? ""]
-                + report.noiseReferencePaths where !path.isEmpty {
+                + report.noiseReferencePaths + report.drizzlePaths where !path.isEmpty {
                 add(URL(fileURLWithPath: path))
             }
             report.frames.forEach { add(URL(fileURLWithPath: $0.input)) }
@@ -4185,7 +4200,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             let imported = parsed.inputs.map { PhotonStackProject.assetIdentityPath(for: URL(fileURLWithPath: $0)) }
             if !imported.isEmpty, current != imported {
                 guard current.isEmpty else {
-                    throw EditGraphReplayError(message: "配方中的亮场顺序与当前项目不同。请在空项目中导入，以保留准确的参考帧和权重对应关系。")
+                    throw EditGraphReplayError(message: "参数文件中的亮场顺序与当前项目不同。请在空项目中导入，以保留参考帧和权重的对应关系。")
                 }
                 project.addAssets(from: parsed.inputs.map { URL(fileURLWithPath: $0) }, role: .light)
             }
@@ -4276,7 +4291,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             self.project.deepSkySettings = settings
             self.project.appendArtifact(ProcessingArtifact(kind: .stackMaster, name: "Deep Sky Reprocessed Background",
                 operationKind: .stack, outputDirectory: directory,
-                outputURLs: ([report.backgroundMaster] + report.noiseReferencePaths).map { URL(fileURLWithPath: $0) }, parameters: ["recipe": recipe],
+                outputURLs: ([report.backgroundMaster] + report.noiseReferencePaths + report.drizzlePaths).map { URL(fileURLWithPath: $0) }, parameters: ["recipe": recipe],
                 metrics: ["frames": String(report.selectedCount)]))
             let output = URL(fileURLWithPath: report.developed)
             try await self.commitPreviewAfterHistogramRefresh(output)
@@ -4337,7 +4352,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             self.project.deepSkySettings = settings
             if !analyzeOnly {
                 let output = URL(fileURLWithPath: report.developed)
-                let masters = ([report.master, report.backgroundMaster, report.rejectionLow, report.rejectionHigh] + report.noiseReferencePaths)
+                let masters = ([report.master, report.backgroundMaster, report.rejectionLow, report.rejectionHigh] + report.noiseReferencePaths + report.drizzlePaths)
                     .filter { !$0.isEmpty }.map { URL(fileURLWithPath: $0) }
                 self.project.appendArtifact(ProcessingArtifact(
                     kind: .stackMaster, name: "Deep Sky Linear Masters", operationKind: .stack,
@@ -5442,7 +5457,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
     public func exportCurrentImage(to output: URL) async {
         guard !hasPendingPhotoEdit else {
-            errorMessage = language == .simplifiedChinese ? "请先应用或重置当前试调。" : "Apply or reset the pending edits before exporting."
+            errorMessage = language == .simplifiedChinese ? "请先应用或重置当前调整。" : "Apply or reset the pending edits before exporting."
             return
         }
         do { try validateExportDestination(output) }
@@ -6872,9 +6887,82 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
+    func chooseTimeSeriesFrames(_ session:TimeSeriesSession,frames:[URL]) async {
+        await session.choose(frames,using:processingService)
+    }
+
+    func openTimeSeries(_ session:TimeSeriesSession,output:URL) async throws {
+        try await session.open(output,using:processingService)
+    }
+
+    func startTimeSeries(_ session:TimeSeriesSession,output:URL) {
+        launch {
+            await self.runJob(title:self.language == .simplifiedChinese ? "时间序列测光":"Time-series photometry",kind:.export) {
+                do {try await session.run(output:output,using:self.processingService)}
+                catch {session.error=error.localizedDescription;throw error}
+                return output.path
+            }
+        }
+    }
+
+    func inspectImagePlugin(_ session:ImagePluginSession,definition:URL) async {
+        await session.inspect(definition,using:processingService)
+    }
+
+    func startImagePlugin(_ session:ImagePluginSession,output:URL) {
+        launch {
+            await self.runJob(title:self.language == .simplifiedChinese ? "本地插件":"Processing extension",kind:.export) {
+                let result=try await session.run(output:output,using:self.processingService)
+                try Task.checkCancellation()
+                self.project.addAssets(from:[result],role:.other)
+                if let asset=self.project.assets.first(where:{$0.originalURL==result}) {self.selectSource(result,owner:asset)}
+                return result.path
+            }
+        }
+    }
+
+    func startXisfExchange(_ options:XisfExchangeOptions,output:URL) {
+        guard options.isValid else {
+            errorMessage = language == .simplifiedChinese ? "请选择文件并检查转换参数。" : "Choose a file and check the conversion settings."
+            return
+        }
+        launch {
+            await self.runJob(title:self.language == .simplifiedChinese ? "XISF 文件交换":"XISF exchange",kind:.export) {
+                _ = try await self.processingService.runCLI(arguments:options.arguments+["--output-dir",output.path])
+                let product=try await XisfExchangeProducts.verify(at:output,options:options)
+                try Task.checkCancellation()
+                if options.importing { _ = self.importAssets(from:[product]) }
+                return product.path
+            }
+        }
+    }
+
+    func inspectSER(_ input:URL,byteOrder:String) async throws -> SerSequenceInfo {
+        let result=try await processingService.runCLI(arguments:["ser-inspect","--input",input.path,"--byte-order",byteOrder])
+        let info=try JSONDecoder().decode(SerSequenceInfo.self,from:Data(result.standardOutput.utf8))
+        guard info.isValid,info.byteOrder==byteOrder,URL(fileURLWithPath:info.source).resolvingSymlinksInPath()==input.resolvingSymlinksInPath() else {throw ProcessingServiceError.invalidReport(command:"ser-inspect")}
+        return info
+    }
+
+    func startSERImport(_ options:SerImportOptions,output:URL) {
+        launch {
+            await self.runJob(title:self.language == .simplifiedChinese ? "导入 SER 序列":"Import SER sequence",kind:.export) {
+                let info=try await self.inspectSER(options.input,byteOrder:options.byteOrder)
+                guard options.isValid(total:info.frames) else {throw ProcessingServiceError.invalidArguments("Choose a valid SER frame range.")}
+                _ = try await self.processingService.runCLI(arguments:["ser-extract"]+options.arguments+["--output-dir",output.path])
+                let count=try await SerImportProducts.verify(at:output,options:options)
+                try Task.checkCancellation()
+                // Queue through the normal importer: in mosaic mode this folder is
+                // one panel; in the single-target workflow these are light frames.
+                _ = self.importAssets(from:[output])
+                return "\(count) FITS · \(output.path)"
+            }
+        }
+    }
+
     func startStarLayerJob(_ operation: @escaping @MainActor (any ProcessingService) async throws -> URL) {
         launch {
-            await self.runJob(title: self.language == .simplifiedChinese ? "星云与恒星分层" : "Star layers", kind: .export) {
+            await self.runJob(title: self.language == .simplifiedChinese ? "星云与星点分层" : "Star layers", kind: .export) {
                 let output = try await operation(self.processingService)
                 try Task.checkCancellation()
                 self.project.addAssets(from: [output], role: .other)
@@ -11194,6 +11282,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         var settings = AppSettings(
             recentProjects: recentProjects,
             autosaveEnabled: autosaveEnabled,
+            promptToSaveOnExit: promptToSaveOnExit,
             selectedTemplate: selectedTemplate,
             language: language,
             analysisWorkerCount: analysisWorkerCount,
@@ -11472,7 +11561,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             // the editor's ordinary finishing path, not a custom multi-image composite.
             guard let top = layers.last, let topURL = top.inputURL,
                   layers.allSatisfy({ $0.inputURL != nil && $0.maskArtifactID == nil && $0.blendMode == .normal && $0.opacity >= 0.999 }) else {
-                throw PhotonStackAppCore.WorkflowError("当前结果包含多图层混合或手工蒙版，不能自动移植到新目标。请选择单一处理结果后保存。 / Select a single unmasked result before saving a reusable workflow.")
+                throw PhotonStackAppCore.WorkflowError("当前结果含多图层或手绘蒙版。请选择单一处理结果后再保存流程。 / Select a single unmasked result before saving a reusable workflow.")
             }
             let size = try await workflowPixelSize(at: topURL)
             for url in Set(layers.compactMap(\.inputURL)) {
@@ -11483,7 +11572,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             capturedPlan = editGraphReplayPlan(targetURL: topURL, finalOperationIsEligible: isFullResolutionExportOperation)
         }
         guard let plan = capturedPlan else {
-            throw PhotonStackAppCore.WorkflowError("当前图片没有可保存的处理历史。请先堆栈或应用后期调整；导入的成品无法反推出操作。 / Process a result first; a flattened image has no recoverable workflow.")
+            throw PhotonStackAppCore.WorkflowError("当前图片没有处理记录。请先堆栈或应用调整，再保存流程。 / Process a result first; a flattened image has no recoverable workflow.")
         }
         var operations = plan.operations.filter { $0.isEnabled }
         // Sequence macros replay their own decoding/calibration. Earlier preview operations
@@ -11502,7 +11591,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         for operation in operations {
             guard isFullResolutionExportOperation(operation) else { continue }
             if operation.kind == .stack, operation.parameters["mode"] == "deepSkyRecipe" {
-                guard let recipe = operation.parameters["recipe"] else { throw PhotonStackAppCore.WorkflowError("缺少原始堆栈配方 / Missing stack recipe") }
+                guard let recipe = operation.parameters["recipe"] else { throw PhotonStackAppCore.WorkflowError("缺少原始堆栈参数 / Missing stack recipe") }
                 try FileManager.default.createDirectory(at: previewDirectory, withIntermediateDirectories: true)
                 let recipeURL = previewDirectory.appendingPathComponent("workflow-capture-\(UUID().uuidString).txt")
                 try recipe.write(to: recipeURL, atomically: true, encoding: .utf8)

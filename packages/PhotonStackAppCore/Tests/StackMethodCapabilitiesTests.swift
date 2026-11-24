@@ -96,3 +96,27 @@ private func stackSchema() -> DeepSkySchema {
     settings.setCompatibleValue("independent-luminance", for: "denoise.noise-model", schema: schema)
     #expect(settings.values["denoise.noise-model"] == "scene")
 }
+
+@Test func cfaDrizzleUsesAverageAndRetainsCalibrationPathsForExplicitReview() {
+    let schema = stackSchema()
+    var settings = DeepSkySettings()
+    settings.values = ["stack.method": "winsorized", "registration.mode": "distortion", "calibration.biases": "\"/tmp/bias.fits\"", "develop.saturation": "0.6"]
+    settings.setCompatibleValue("on", for: "stack.cfa-drizzle", schema: schema)
+    #expect(settings.values["stack.method"] == "average")
+    #expect(settings.values["stack.normalize-background"] == "off")
+    #expect(settings.values["stack.rejection-maps"] == "off")
+    #expect(settings.values["registration.mode"] == "similarity")
+    #expect(settings.values["calibration.biases"] == "\"/tmp/bias.fits\"")
+    #expect(settings.values["develop.saturation"] == "0.6")
+    #expect(settings.fieldIsApplicable("stack.drizzle-pixfrac", schema: schema))
+    #expect(!settings.fieldIsApplicable("stack.method", schema: schema))
+    settings.setCompatibleValue("off", for: "stack.cfa-drizzle", schema: schema)
+    #expect(!settings.fieldIsApplicable("stack.drizzle-scale", schema: schema))
+    #expect(settings.fieldIsApplicable("stack.method", schema: schema))
+    settings.setCompatibleValue("on", for: "stack.cfa-drizzle", schema: schema)
+    settings.setCompatibleValue("sigma", for: "stack.method", schema: schema)
+    #expect(settings.values["stack.cfa-drizzle"] == "off")
+    settings.setCompatibleValue("on", for: "stack.cfa-drizzle", schema: schema)
+    settings.setCompatibleValue("distortion", for: "registration.mode", schema: schema)
+    #expect(settings.values["stack.cfa-drizzle"] == "off" && settings.values["registration.mode"] == "distortion")
+}

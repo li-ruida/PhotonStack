@@ -10,6 +10,7 @@ extension AppLanguage {
         case "align": zh ? "星点对齐" : "Aligning stars"
         case "sensor-pattern-estimate": zh ? "估计传感器固定纹理" : "Estimating the sensor pattern"
         case "sensor-pattern-apply": zh ? "校正传感器纹理" : "Correcting the sensor pattern"
+        case "cfa-drizzle": zh ? "累积原始 CFA 采样与逐色覆盖" : "Accumulating original CFA samples and color coverage"
         case "stack": zh ? "准备堆栈缓存" : "Preparing stack cache"
         case "stack-combine": zh ? "合成并剔除异常像素" : "Combining frames and rejecting outliers"
         case "crop": zh ? "裁切对齐后的边缘" : "Cropping aligned edges"

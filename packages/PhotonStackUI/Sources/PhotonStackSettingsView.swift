@@ -57,6 +57,15 @@ public struct PhotonStackSettingsView: View {
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("settings.language")
+                Toggle(language == .simplifiedChinese ? "退出时提醒保存项目" : "Ask to save projects on exit", isOn: Binding(
+                    get: { commandState.snapshot.promptToSaveOnExit },
+                    set: { commandState.requestPromptToSaveOnExit($0) }
+                ))
+                .accessibilityIdentifier("settings.promptToSaveOnExit")
+                Text(language == .simplifiedChinese
+                    ? "关闭窗口或退出时，提醒保存未保存的修改。默认关闭。"
+                    : "Ask about unsaved changes when closing a window or quitting. Off by default.")
+                    .font(.caption).foregroundStyle(.secondary)
             } header: {
                 Label(
                     language == .simplifiedChinese ? "通用" : "General",

@@ -39,7 +39,7 @@ struct MasterRegistrationControl: View {
                             Text(summary(master, reference: report.reference)).font(.caption2).foregroundStyle(.secondary)
                         }
                     }
-                    Button(zh ? "按保存的变换重跑…" : "Replay saved transforms…") {
+                    Button(zh ? "按原变换重跑…" : "Replay saved transforms…") {
                         guard let output = chooseOutput() else { return }
                         model.startChannelCompositionJob { service in try await session.replay(output: output, into: composition, using: service) }
                     }.accessibilityIdentifier("masters.replay")

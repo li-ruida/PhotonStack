@@ -8,6 +8,7 @@ struct SensorCalibrationMaster {
 };
 struct SensorCalibrationOptions {
     std::optional<SensorCalibrationMaster> bias, dark, flat;
+    std::optional<SensorMasterSource> badPixels;
     double temperatureTolerance = 1;
     std::size_t memoryBytes = 512 * 1024 * 1024, tilePixels = 65536;
     unsigned workers = 4;

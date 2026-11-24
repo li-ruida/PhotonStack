@@ -4,7 +4,16 @@
 #include "photonstack/ImageBuffer.hpp"
 
 namespace photonstack {
+struct SpatialPsfNode {
+    double x = 0, y = 0; // normalized field coordinates in [0,1]
+    ImageBuffer kernel;
+};
+enum class PsfNoiseModel { Constant, Poisson, PoissonGaussian };
 struct MeasuredDeconvolutionOptions {
+    // Four quadrant-center nodes, row-major. Empty retains the global kernel.
+    std::vector<SpatialPsfNode> spatialNodes;
+    PsfNoiseModel noiseModel = PsfNoiseModel::Constant;
+    double electronsPerUnit = 1, readNoiseElectrons = 0;
     unsigned iterations = 8;
     unsigned threads = 4;
     double amount = 1;

@@ -2616,6 +2616,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
 
     public var recentProjects: [RecentProject]
     public var autosaveEnabled: Bool
+    public var promptToSaveOnExit: Bool
     public var selectedTemplate: ProjectTemplate
     public var language: AppLanguage?
     /// Zero selects bounded, memory-aware automatic scheduling.
@@ -2634,6 +2635,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case recentProjects
         case autosaveEnabled
+        case promptToSaveOnExit
         case selectedTemplate
         case language
         case analysisWorkerCount
@@ -2646,6 +2648,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public init(
         recentProjects: [RecentProject] = [],
         autosaveEnabled: Bool = true,
+        promptToSaveOnExit: Bool = false,
         selectedTemplate: ProjectTemplate = .deepSky,
         language: AppLanguage? = nil,
         analysisWorkerCount: Int = 0,
@@ -2657,6 +2660,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     ) {
         self.recentProjects = Self.deduplicatedRecentProjects(recentProjects, limit: Self.defaultRecentProjectLimit)
         self.autosaveEnabled = autosaveEnabled
+        self.promptToSaveOnExit = promptToSaveOnExit
         self.selectedTemplate = selectedTemplate
         self.language = language
         self.analysisWorkerCount = Self.normalizedWorkerCount(
@@ -2677,6 +2681,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         let decodedRecentProjects = try container.decodeIfPresent([RecentProject].self, forKey: .recentProjects) ?? []
         recentProjects = Self.deduplicatedRecentProjects(decodedRecentProjects, limit: Self.defaultRecentProjectLimit)
         autosaveEnabled = try container.decodeIfPresent(Bool.self, forKey: .autosaveEnabled) ?? true
+        promptToSaveOnExit = try container.decodeIfPresent(Bool.self, forKey: .promptToSaveOnExit) ?? false
         selectedTemplate = try container.decodeIfPresent(ProjectTemplate.self, forKey: .selectedTemplate) ?? .deepSky
         if container.contains(.language) {
             let identifier = (try? container.decode(String.self, forKey: .language)) ?? ""

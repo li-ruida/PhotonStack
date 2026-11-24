@@ -53,7 +53,7 @@ final class CalibrationLibrarySession: ObservableObject {
         let entries = try await library.list(archived: archived)
         try Task.checkCancellation()
         let known = Set(self.entries.filter { !$0.archived }.map(\.id))
-        let available = Set(entries.filter { !$0.archived && CalibrationPlanReport.roles.contains($0.receipt?.role ?? "") }.map(\.id))
+        let available = Set(entries.filter { !$0.archived && $0.receipt?.rejected == false && CalibrationPlanReport.roles.contains($0.receipt?.role ?? "") }.map(\.id))
         var candidateSelection = selectedMasters.intersection(available)
         var selectedHashes = Set(entries.filter { candidateSelection.contains($0.id) }.compactMap { $0.receipt?.acquisition.sha })
         for entry in entries where available.subtracting(known).contains(entry.id) {

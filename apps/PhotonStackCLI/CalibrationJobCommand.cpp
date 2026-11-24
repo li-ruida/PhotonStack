@@ -183,7 +183,10 @@ Job parse(const fs::path& path, bool saved) {
         std::istringstream row(line);
         std::string key, value, extra;
         row >> key;
-        if (key == "master") {
+        if (key == "bad-pixels") {
+            require(!job.options.badPixels, "Duplicate defect map setting");
+            job.options.badPixels = source(row, saved);
+        } else if (key == "master") {
             std::string id;
             Master master;
             require(bool(row >> id >> master.role) && identifier(id) && roleOK(master.role) &&
@@ -258,7 +261,7 @@ void bind(Job& job, bool saved) {
     std::set<fs::path> paths;
     std::set<std::string> hashes;
     std::size_t checked = 0;
-    const auto total = job.masters.size() + job.lights.size();
+    const auto total = job.masters.size() + job.lights.size() + (job.options.badPixels ? 1 : 0);
     const auto snapshot = [&](SensorMasterSource& source) {
         check();
         source.path = fs::canonical(source.path);
@@ -272,6 +275,7 @@ void bind(Job& job, bool saved) {
     };
     for (auto& [id, master] : job.masters)
         snapshot(master.value.source);
+    if (job.options.badPixels) snapshot(*job.options.badPixels);
     std::vector<CalibrationAcquisition> acquisitions;
     for (auto& light : job.lights) {
         snapshot(light.source);
@@ -285,6 +289,7 @@ void bind(Job& job, bool saved) {
             job.lights[index].group = g;
         }
     // Bind the acquisition/group decisions to the same bytes inspected above.
+    if (job.options.badPixels) require(fileSHA256(job.options.badPixels->path) == job.options.badPixels->sha, "Defect map changed during preflight");
     for (const auto& [id, master] : job.masters) {
         check();
         require(fileSHA256(master.value.source.path) == master.value.source.sha, "Master changed during preflight");
@@ -299,6 +304,8 @@ std::string canonical(const Job& job) {
     out << std::setprecision(17) << "PhotonStack-CalibrationJob-1\ntemperature-tolerance "
         << job.options.temperatureTolerance << "\nmemory-mib " << job.options.memoryBytes / (1024 * 1024)
         << "\ntile-pixels " << job.options.tilePixels << "\nthreads " << job.options.workers << '\n';
+    if (job.options.badPixels)
+        out << "bad-pixels " << std::quoted(job.options.badPixels->path.string()) << ' ' << job.options.badPixels->sha << '\n';
     for (const auto& [id, m] : job.masters)
         out << "master " << id << ' ' << m.role << ' ' << std::quoted(m.value.source.path.string()) << ' '
             << m.value.source.sha << ' ' << m.value.biasState << '\n';
@@ -371,7 +378,10 @@ std::string summary(const Job& job, const std::string& sha, const std::vector<bo
             << ",\"biasState\":" << channelJSON(master.value.biasState) << '}';
         first = false;
     }
-    out << "},\"dateGrouping\":\"UTC-calendar-date\",\"frames\":[";
+    out << "},\"badPixels\":";
+    if (job.options.badPixels) out << "{\"path\":" << channelJSON(job.options.badPixels->path.string()) << ",\"sha\":" << channelJSON(job.options.badPixels->sha) << '}';
+    else out << "null";
+    out << ",\"dateGrouping\":\"UTC-calendar-date\",\"frames\":[";
     for (std::size_t i = 0; i < completed.size(); ++i) {
         const auto& l = job.lights[i];
         out << (i ? "," : "") << "{\"index\":" << i << ",\"group\":" << l.group
@@ -404,6 +414,7 @@ std::string frameReport(const SensorCalibrationResult& r, std::size_t index, std
         << ",\"biasOnFlat\":" << (r.biasOnFlat ? "true" : "false")
         << ",\"darkApplied\":" << (r.options.dark ? "true" : "false")
         << ",\"flatApplied\":" << (r.options.flat ? "true" : "false")
+        << ",\"badPixelsApplied\":" << (r.options.badPixels ? "true" : "false")
         << ",\"flatMinimumRelativeResponse\":0.000001,\"flatMeans\":[";
     for (unsigned p = 0; p < 4; ++p)
         out << (p ? "," : "") << r.flatMeans[p];

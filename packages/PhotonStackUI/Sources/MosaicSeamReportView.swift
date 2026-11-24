@@ -23,6 +23,8 @@ struct MosaicSeamReportView: View {
                     .accessibilityIdentifier("mosaic.seams.export")
                 Button(text("关闭", "Close")) { dismiss() }.keyboardShortcut(.cancelAction)
             }
+            ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
             Text(text("曝光匹配前后 · \(report.encoding) 输入单位 · 测量画布 \(report.width) × \(report.height)\(report.preview ? " · 预览采样" : " · 成片采样")",
                       "Before / after exposure matching · \(report.encoding) input units · measurement canvas \(report.width) × \(report.height)\(report.preview ? " · preview sampling" : " · final sampling")"))
                 .font(.caption).foregroundStyle(.secondary)
@@ -68,6 +70,20 @@ struct MosaicSeamReportView: View {
                     Text(text("该区域没有完整覆盖的有效采样，无法判断亮度差。", "No fully covered samples in this region; brightness difference is unknown."))
                         .foregroundStyle(.secondary)
                 }
+                if let f=pair.final {
+                    DisclosureGroup(text("融合成片自动检查", "Final blend checks")) {
+                        VStack(alignment: .leading, spacing: 5) {
+                        Text(f.status == "review" ? text("检测到可疑变化，请放大复核接缝与细丝。", "Potential changes detected; inspect seams and fine structure.") :
+                             f.status == "insufficient-samples" ? text("覆盖或背景候选不足，无法判断。", "Insufficient coverage or background candidates.") :
+                             text("采样范围未发现明显越界，仍需目视复核。", "No large excess in sampled areas; visual review is still needed."))
+                            .foregroundStyle(f.status == "no-large-excess" ? Color.secondary : Color.orange)
+                        Text(text("有效点 \(f.samples) · 背景候选 \(f.backgroundCandidates) · 结构点 \(f.structuredSamples)", "Samples \(f.samples) · background candidates \(f.backgroundCandidates) · structure \(f.structuredSamples)"))
+                        Text(text("背景梯度超差 RMS / P95：", "Background gradient excess RMS / P95: ") + number(f.backgroundGradientExcessRms[channel])+" / "+number(f.backgroundGradientExcessP95[channel]))
+                        Text(text("细结构超差 P95 / 比例：", "Fine-structure excess P95 / fraction: ")+number(f.structureExcessP95[channel])+" / "+String(format:"%.1f%%",f.structureExcessFraction[channel]*100))
+                        Text(text("亮度越界 P95 / 复核阈值：", "Intensity excess P95 / review threshold: ")+number(f.rangeExcessP95[channel])+" / "+number(f.tolerance[channel]))
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.font(.caption).accessibilityIdentifier("mosaic.seams.final")
+                }
                 DisclosureGroup(text("实际应用的曝光校正", "Applied exposure corrections")) {
                     ForEach([pair.first, pair.second], id: \.self) { index in
                         Text("#\(index + 1) " + report.inputs[index]).font(.caption2).textSelection(.enabled)
@@ -79,13 +95,18 @@ struct MosaicSeamReportView: View {
             } else {
                 Text(text("没有相交的天区；没有重叠区亮度数据。", "No intersecting panels; no overlap brightness data."))
             }
-            Spacer(minLength: 0)
-            Text(text("测量相同天空位置的 3×3 中值，每对天区最多 48×48 点；覆盖率须 ≥99%。星云与亮星仍可能影响统计。这里比较融合前的两块面板，不能代替最终成片接缝或目标保真的目视检查。",
-                      "Measures 3×3 medians at common sky positions, up to 48×48 points per pair, with ≥99% coverage. Nebulae and bright stars may affect statistics. These are panel differences before blending, not a verdict on final seams or target preservation."))
+            Text(text("自动检查用于定位可疑接缝，仍需放大检查边缘和星云细丝。", "Automatic checks locate suspect seams; inspect edges and nebular filaments at full size.")).font(.caption).foregroundStyle(.secondary)
+            DisclosureGroup(text("检查方法与范围", "Method and coverage")) {
+            Text(text("面板差值采用 3×3 中值；融合检查另测实际成片的亮度、梯度和细结构。每对最多 48×48 点，覆盖须 ≥99%。暗且平缓仅是背景候选，可能仍含星云；检查不覆盖所有边缘，不能证明细丝保真。",
+                      "Panel differences use 3×3 medians. Final checks sample actual blended intensity, gradients and fine structure, up to 48×48 points with ≥99% coverage. Dark, smooth candidates may contain nebulosity. Checks do not cover every edge or prove preservation."))
                 .font(.caption).foregroundStyle(.secondary)
-            if let exportError { Text(exportError).foregroundStyle(.red).font(.caption) }
+            }
+            if let exportError { ProcessingErrorNotice(message:exportError,chinese:chinese) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(20).frame(width: 760, height: 760)
+        .padding(20).frame(width: 760, height: 680)
         .fileExporter(isPresented: $exporting, document: SeamJSONDocument(report: report), contentType: .json,
                       defaultFilename: "mosaic-overlap-report") { result in
             if case let .failure(error) = result { exportError = error.localizedDescription }

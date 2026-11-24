@@ -24,8 +24,7 @@ extension PhotonStackWorkspaceModel {
                     let overlap = localizedMessage(error.localizedDescription)
                     if overlap != error.localizedDescription { return overlap }
                 }
-                struct Diagnostic: Decodable { var code: String?; var message: String }
-                let diagnostic = try? JSONDecoder().decode(Diagnostic.self, from: Data(stderr.utf8))
+                let diagnostic = ProcessingFailureSummary.diagnostic(in: stderr)
                 if chinese, let code = diagnostic?.code {
                     switch code {
                     case "MemoryAllocationFailed": return "可用内存不足。请减少并发数或处理较少的帧后重试。"

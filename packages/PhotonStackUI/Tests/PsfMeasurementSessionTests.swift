@@ -58,11 +58,14 @@ func measuredPsfRestorationPreservesSourcesAndRestoresSavedSettings() async thro
     session.excluded=[0];#expect(!session.canRestore);session.excluded=[]
     session.sigma=6;#expect(!session.canRestore);session.sigma=5
     session.restoreIterations=5;session.restoreAmount=0.6;session.restoreNoise=2;session.restoreProtect=300
+    session.restoreSpatialMode="quadrants";session.restoreNoiseModel="poisson-gaussian"
+    session.restoreGain=2;session.restoreReadNoise=3
     let directory=root.appendingPathComponent("restored");let output=try await session.restore(output:directory,using:service)
     #expect(output.lastPathComponent=="restored.fits")
     let report=try #require(session.restoration);#expect(report.iterations==5 && report.protectedPixels>0)
     let reopened=PsfMeasurementSession();_ = try await reopened.openRestoration(directory,using:service)
     #expect(reopened.restoreIterations==5 && reopened.restoreAmount==0.6 && reopened.restoreNoise==2 && reopened.restoreProtect==300)
+    #expect(reopened.restoreSpatialMode=="quadrants" && reopened.restoreNoiseModel=="poisson-gaussian" && reopened.restoreGain==2 && reopened.restoreReadNoise==3)
     #expect(reopened.canRestore && URL(fileURLWithPath:reopened.report?.directory ?? "").resolvingSymlinksInPath()==measured.resolvingSymlinksInPath())
     let residual=try await reopened.restoredOutput("residual.fits",using:service);#expect(FileManager.default.fileExists(atPath:residual.path))
     do {_ = try await reopened.restore(output:directory,using:service);Issue.record("Overwrote restoration")}catch{}

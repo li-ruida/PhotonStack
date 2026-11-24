@@ -12,7 +12,8 @@ namespace photonstack {
 // nonfinite values become NaN; finite values outside Float32 range are errors.
 class SensorFitsReader {
   public:
-    explicit SensorFitsReader(const std::filesystem::path& path);
+    // Raw camera CFA files may omit PSCOLOR; explicit nonlinear profiles always fail.
+    explicit SensorFitsReader(const std::filesystem::path& path, bool requireDeclaredLinear = true);
     ~SensorFitsReader();
     SensorFitsReader(SensorFitsReader&&) noexcept;
     SensorFitsReader& operator=(SensorFitsReader&&) noexcept;

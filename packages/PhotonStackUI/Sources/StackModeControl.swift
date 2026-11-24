@@ -24,6 +24,10 @@ struct StackModeControl: View {
                     }.accessibilityIdentifier("stack-mode.star-trails")
                         .help(chinese ? "最大值、不对齐、不归一化、不自动筛片。保留手动筛片与后期参数；不会自动去飞机线。" : "Maximum, no alignment, normalization or automatic selection. Manual decisions and finishing settings remain; does not remove aircraft lights.")
                 }
+                if model.deepSkySettings.effectiveValue("stack.cfa-drizzle", schema: schema) == "on" {
+                    Text(chinese ? "CFA Drizzle 已启用。选择其他合成方式或畸变配准会关闭 Drizzle。" : "CFA Drizzle is enabled. Choosing another stack method or distortion registration turns it off.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if let method = StackMethod(rawValue: selection) {
                     Text(method.explanation(chinese: chinese)).font(.caption).foregroundStyle(.secondary)
                 }

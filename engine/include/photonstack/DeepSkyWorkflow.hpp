@@ -38,6 +38,9 @@ struct DeepSkyWorkflowOptions {
     // Estimate and subtract sensor-fixed high-frequency residuals before CFA
     // interpolation. Requires uncalibrated FITS and sufficient field movement.
     bool sensorPattern = false;
+    // Original CFA samples; average only, no interpolation or pixel rejection.
+    bool cfaDrizzle = false;
+    double drizzleScale = 2, drizzlePixfrac = 1;
     DeepSkyBackground background = DeepSkyBackground::PolynomialAndGrid;
     BackgroundPolynomialOptions polynomial;
     BackgroundGridOptions grid;
@@ -88,6 +91,9 @@ struct DeepSkyWorkflowResult {
     std::uint32_t cropX = 0, cropY = 0, cropWidth = 0, cropHeight = 0;
     std::filesystem::path master, backgroundMaster, developed, rejectionLow, rejectionHigh;
     std::filesystem::path sensorPatternReport;
+    std::filesystem::path drizzleWeights, drizzleProvenance;
+    std::array<double, 3> drizzleCoverage{};
+    double drizzleCompleteCoverage = 0;
     std::filesystem::path noiseReference, noiseReferenceManifest, noiseReferenceInputs;
     bool independentLuminanceNoise = false;
     bool denoiseStretchLocked = false;

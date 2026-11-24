@@ -6,6 +6,7 @@
 #include <complex>
 #include <limits>
 #include <numbers>
+#include <memory>
 #include <stdexcept>
 
 namespace photonstack {
@@ -25,6 +26,10 @@ public:
          real(std::size_t(fw)*fh),spectrum(std::size_t(fh)*(fw/2+1)),transfer(spectrum.size()),
          shape{fh,fw},rs{std::ptrdiff_t(fw*sizeof(double)),sizeof(double)},
          cs{std::ptrdiff_t((fw/2+1)*sizeof(std::complex<double>)),sizeof(std::complex<double>)} {
+        setKernel(kernel);
+    }
+    void setKernel(const ImageBuffer& kernel) {
+        std::fill(real.begin(),real.end(),0);
         double sum=0;for(float v:kernel.pixels)sum+=v;
         for(unsigned y=0;y<kernel.height;++y)for(unsigned x=0;x<kernel.width;++x)
             real[std::size_t((y+fh-kernel.height/2)%fh)*fw+(x+fw-kernel.width/2)%fw]=kernel.pixels[std::size_t(y)*kernel.width+x]/sum;
@@ -42,6 +47,56 @@ public:
         for(unsigned y=0;y<height;++y)std::copy_n(real.data()+std::size_t(y)*fw,width,output.data()+std::size_t(y)*width);
     }
 };
+// H = sum K_j W_j: a source's PSF is bilinearly interpolated across the
+// field. H^T = sum W_j K_j^T, not a second forward blur. One FFT workspace
+// is reused so field mode does not multiply peak FFT memory by node count.
+class FieldConvolution {
+    unsigned width,height;
+    const std::vector<SpatialPsfNode>& nodes;
+    std::unique_ptr<Convolution> convolution;
+    std::vector<double> weighted,part;
+    double weight(std::size_t p,std::size_t j) const {
+        const double x=double(p%width)/std::max(1U,width-1),y=double(p/width)/std::max(1U,height-1);
+        const double tx=std::clamp((x-nodes[0].x)/(nodes[1].x-nodes[0].x),0.,1.);
+        const double ty=std::clamp((y-nodes[0].y)/(nodes[2].y-nodes[0].y),0.,1.);
+        return (j%2?tx:1-tx)*(j/2?ty:1-ty);
+    }
+public:
+    FieldConvolution(unsigned w,unsigned h,const ImageBuffer& global,const MeasuredDeconvolutionOptions& o)
+      :width(w),height(h),nodes(o.spatialNodes) {
+        ImageBuffer largest=global;
+        if(!nodes.empty()) {
+            largest.width=largest.height=1;
+            for(const auto& node:nodes) {largest.width=std::max(largest.width,node.kernel.width);largest.height=std::max(largest.height,node.kernel.height);}
+            largest.pixels.assign(std::size_t(largest.width)*largest.height,0);
+            largest.pixels[(largest.height/2)*largest.width+largest.width/2]=1;
+        }
+        convolution=std::make_unique<Convolution>(w,h,largest,o.threads);
+    }
+    unsigned paddedWidth()const{return convolution->paddedWidth();}
+    unsigned paddedHeight()const{return convolution->paddedHeight();}
+    void apply(const std::vector<double>& input,std::vector<double>& output,bool transpose=false) {
+        if(nodes.empty()){convolution->apply(input,output,transpose);return;}
+        output.assign(input.size(),0);weighted.resize(input.size());
+        for(std::size_t j=0;j<nodes.size();++j){
+            convolution->setKernel(nodes[j].kernel);
+            if(transpose){
+                convolution->apply(input,part,true);
+                for(std::size_t p=0;p<input.size();++p)output[p]+=weight(p,j)*part[p];
+            } else {
+                for(std::size_t p=0;p<input.size();++p)weighted[p]=weight(p,j)*input[p];
+                convolution->apply(weighted,part);
+                for(std::size_t p=0;p<input.size();++p)output[p]+=part[p];
+            }
+        }
+    }
+};
+void validateKernel(const ImageBuffer& kernel) {
+    if(kernel.empty()||kernel.channels!=1||kernel.pixels.size()!=kernel.sampleCount()||kernel.width>63||kernel.height>63||!(kernel.width%2)||!(kernel.height%2)||kernel.colorEncoding!=ColorEncoding::Linear)
+        throw std::invalid_argument("PSF kernel must be linear mono, odd-sized and at most 63 by 63");
+    double sum=0;for(float v:kernel.pixels){if(!std::isfinite(v)||v<0)throw std::invalid_argument("PSF kernel must be finite and nonnegative");sum+=v;}
+    if(!(sum>0)||kernel.pixels[(kernel.height/2)*kernel.width+kernel.width/2]<=0)throw std::invalid_argument("PSF kernel requires positive flux and center");
+}
 void store(float& destination,double value) {
     if(!std::isfinite(value)||std::abs(value)>std::numeric_limits<float>::max())throw std::overflow_error("PSF restoration exceeds Float32 range");
     destination=float(value);
@@ -69,10 +124,21 @@ MeasuredDeconvolutionResult restoreMeasuredPsf(const ImageBuffer& source,const I
     if(source.empty()||(source.channels!=1&&source.channels!=3&&source.channels!=4)||source.pixels.size()!=source.sampleCount()||
        source.width>16384||source.height>16384||source.pixelCount()>16*1024*1024||source.colorEncoding!=ColorEncoding::Linear||detail::imageHasInvalidCoveredColor(source))
         throw std::invalid_argument("PSF restoration requires a finite linear mono/RGB image up to 16 megapixels");
-    if(kernel.empty()||kernel.channels!=1||kernel.pixels.size()!=kernel.sampleCount()||kernel.width>63||kernel.height>63||!(kernel.width%2)||!(kernel.height%2)||kernel.colorEncoding!=ColorEncoding::Linear)
-        throw std::invalid_argument("PSF kernel must be linear mono, odd-sized and at most 63 by 63");
-    double kernelSum=0;for(float v:kernel.pixels){if(!std::isfinite(v)||v<0)throw std::invalid_argument("PSF kernel must be finite and nonnegative");kernelSum+=v;}
-    if(!(kernelSum>0)||kernel.pixels[(kernel.height/2)*kernel.width+kernel.width/2]<=0)throw std::invalid_argument("PSF kernel requires positive flux and center");
+    validateKernel(kernel);
+    unsigned radius=std::max(kernel.width,kernel.height)/2;
+    if(!o.spatialNodes.empty()) {
+        if(o.spatialNodes.size()!=4)throw std::invalid_argument("Spatial PSF requires four rectangular field nodes");
+        const auto& v=o.spatialNodes;
+        for(const auto& node:v){
+            validateKernel(node.kernel);radius=std::max(radius,std::max(node.kernel.width,node.kernel.height)/2);
+            if(!std::isfinite(node.x)||!std::isfinite(node.y)||node.x<0||node.y<0||node.x>1||node.y>1)throw std::invalid_argument("Invalid spatial PSF node location");
+        }
+        if(!(v[0].x<v[1].x&&v[0].y<v[2].y&&v[0].x==v[2].x&&v[1].x==v[3].x&&v[0].y==v[1].y&&v[2].y==v[3].y))
+            throw std::invalid_argument("Spatial PSF nodes must form a row-major rectangle");
+    }
+    if((o.noiseModel!=PsfNoiseModel::Constant&&o.noiseModel!=PsfNoiseModel::Poisson&&o.noiseModel!=PsfNoiseModel::PoissonGaussian)||
+       !std::isfinite(o.electronsPerUnit)||o.electronsPerUnit<=0||!std::isfinite(o.readNoiseElectrons)||o.readNoiseElectrons<0)
+        throw std::invalid_argument("Noise model needs positive electrons per source unit and nonnegative read noise");
     if(!o.iterations||o.iterations>100||!o.threads||o.threads>16||!std::isfinite(o.amount)||o.amount<0||o.amount>1||
        !std::isfinite(o.pedestal)||o.pedestal<0||!std::isfinite(o.noiseSigma)||o.noiseSigma<0||!std::isfinite(o.protectAbove)||o.protectAbove<0)
         throw std::invalid_argument("Invalid measured PSF restoration options");
@@ -80,7 +146,7 @@ MeasuredDeconvolutionResult restoreMeasuredPsf(const ImageBuffer& source,const I
     MeasuredDeconvolutionResult result;result.image=source;result.difference=source;result.residual=source;
     result.protection.width=source.width;result.protection.height=source.height;result.protection.channels=1;
     result.protection.format=PixelFormat::Float32Gray;result.protection.colorEncoding=ColorEncoding::Linear;result.protection.pixels.resize(n);
-    auto protectedWeight=protection(source,o.protectAbove,std::max(1U,std::max(kernel.width,kernel.height)/2));
+    auto protectedWeight=protection(source,o.protectAbove,std::max(1U,radius));
     std::vector<double> coverage(n);
     for(std::size_t p=0;p<n;++p){
         coverage[p]=detail::pixelHasValidColor(source,p)?detail::pixelCoverage(source,p):0;
@@ -91,7 +157,7 @@ MeasuredDeconvolutionResult restoreMeasuredPsf(const ImageBuffer& source,const I
             throw std::invalid_argument("RL requires nonnegative samples; specify an explicit pedestal for negative calibrated values");
     }
     if(!result.coveredPixels)throw std::invalid_argument("PSF restoration has no covered pixels");
-    Convolution convolution(source.width,source.height,kernel,o.threads);result.fftWidth=convolution.paddedWidth();result.fftHeight=convolution.paddedHeight();
+    FieldConvolution convolution(source.width,source.height,kernel,o);result.fftWidth=convolution.paddedWidth();result.fftHeight=convolution.paddedHeight();
     std::vector<double> support,sensitivity,work(n),model,correction;
     convolution.apply(coverage,support);
     for(std::size_t p=0;p<n;++p){
@@ -127,7 +193,10 @@ MeasuredDeconvolutionResult restoreMeasuredPsf(const ImageBuffer& source,const I
             for(std::size_t p=0;p<n;++p){
                 if(!coverage[p]){work[p]=0;continue;}
                 const double predicted=std::max(model[p],floor),residual=observed[p]-predicted;
-                const double damp=o.noiseSigma>0?std::pow(residual/std::hypot(residual,o.noiseSigma),2):1;
+                double variance=o.noiseSigma*o.noiseSigma;
+                if(o.noiseModel!=PsfNoiseModel::Constant)variance+=std::max(0.,predicted-o.pedestal)/o.electronsPerUnit;
+                if(o.noiseModel==PsfNoiseModel::PoissonGaussian)variance+=std::pow(o.readNoiseElectrons/o.electronsPerUnit,2);
+                const double damp=variance>0?std::pow(residual/std::hypot(residual,std::sqrt(variance)),2):1;
                 const double ratio=std::max(0.,1+damp*residual/predicted);
                 work[p]=coverage[p]*ratio/support[p];
             }

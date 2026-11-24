@@ -19,6 +19,7 @@ final class CalibrationJobSession: ObservableObject {
     @Published private(set) var stopped = false
     @Published private(set) var error: String?
     @Published private(set) var progress: ProcessingProgressEvent?
+    @Published private(set) var savedDraft: URL?
     private(set) var operationID = UUID()
     private var boundJobSHA: String?
     private var task: Task<Void, Never>?
@@ -36,6 +37,28 @@ final class CalibrationJobSession: ObservableObject {
         cancelling = true; task?.cancel()
         // Do not unlock actions until the child has terminated and its journal
         // has been re-inspected. Cancellation can publish one last full frame.
+    }
+    func saveDraft(to url: URL) {
+        guard !busy, directory == nil, let draft else { return }
+        busy = true; error = nil; savedDraft = nil
+        task = Task {
+            do { try await library.saveDraft(draft, to: url); savedDraft = url }
+            catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            busy = false; cancelling = false; task = nil
+        }
+    }
+    func chooseBadPixels(_ url: URL) {
+        guard !busy, directory == nil else { return }
+        busy = true; error = nil
+        task = Task {
+            do {
+                let values = try await library.inspectBadPixels(url)
+                var candidate = draft; candidate?.badPixels = values
+                guard candidate?.validBadPixels == true else { throw CalibrationAcquisition.failure("The defect map does not match every light's sensor settings. Split incompatible groups into separate tasks.") }
+                draft = candidate
+            } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+            busy = false; cancelling = false; task = nil
+        }
     }
     func start(at url: URL) {
         guard canStart, let draft else { return }

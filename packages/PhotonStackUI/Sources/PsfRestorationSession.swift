@@ -6,17 +6,21 @@ struct PsfRestorationReport:Decodable {
     var iterations,threads,coveredPixels,protectedPixels,fftWidth,fftHeight:Int
     var amount,pedestal,noiseSigma,protectAbove,beforeRms,afterRms,beforeFlux,afterFlux:Double
     var spatiallyVariable:Bool
+    var spatialMode,noiseModel:String?
+    var electronsPerUnit,readNoiseElectrons:Double?
     var isValid:Bool {
         type=="complete" && command=="psf-restore" && directory.hasPrefix("/") && measurement.hasPrefix("/") && source.hasPrefix("/") &&
         ["luminance","red","green","blue"].contains(channel) && backend=="CPU pocketfft double" && (1...100).contains(iterations) && (1...16).contains(threads) &&
         coveredPixels>0 && coveredPixels<=16*1024*1024 && protectedPixels>=0 && protectedPixels<=coveredPixels && (1...32768).contains(fftWidth) && (1...32768).contains(fftHeight) &&
-        [amount,pedestal,noiseSigma,protectAbove,beforeRms,afterRms].allSatisfy {$0.isFinite && $0>=0} && amount<=1 && beforeFlux.isFinite && afterFlux.isFinite
+        [amount,pedestal,noiseSigma,protectAbove,beforeRms,afterRms].allSatisfy {$0.isFinite && $0>=0} && amount<=1 && beforeFlux.isFinite && afterFlux.isFinite &&
+        ["global","quadrants"].contains(spatialMode ?? "global") && ["constant","poisson","poisson-gaussian"].contains(noiseModel ?? "constant") &&
+        (electronsPerUnit ?? 1).isFinite && (electronsPerUnit ?? 1)>0 && (readNoiseElectrons ?? 0).isFinite && (readNoiseElectrons ?? 0)>=0
     }
 }
 extension PsfMeasurementSession {
     var canRestore:Bool {
         guard let report,canEditExclusions,excluded==Set(report.stars.filter{$0.status=="excluded"}.map(\.id)) else {return false}
-        return (1...100).contains(restoreIterations) && [restoreAmount,restorePedestal,restoreNoise,restoreProtect].allSatisfy{$0.isFinite && $0>=0} && restoreAmount<=1
+        return (1...100).contains(restoreIterations) && [restoreAmount,restorePedestal,restoreNoise,restoreProtect].allSatisfy{$0.isFinite && $0>=0} && restoreAmount<=1 && restoreGain.isFinite && restoreGain>0 && restoreReadNoise.isFinite && restoreReadNoise>=0
     }
     private func inspectRestoration(_ directory:URL,using service:any ProcessingService) async throws -> PsfRestorationReport {
         let output=try await service.runCLI(arguments:["psf-restoration-inspect","--recipe",directory.appendingPathComponent("recipe.txt").path])
@@ -30,7 +34,8 @@ extension PsfMeasurementSession {
         let measurement=URL(fileURLWithPath:report.directory).appendingPathComponent("recipe.txt")
         _ = try await service.runCLI(arguments:["psf-restore","--measurement",measurement.path,"--output-dir",output.path,
             "--iterations",String(restoreIterations),"--amount",String(restoreAmount),"--pedestal",String(restorePedestal),
-            "--noise-sigma",String(restoreNoise),"--protect-above",String(restoreProtect)])
+            "--noise-sigma",String(restoreNoise),"--protect-above",String(restoreProtect),"--spatial-mode",restoreSpatialMode,
+            "--noise-model",restoreNoiseModel,"--electrons-per-unit",String(restoreGain),"--read-noise-electrons",String(restoreReadNoise)])
         try Task.checkCancellation()
         restoration=try await inspectRestoration(output,using:service)
         return output.appendingPathComponent("restored.fits")
@@ -40,6 +45,8 @@ extension PsfMeasurementSession {
         _ = try await open(URL(fileURLWithPath:value.measurement).deletingLastPathComponent(),using:service)
         restoreIterations=value.iterations;restoreAmount=value.amount;restorePedestal=value.pedestal
         restoreNoise=value.noiseSigma;restoreProtect=value.protectAbove;restoration=value
+        restoreSpatialMode=value.spatialMode ?? "global";restoreNoiseModel=value.noiseModel ?? "constant"
+        restoreGain=value.electronsPerUnit ?? 1;restoreReadNoise=value.readNoiseElectrons ?? 0
         return directory.appendingPathComponent("restored.fits")
     }
     func restoredOutput(_ name:String,using service:any ProcessingService) async throws -> URL {

@@ -43,4 +43,20 @@ photonstack ghs-replay --recipe new-result/recipe.txt --output-dir replay-result
 - CLI/Swift 集成覆盖负信号范围、NaN 掩膜、WCS、源文件不变、预览/全图同统计、重跑一致、打开恢复、参数变化后的旧预览禁止保存、非法范围、CFA 拒绝、来源/产品改变和已有目录保护。
 - [独立全图复验](../tools/scripts/qa/generalized_stretch_validation.py) 使用 NumPy/Astropy/tifffile 检查所有像素、直方图、覆盖、截断与色域统计、16 位量化及重跑；[Siril 与分支复验](../tools/scripts/qa/generalized_stretch_siril.py) 另检查灰阶和独立数学公式。需要自行提供 Siril 及隔离配置；不改用户配置。
 - 当前为 CPU 双精度解析计算，最大 8 个工作线程；不是 GPU 实现。预览需要完整解码、计算和读取摘要，采用明确的“更新预览”，滑块拖动期间不反复启动处理。
-- 当前没有 GHS 逆变换、饱和度域拉伸、单独选择 RGB 通道、直方图放大/取样或多步配方链。曲线提升暗部也会提升噪声；明亮或锐利的显示效果不代表信噪比、测光或分辨率提高。多尺度自适应拉伸、进一步降噪与完整能力清单仍继续开发。
+- 支持逆曲线、HSV 饱和度和最多 32 步的连续配方。仍未提供单独选择 RGB 通道及直方图放大/取样。曲线提升暗部也会提升噪声；明亮或锐利的显示效果不代表信噪比、测光或分辨率提高。多尺度自适应拉伸、进一步降噪与完整能力清单仍继续开发。
+
+## 逆曲线、饱和度与多步配方
+
+“反向曲线”使用同一组参数的逆映射；RGB 独立模式下可验证曲线正反往返。它不能恢复此前截断、量化和亮度模式色域混合丢失的信息。输出仍标记为显示图，不能因此当作原始科学线性母片。
+
+“HSV 饱和度”对归一化 RGB 的 HSV S 应用曲线，保留 H 和 V；灰色和黑色保持中性。它不是保持感知亮度的色彩模型。直方图仍显示亮度统计，曲线在该模式下作用于饱和度。
+
+更新预览后，“追加下一步”固定当前参数并准备新一步。后续默认输入范围为 0–1，最多 32 步；“从原图重来”清除整条编辑链。另存或重开后仍可修改最后一步，也可继续追加。完整配方从最初来源重新计算，步间使用 Float32，不经 16 位 TIFF 量化；不依赖临时预览目录。新配方为版本 2，仍可打开/重跑版本 1。
+
+```sh
+photonstack ghs-stretch --input original.fits --output-dir first --mode independent --log-stretch 2
+photonstack ghs-stretch --input original.fits --chain-recipe first/recipe.txt \
+  --output-dir second --mode independent --log-stretch 2 --inverse on
+```
+
+编辑已有链最后一步时使用 `--chain-prefix-only on`；否则将当前参数追加到指定配方之后。所有步骤和来源身份会平铺保存在新配方中，重开时核对产品摘要。

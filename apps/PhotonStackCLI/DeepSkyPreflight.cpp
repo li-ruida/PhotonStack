@@ -4,6 +4,8 @@
 #include "photonstack/FitsCodec.hpp"
 
 #include <algorithm>
+#include <cmath>
+#include "../../engine/src/DeepSkyDrizzle.hpp"
 #include <iomanip>
 #include <limits>
 #include <set>
@@ -86,6 +88,10 @@ DeepSkyPreflight inspectDeepSkyPlan(const photonstack::DeepSkyRecipe& recipe, co
                 continue;
             }
             ++result.inspectedCount;
+            if (lights && o.cfaDrizzle) {
+                try { photonstack::detail::validateDrizzleSource(path,recipe.inputs.front()); }
+                catch(const std::exception& e) { complete=false; result.issues.push_back({"CfaSourceInvalid",path.string(),e.what()}); }
+            }
             if (lights && (result.calibrationCount || o.sensorPattern) && isFitsPath(path)) {
                 try {
                     if (inspectCalibrationAcquisition(path).text.contains("calibration")) {
@@ -121,7 +127,7 @@ DeepSkyPreflight inspectDeepSkyPlan(const photonstack::DeepSkyRecipe& recipe, co
         const auto calibrationCache = o.masterMethod == MasterFrameMethod::Median ? multiply(calibrationFrames, frame) : 0;
         // Each consumed aligned FITS is released after caching. At most one
         // additional decoded frame is on disk during conversion to f32 cache.
-        result.temporaryBytes = std::max(multiply(add(n, 1), fitsFrame), calibrationCache);
+        result.temporaryBytes = o.cfaDrizzle ? 0 : std::max(multiply(add(n, 1), fitsFrame), calibrationCache);
         const bool noise = o.noiseModel == DeepSkyNoiseModel::IndependentLuminance;
         const auto rejectionMaps = o.stack.collectRejectionMaps ? 2ULL : 0ULL;
         std::uint64_t savedStages = 0;
@@ -132,6 +138,12 @@ DeepSkyPreflight inspectDeepSkyPlan(const photonstack::DeepSkyRecipe& recipe, co
         // calibration masters and explicitly requested diagnostic products.
         const auto fitsProducts = add(add(2 + rejectionMaps + noise, calibrationGroups), savedStages);
         result.productBytes = add(multiply(fitsProducts, fitsFrame), add(frame / 2, mib));
+        if (o.cfaDrizzle) {
+            const auto outputFrame=multiply(multiply(std::uint64_t(std::ceil(result.width*o.drizzleScale)),
+                std::uint64_t(std::ceil(result.height*o.drizzleScale))),16);
+            const auto outputFits=add(multiply(add(outputFrame,2879)/2880,2880),5760);
+            result.productBytes=add(multiply(3+savedStages,outputFits),add(outputFrame/2,mib));
+        }
         const auto combined = add(*result.temporaryBytes, *result.productBytes);
         result.plannedDiskBytes = add(add(combined, combined / 10), 64 * mib);
         // These are the main stack buffers, not a process RSS or a memory cap.
@@ -139,6 +151,11 @@ DeepSkyPreflight inspectDeepSkyPlan(const photonstack::DeepSkyRecipe& recipe, co
         // additional algorithm-specific working sets.
         const auto stackFrames = calibrationGroups + (robust ? 1 : 3) + rejectionMaps + noise;
         result.stackBufferBytes = add(multiply(stackFrames, frame), robust ? add(o.stack.combineTileBytes, 64 * mib) : 0);
+        if (o.cfaDrizzle) {
+            const auto pixels=multiply(std::uint64_t(std::ceil(result.width*o.drizzleScale)),
+                std::uint64_t(std::ceil(result.height*o.drizzleScale)));
+            result.stackBufferBytes=add(multiply(pixels,80),multiply(frame,2));
+        }
         const auto g = multiply(std::min(o.quality.sampleSide, result.width), std::min(o.quality.sampleSide, result.height));
         result.assessmentSampleBytes = multiply(multiply(n, g), 8);
     } catch (const std::overflow_error& e) {

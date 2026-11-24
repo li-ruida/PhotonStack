@@ -93,6 +93,8 @@ class Seams(unittest.TestCase):
                     name=blend+matching
                     report=run(root,name,files,'--blend',blend,'--exposure-match',matching)
                     seam=report['seams'];pair=seam['pairs'][0]
+                    self.assertGreater(pair['final']['samples'],100)
+                    self.assertIn(pair['final']['status'],['review','no-large-excess','insufficient-samples'])
                     self.assertEqual((seam['width'],seam['height']),(144,88));self.assertFalse(seam['preview'])
                     samples,cells,candidates=expected(a,b,pair,seam['corrections'])
                     for key,offset in [('before',0),('after',2)]:

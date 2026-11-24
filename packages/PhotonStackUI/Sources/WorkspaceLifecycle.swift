@@ -34,7 +34,8 @@ struct ApplicationStateSynchronizationModifier: ViewModifier {
                     language: model.language,
                     analysisWorkerCount: model.analysisWorkerCount,
                     stackWorkerCount: model.stackWorkerCount,
-                    computeBackend: model.computeBackend
+                    computeBackend: model.computeBackend,
+                    promptToSaveOnExit: model.promptToSaveOnExit
                 )
                 commandState.update(snapshot)
             }
@@ -54,6 +55,10 @@ struct PerformanceSettingsNotificationModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .onReceive(NotificationCenter.default.publisher(for: .photonStackSetPromptToSaveOnExit)) { notification in
+                guard let enabled = notification.object as? Bool else { return }
+                model.setPromptToSaveOnExit(enabled)
+            }
             .onReceive(NotificationCenter.default.publisher(for: .photonStackSetAnalysisWorkerCount)) { notification in
                 guard let count = notification.object as? Int else { return }
                 model.setAnalysisWorkerCount(count)

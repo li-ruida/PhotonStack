@@ -169,9 +169,7 @@ struct WorkspaceJourneyBar: View {
                 }
             }
             if let error = model.errorMessage, !error.isEmpty {
-                Label(model.localizedMessage(error), systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.red).lineLimit(3)
-                    .textSelection(.enabled)
+                ProcessingErrorNotice(message:model.localizedMessage(error),chinese:chinese)
                     .accessibilityIdentifier("journey.error")
             }
             if let output = WorkspaceJourneyState.lastImageExport(in: model.jobs) {
@@ -222,7 +220,7 @@ struct WorkspaceJourneyBar: View {
             if model.latestDeepSkyResultURL != nil && !state.resultCurrent {
                 return chinese ? "当前显示上次成片。素材或参数已变更，请重新筛片并堆栈。" : "Inputs or settings changed; this is the previous result. Review and stack again to update it."
             }
-            return chinese ? "导出可保存成片；要保留处理历史，请保存项目。" : "Export to save the image. Save the project to keep your edit history."
+            return chinese ? "导出保存图片；保存项目可继续编辑。" : "Export to save the image. Save the project to keep your edit history."
         }
         if state.lightCount < 3 { return chinese ? "堆栈至少需要 3 张同一目标的亮场；已有成片可直接进入后期。" : "Stacking needs at least 3 lights of the same target. An existing master can go straight to finishing." }
         return chinese ? "下一步检查星点、噪声与对齐质量。如有暗场、平场或偏置帧，可在素材栏指定。" : "Next, assess stars, noise and alignment. Assign optional dark, flat and bias frames in the sidebar."

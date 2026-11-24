@@ -28,7 +28,7 @@ struct CfaDrizzleFrame {
     double weight = 1;
 };
 
-// Experimental scientific accumulator. Each transformed square is clipped exactly
+// Scientific accumulator. Each transformed square is clipped exactly
 // against output pixel squares. Colors have independent sums and coverage weights.
 // The result is coverage-normalized surface brightness, not summed detector counts.
 // No demosaicing, rejection, sharpening, registration estimation, or hole filling.

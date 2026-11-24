@@ -66,7 +66,7 @@ struct InspectorPanel: View {
                             ) {
                                 DeepSkyWorkflowOverview(model: model)
                             }
-                            Button(model.language == .simplifiedChinese ? "直接调整当前图像…" : "Edit current image…") {
+                            Button(model.language == .simplifiedChinese ? "调整当前图像…" : "Edit current image…") {
                                 NotificationCenter.default.post(name: .photonStackOpenFinishing, object: nil)
                             }
                             .disabled(!model.canProcessCurrentInput || model.hasActiveProcessing)

@@ -73,6 +73,12 @@ struct DeepSkyResultReviewView: View {
                         Text(DeepSkyResultReview.text(cue, chinese: chinese))
                             .font(.caption).fixedSize(horizontal: false, vertical: true)
                     }
+                    if let coverage = report.drizzleCoverage, coverage.count == 3, !report.drizzlePaths.isEmpty {
+                        Text("CFA Drizzle · R \(percent(coverage[0])) · G \(percent(coverage[1])) · B \(percent(coverage[2]))")
+                            .font(.caption.monospacedDigit())
+                        Text(chinese ? "原始画布完整 RGB 覆盖 \(percent(report.drizzleCompleteCoverage ?? 0))；覆盖率不是分辨率收益，逐色权重已随母片保存。" : "Complete RGB coverage of original canvas: \(percent(report.drizzleCompleteCoverage ?? 0)). Coverage does not prove resolution gain; color weights are saved with the master.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                     sourceIssues
                     if let metrics = report.displayReview {
                         Text(chinese
@@ -111,7 +117,12 @@ struct DeepSkyResultReviewView: View {
                     .font(.caption).fixedSize(horizontal: false, vertical: true)
             }
             ForEach(assessment.issues) { issue in
-                Text("\(DeepSkyReview.reason(issue.code, chinese: chinese)) · \(issue.frameIndices.count)\(chinese ? " 张入栈帧" : " stacked frames"). \(DeepSkyResultAssessment.advice(issue.code, chinese: chinese))")
+                let drizzleTransient = !report.drizzlePaths.isEmpty && issue.code == "localized-transients-use-pixel-rejection"
+                let title = drizzleTransient ? (chinese ? "局部残差候选" : "Local residual candidates") : DeepSkyReview.reason(issue.code, chinese: chinese)
+                let advice = drizzleTransient
+                    ? (chinese ? "CFA Drizzle 不进行像素剔除；检查原片及对应成图区域，必要时排除受影响帧或改用稳健合成。候选不等于真实缺陷。" : "CFA Drizzle does not reject pixels. Inspect sources and matching output regions; exclude affected frames or use robust stacking if needed. Candidates are not confirmed defects.")
+                    : DeepSkyResultAssessment.advice(issue.code, chinese: chinese)
+                Text("\(title) · \(issue.frameIndices.count)\(chinese ? " 张入栈帧" : " stacked frames"). \(advice)")
                     .font(.caption).fixedSize(horizontal: false, vertical: true)
             }
             Text(chinese ? "以上来自源帧记录，不是成图缺陷检测；多个提示可能涉及同一帧。张数不等于总曝光，所有帧都通过相对筛选也不保证清晰。"

@@ -62,21 +62,14 @@ public struct PhotonStackSettingsView: View {
                     set: { commandState.requestPromptToSaveOnExit($0) }
                 ))
                 .accessibilityIdentifier("settings.promptToSaveOnExit")
-                Text(language == .simplifiedChinese
-                    ? "关闭窗口或退出时，提醒保存未保存的修改。默认关闭。"
-                    : "Ask about unsaved changes when closing a window or quitting. Off by default.")
-                    .font(.caption).foregroundStyle(.secondary)
+                .help(language == .simplifiedChinese
+                    ? "关闭窗口或退出时，提醒保存未保存的修改。"
+                    : "Ask about unsaved changes when closing a window or quitting.")
             } header: {
                 Label(
                     language == .simplifiedChinese ? "通用" : "General",
                     systemImage: "globe"
                 )
-            } footer: {
-                Text(language == .simplifiedChinese
-                    ? "首次启动时按 macOS 偏好选择中英文，其他语言默认使用中文。"
-                    : "On first launch, PhotonStack uses English or Chinese from your macOS preferences, with Chinese as the fallback.")
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
 
             updateSection
@@ -98,21 +91,24 @@ public struct PhotonStackSettingsView: View {
                 }
                 .accessibilityIdentifier("settings.stackWorkers")
 
-                Picker(language == .simplifiedChinese ? "深空计算后端" : "Deep-sky compute backend", selection: backend) {
+                Picker(language == .simplifiedChinese ? "计算方式" : "Compute", selection: backend) {
                     Text(language == .simplifiedChinese ? "自动（推荐）" : "Automatic (recommended)").tag(DeepSkyComputeBackend.automatic)
                     Text(language == .simplifiedChinese ? "优先 GPU" : "Prefer GPU").tag(DeepSkyComputeBackend.metal)
                     Text(language == .simplifiedChinese ? "仅 CPU" : "CPU only").tag(DeepSkyComputeBackend.cpu)
                 }
                 .accessibilityIdentifier("settings.computeBackend")
+                .help(language == .simplifiedChinese ? "实际并发数受图像尺寸和可用内存限制；运行记录显示实际使用的 CPU / GPU。" : "Image size and memory limit concurrency. Run details show actual CPU / GPU use.")
                 if let run = commandState.snapshot.performance {
-                    performanceDetails(run)
+                    DisclosureGroup(language == .simplifiedChinese ? "上次运行" : "Last run") {
+                        performanceDetails(run)
+                    }
                 }
             } header: {
                 Label(language == .simplifiedChinese ? "性能" : "Performance", systemImage: "speedometer")
             } footer: {
                 Text(language == .simplifiedChinese
-                    ? "设置从下次处理起生效。实际并发数取决于图像尺寸和可用内存；运行记录会标明哪些步骤使用了 GPU。"
-                    : "Changes apply to the next run. Image size and available memory limit concurrency. Run details show which stages used the GPU.")
+                    ? "下次处理时生效。"
+                    : "Applies to the next run.")
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

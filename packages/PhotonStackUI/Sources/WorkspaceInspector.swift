@@ -70,8 +70,7 @@ struct InspectorPanel: View {
                                 NotificationCenter.default.post(name: .photonStackOpenFinishing, object: nil)
                             }
                             .disabled(!model.canProcessCurrentInput || model.hasActiveProcessing)
-                            Text(model.language == .simplifiedChinese ? "适合单张照片或已经堆好的成片。不会自动堆栈。" : "For a single photo or an existing master. This does not run stacking.")
-                                .font(.caption).foregroundStyle(.secondary)
+                            .help(model.language == .simplifiedChinese ? "直接调整单张照片或堆栈成片。" : "Edit a single photo or stacked image.")
                         }
 
                     }
@@ -265,24 +264,7 @@ private enum InspectorToolGroup: String, CaseIterable, Hashable {
         }
     }
 
-    var introKey: LocalizedTextKey {
-        switch self {
-        case .project:
-            return .inspectorProjectGroupIntro
-        case .asset:
-            return .inspectorAssetGroupIntro
-        case .photoInfo:
-            return .inspectorPhotoInfoGroupIntro
-        case .workspace:
-            return .inspectorWorkspaceGroupIntro
-        case .workflow:
-            return .inspectorWorkflowGroupIntro
-        case .batch:
-            return .inspectorBatchGroupIntro
-        case .history:
-            return .inspectorHistoryGroupIntro
-        }
-    }
+
 }
 
 private struct InspectorToolGroupView<Content: View>: View {
@@ -291,8 +273,6 @@ private struct InspectorToolGroupView<Content: View>: View {
     var summary: String? = nil
     @Binding var isExpanded: Bool
     @ViewBuilder let content: () -> Content
-    @State private var showIntro = false
-    @State private var hoverIntroTask: Task<Void, Never>?
     private let groupAnimation = Animation.interactiveSpring(response: 0.28, dampingFraction: 0.9, blendDuration: 0.08)
 
     var body: some View {
@@ -316,7 +296,7 @@ private struct InspectorToolGroupView<Content: View>: View {
                                 transaction.animation = nil
                             }
 
-                        if let summary, summary.isEmpty == false {
+                        if !isExpanded, let summary, summary.isEmpty == false {
                             Text(summary)
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -340,59 +320,16 @@ private struct InspectorToolGroupView<Content: View>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(InspectorHeaderButtonStyle())
-            .onHover { isHovering in
-                if isHovering {
-                    scheduleIntro()
-                } else {
-                    cancelIntro()
-                }
-            }
-            .popover(isPresented: $showIntro, arrowEdge: .trailing) {
-                Text(model.localized(group.introKey))
-                    .font(.callout)
-                    .lineSpacing(3)
-                    .foregroundStyle(.primary)
-                    .frame(width: 280, alignment: .leading)
-                    .padding(14)
-                    .presentationCompactAdaptation(.popover)
-            }
 
             CollapsibleInspectorContent(isExpanded: isExpanded) {
                 content()
             }
         }
-        .padding(10)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(.secondary.opacity(0.16), lineWidth: 1)
+        .overlay(alignment: .bottom) {
+            Divider()
         }
-        .onDisappear {
-            cancelIntro()
-        }
-    }
-
-    private func scheduleIntro() {
-        hoverIntroTask?.cancel()
-        showIntro = false
-        hoverIntroTask = Task {
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
-            guard Task.isCancelled == false else {
-                return
-            }
-            await MainActor.run {
-                withAnimation(.easeOut(duration: 0.16)) {
-                    showIntro = true
-                }
-            }
-        }
-    }
-
-    private func cancelIntro() {
-        hoverIntroTask?.cancel()
-        hoverIntroTask = nil
-        showIntro = false
     }
 }
 

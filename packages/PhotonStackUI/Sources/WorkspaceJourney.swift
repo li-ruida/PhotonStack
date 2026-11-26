@@ -125,12 +125,14 @@ struct WorkspaceJourneyBar: View {
             if !model.project.assets.isEmpty {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(statusTitle(state)).font(.callout.weight(.semibold))
+                        if let title = statusTitle(state) {
+                            Text(title).font(.callout.weight(.semibold))
+                        }
                         if state.step == .stack, !model.hasActiveProcessing, let report = model.deepSkySettings.lastReport {
                             let kept = DeepSkyReview.keptCount(report.frames, settings: model.deepSkySettings)
                             let excluded = report.frames.count - kept
                             HStack(spacing: 8) {
-                                Text(chinese ? "筛片完成，当前保留 \(kept) 张。" : "Review complete. \(kept) frames kept.")
+                                Text(chinese ? "保留 \(kept) 张" : "\(kept) kept")
                                     .foregroundStyle(.secondary)
                                 if excluded > 0 {
                                     Button(chinese ? "查看排除的 \(excluded) 张" : "View \(excluded) excluded") {
@@ -138,12 +140,10 @@ struct WorkspaceJourneyBar: View {
                                     }
                                     .buttonStyle(.link)
                                     .accessibilityIdentifier("journey.review-excluded")
-                                } else {
-                                    Text(chinese ? "没有排除的照片" : "No frames excluded").foregroundStyle(.secondary)
                                 }
                             }.font(.caption)
-                        } else {
-                            Text(statusDetail(state)).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        } else if let detail = statusDetail(state) {
+                            Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     Spacer(minLength: 0)
@@ -205,24 +205,26 @@ struct WorkspaceJourneyBar: View {
         }
     }
 
-    private func statusTitle(_ state: WorkspaceJourneyState) -> String {
+    private func statusTitle(_ state: WorkspaceJourneyState) -> String? {
         if model.hasActiveProcessing { return chinese ? "正在处理…" : "Processing…" }
-        if state.step == .finish { return chinese ? "调整亮度、色彩与细节" : "Adjust brightness, color and detail" }
-        return chinese ? "已导入 \(state.lightCount) 张亮场 · \(calibrationCount) 张校准帧" : "\(state.lightCount) lights · \(calibrationCount) calibration frames"
+        if state.step == .finish { return nil }
+        let lights = chinese ? "\(state.lightCount) 张亮场" : "\(state.lightCount) lights"
+        guard calibrationCount > 0 else { return lights }
+        return lights + (chinese ? " · \(calibrationCount) 张校准帧" : " · \(calibrationCount) calibration frames")
     }
 
     private var calibrationCount: Int { model.darkAssets.count + model.flatAssets.count + model.biasAssets.count }
 
-    private func statusDetail(_ state: WorkspaceJourneyState) -> String {
-        if model.hasActiveProcessing { return model.progressMessage ?? (chinese ? "处理会在后台继续。" : "Processing continues in the background.") }
+    private func statusDetail(_ state: WorkspaceJourneyState) -> String? {
+        if model.hasActiveProcessing { return model.progressMessage }
         if state.step == .finish {
             if model.editGraphNeedsReplay { return model.localized(.editGraphNeedsReplay) }
             if model.latestDeepSkyResultURL != nil && !state.resultCurrent {
                 return chinese ? "当前显示上次成片。素材或参数已变更，请重新筛片并堆栈。" : "Inputs or settings changed; this is the previous result. Review and stack again to update it."
             }
-            return chinese ? "导出保存图片；保存项目可继续编辑。" : "Export to save the image. Save the project to keep your edit history."
+            return nil
         }
-        if state.lightCount < 3 { return chinese ? "堆栈至少需要 3 张同一目标的亮场；已有成片可直接进入后期。" : "Stacking needs at least 3 lights of the same target. An existing master can go straight to finishing." }
-        return chinese ? "下一步检查星点、噪声与对齐质量。如有暗场、平场或偏置帧，可在素材栏指定。" : "Next, assess stars, noise and alignment. Assign optional dark, flat and bias frames in the sidebar."
+        if state.lightCount < 3 { return chinese ? "堆栈至少需要 3 张同一天体的亮场。" : "Stacking needs at least 3 lights of one target." }
+        return nil
     }
 }

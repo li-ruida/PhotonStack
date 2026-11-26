@@ -62,7 +62,9 @@ struct MosaicJourneyBar: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(chinese ? "\(panels.count) 个天区 · \(frames) 帧" : "\(panels.count) panels · \(frames) frames")
                             .font(.callout.weight(.semibold))
-                        Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        if let detail {
+                            Text(detail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                     Spacer(minLength: 0)
                     if model.hasActiveProcessing {
@@ -150,30 +152,26 @@ struct MosaicJourneyBar: View {
         }
     }
 
-    private var detail: String {
+    private var detail: String? {
         if model.hasActiveProcessing {
-            return [model.stackingMosaicPanel, model.progressMessage].compactMap { $0 }.joined(separator: " · ")
+            let progress = [model.stackingMosaicPanel, model.progressMessage].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+            return progress.isEmpty ? nil : progress
         }
         switch step {
         case .importPanels:
-            return model.missingMosaicPanelHint ?? (chinese ? "每个子文件夹对应一个天区，可一次选择总目录。" : "Choose the parent folder, with one subfolder per sky panel.")
+            return model.missingMosaicPanelHint ?? (chinese ? "至少需要两个相互重叠的天区。" : "At least two overlapping panels required.")
         case .preview:
             if model.latestMosaicOperation != nil {
                 return chinese ? "天区或拼接设置已变化，请重新检查配准预览。" : "The panels or stitch settings have changed. Check the alignment again."
             }
-            if model.parameters.mosaicAlignment == .wcs {
-                return chinese ? "读取 FITS 母片的天球坐标，并检查重叠区域的星点残差。" : "Project solved FITS masters and check the common-star residuals."
-            }
-            return chinese ? "预览会分别堆栈各区原片，并用共同星点对齐相邻天区。" : "Preview stacks each panel and aligns adjacent panels using shared stars."
+            return nil
         case .build:
             if products.result {
-                return chinese ? "检查预览中的星点，或返回已有的全分辨率成片。" : "Inspect the alignment stars or return to the full-resolution mosaic."
+                return nil
             }
-            return chinese ? "检查预览中的重叠区域和星点，再生成全分辨率成片。" : "Check the overlapping stars, then build the full-resolution mosaic."
-        case .finish:
-            return chinese ? "拼接成片已就绪，可以调整亮度、色彩与细节。" : "Your mosaic is ready for brightness, color and detail adjustments."
-        case .export:
-            return chinese ? "在右侧调整成片，满意后选择导出格式和位置。" : "Adjust the mosaic in the inspector, then choose an export format and destination."
+            return chinese ? "请先检查重叠区域的星点是否对齐。" : "Check star alignment in the overlap before building."
+        case .finish, .export:
+            return nil
         }
     }
 }

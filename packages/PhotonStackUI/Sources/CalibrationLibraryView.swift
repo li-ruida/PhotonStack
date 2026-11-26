@@ -55,8 +55,6 @@ struct CalibrationLibraryView: View {
             if let error = session.error {
                 ProcessingErrorNotice(message:error,chinese:chinese)
             }
-            Text(t("制作母片 → 检查匹配 → 分配并校准。任务可重开恢复，原片不会被修改。", "Build masters → review matches → assign and calibrate. Tasks can be reopened and resumed; sources stay unchanged."))
-                .font(.caption).foregroundStyle(.secondary)
         }.padding(18).frame(width: 1040, height: 760)
             .task { session.perform { try await session.reload() } }
             .onDisappear { session.cancel() }

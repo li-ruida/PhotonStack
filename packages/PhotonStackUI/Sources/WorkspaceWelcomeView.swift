@@ -11,9 +11,6 @@ struct WorkspaceWelcomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
-                Text(chinese ? "开始处理照片" : "Start processing")
-                    .font(.largeTitle.weight(.semibold))
-
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .top, spacing: 16) {
                         sequenceCard.frame(minWidth: 300)
@@ -22,12 +19,6 @@ struct WorkspaceWelcomeView: View {
                     VStack(spacing: 16) { sequenceCard; masterCard }
                 }
 
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "checkmark.shield").foregroundStyle(.secondary)
-                    Text(chinese ? "支持 RAW、FITS、TIFF、JPEG、PNG 和 HEIF。导入和筛片会保留原文件。"
-                         : "Import RAW, FITS, TIFF, JPEG, PNG or HEIF. Importing and reviewing preserve your originals.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
                 Divider()
                 HStack {
                     Spacer()
@@ -47,14 +38,14 @@ struct WorkspaceWelcomeView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Label(chinese ? "堆栈一组照片" : "Stack a sequence", systemImage: "square.3.layers.3d")
                     .font(.title3.weight(.semibold))
-                Text(chinese ? "导入同一天体的至少 3 张照片，筛选后对齐、堆栈。" : "Import at least 3 lights of one target. Review stars and noise, then align and combine.")
-                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(chinese ? "同一天体 · 至少 3 张" : "One target · At least 3 frames")
+                    .font(.callout).foregroundStyle(.secondary)
                 HStack {
                     Button(action: onImport) { Label(chinese ? "导入照片…" : "Import photos…", systemImage: "plus") }
                         .buttonStyle(.borderedProminent).accessibilityIdentifier("journey.import-files")
                     Button(chinese ? "导入文件夹…" : "Import folder…", action: onImportFolder)
                         .accessibilityIdentifier("journey.import-folder")
-                }.controlSize(.large)
+                }
             }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -64,10 +55,10 @@ struct WorkspaceWelcomeView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Label(chinese ? "调整已有成片" : "Finish an image", systemImage: "slider.horizontal.3")
                     .font(.title3.weight(.semibold))
-                Text(chinese ? "打开 FITS、TIFF 或单张照片，调整亮度、色彩和细节。" : "Open a FITS / TIFF master or a single photo to adjust brightness, color and detail.")
-                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(chinese ? "单张照片或堆栈成片" : "Single photo or stacked image")
+                    .font(.callout).foregroundStyle(.secondary)
                 Button(chinese ? "选择图像…" : "Choose image…", action: onEditMaster)
-                    .controlSize(.large).accessibilityIdentifier("journey.import-master")
+                    .accessibilityIdentifier("journey.import-master")
             }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
         }
     }

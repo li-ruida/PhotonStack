@@ -14,9 +14,6 @@ struct BatchQueueSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(model.localized(.batchQueueSection))
-                .font(.headline)
-
             HStack {
                 Button(model.localized(.queueStretch)) {
                     model.enqueueCurrent(.stretch)

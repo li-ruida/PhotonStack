@@ -13,9 +13,6 @@ struct SelectedAssetSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(model.localized(.assetSection))
-                .font(.headline)
-
             if let asset = model.selectedAsset {
                 LabeledContent(model.localized(.nameLabel), value: asset.displayName)
                 LabeledContent(model.localized(.kindLabel), value: asset.kind.rawValue.uppercased())
@@ -251,9 +248,6 @@ struct PhotoInfoSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(model.localized(.photoInfoSection))
-                .font(.headline)
-
             if let asset = model.selectedAsset {
                 VStack(alignment: .leading, spacing: 7) {
                     LabeledContent(model.localized(.nameLabel), value: asset.displayName)

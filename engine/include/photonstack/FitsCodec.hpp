@@ -48,6 +48,11 @@ void copyFitsWithWcs(const std::filesystem::path& source, const std::filesystem:
 // Astrometry.net writes EQUINOX=2000 regardless of the index reference frame.
 // Only call with explicitly declared ICRS indices. No FK5 conversion is implied.
 SolvedPanel readAstrometryICRSPanel(const std::filesystem::path& path);
+struct SolvedFitsField {
+    std::uint32_t width, height;
+    SolvedPanel sky;
+};
+SolvedFitsField inspectSolvedRGBField(const std::filesystem::path& path);
 using LinearScienceImage = DevelopableFitsImage;
 
 // Linear mono/RGB/RGBA FITS, decoded to RGBA with nonfinite colors masked.

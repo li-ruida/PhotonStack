@@ -65,18 +65,23 @@ if(Python3_Interpreter_FOUND)
     "${CMAKE_CURRENT_SOURCE_DIR}/test_linear_match.py" "$<TARGET_FILE:photonstack>")
   add_test(NAME photonstack_psf_measurement COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/test_psf_measurement.py" "$<TARGET_FILE:photonstack>")
+  add_test(NAME photonstack_psf_restoration COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_psf_restoration.py $<TARGET_FILE:photonstack>)
+
+  add_test(NAME photonstack_generalized_stretch_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_generalized_stretch.py $<TARGET_FILE:photonstack>)
+  add_test(NAME photonstack_plate_solve_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_plate_solve.py $<TARGET_FILE:photonstack>)
+  add_test(NAME photonstack_sky_annotation_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_sky_annotation.py $<TARGET_FILE:photonstack>)
+  add_test(NAME photonstack_spectral_calibration_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_spectral_calibration.py $<TARGET_FILE:photonstack>)
+  add_test(NAME photonstack_spectral_profile_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_spectral_profile.py $<TARGET_FILE:photonstack>)
+  add_test(NAME photonstack_gaia_field_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_gaia_field.py $<TARGET_FILE:photonstack>)
+  add_test(NAME photonstack_narrowband_profile_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_narrowband_profile.py $<TARGET_FILE:photonstack>)
+  add_test(NAME photonstack_calibration_metadata_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_calibration_metadata.py $<TARGET_FILE:photonstack>)
+
+  add_test(NAME photonstack_sensor_master_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_sensor_master.py $<TARGET_FILE:photonstack>)
+  add_test(NAME photonstack_calibration_job_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_calibration_job.py $<TARGET_FILE:photonstack>)
+
+  add_test(NAME photonstack_audit_cli_regressions COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_audit_regressions.py" "$<TARGET_FILE:photonstack>")
+  add_test(NAME photonstack_coordinate_wrapping COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/test_coordinate_wrapping.py")
 endif()
-add_test(NAME photonstack_psf_restoration COMMAND ${Python3_EXECUTABLE}
-  ${CMAKE_CURRENT_SOURCE_DIR}/test_psf_restoration.py $<TARGET_FILE:photonstack>)
-
-add_test(NAME photonstack_generalized_stretch_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_generalized_stretch.py $<TARGET_FILE:photonstack>)
-add_test(NAME photonstack_plate_solve_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_plate_solve.py $<TARGET_FILE:photonstack>)
-add_test(NAME photonstack_sky_annotation_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_sky_annotation.py $<TARGET_FILE:photonstack>)
-add_test(NAME photonstack_spectral_calibration_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_spectral_calibration.py $<TARGET_FILE:photonstack>)
-add_test(NAME photonstack_spectral_profile_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_spectral_profile.py $<TARGET_FILE:photonstack>)
-add_test(NAME photonstack_gaia_field_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_gaia_field.py $<TARGET_FILE:photonstack>)
-add_test(NAME photonstack_narrowband_profile_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_narrowband_profile.py $<TARGET_FILE:photonstack>)
-add_test(NAME photonstack_calibration_metadata_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_calibration_metadata.py $<TARGET_FILE:photonstack>)
-
-add_test(NAME photonstack_sensor_master_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_sensor_master.py $<TARGET_FILE:photonstack>)
-add_test(NAME photonstack_calibration_job_cli COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_calibration_job.py $<TARGET_FILE:photonstack>)

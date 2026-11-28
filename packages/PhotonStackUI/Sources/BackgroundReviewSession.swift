@@ -125,12 +125,14 @@ final class BackgroundReviewSession: ObservableObject {
         }
     }
     func cancel() { task?.cancel() }
-    func close() {
+    func close(after operation: Task<Void, Never>? = nil) {
         let pending = task
         pending?.cancel()
         let folder = root
+        operation?.cancel()
         Task {
             await pending?.value
+            await operation?.value
             try? FileManager.default.removeItem(at: folder)
         }
     }
@@ -203,7 +205,8 @@ final class BackgroundReviewSession: ObservableObject {
             throw ProcessingServiceError.invalidArguments("Update the background preview before saving.")
         }
         let recipeBytes = try JSONEncoder().encode(recipe)
-        try await Task.detached {
+        let copy = Task.detached {
+            try Task.checkCancellation()
             guard mkdir(destination.path, 0o755) == 0 else {
                 throw CocoaError(.fileWriteFileExists, userInfo: [NSFilePathErrorKey: destination.path])
             }
@@ -217,7 +220,9 @@ final class BackgroundReviewSession: ObservableObject {
                 try? FileManager.default.removeItem(at: destination)
                 throw error
             }
-        }.value
+        }
+        try await withTaskCancellationHandler { try await copy.value } onCancel: { copy.cancel() }
+        try Task.checkCancellation()
         return destination.appendingPathComponent("corrected.fits")
     }
     func point(id: UUID) -> BackgroundReviewPoint? { recipe?.samples.first { $0.id == id } }

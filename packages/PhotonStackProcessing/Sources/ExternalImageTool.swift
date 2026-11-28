@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Versioned local image-tool adapter. Selecting/importing a definition never
 /// executes it. Every job runs in its own working folder with staged output.
@@ -25,11 +26,28 @@ public struct ExternalImageTool: Codable, Equatable, Sendable {
     }
 
     public static func load(from url: URL) throws -> Self {
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        guard (attributes[.size] as? NSNumber)?.intValue ?? Int.max <= 65_536 else {
+        let limit = 64 * 1024
+        let descriptor = url.withUnsafeFileSystemRepresentation { path in
+            path.map { Darwin.open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK) } ?? -1
+        }
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0, info.st_mode & S_IFMT == S_IFREG else {
+            throw ProcessingServiceError.invalidArguments("Choose a regular external-tool definition file.")
+        }
+        guard info.st_size <= limit else {
             throw ProcessingServiceError.invalidArguments("External-tool definition exceeds 64 KiB.")
         }
-        let value = try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
+        var data = Data()
+        while let chunk = try handle.read(upToCount: limit + 1 - data.count), !chunk.isEmpty {
+            data.append(chunk)
+            guard data.count <= limit else {
+                throw ProcessingServiceError.invalidArguments("External-tool definition exceeds 64 KiB.")
+            }
+        }
+        let value = try JSONDecoder().decode(Self.self, from: data)
         try value.validate()
         return value
     }

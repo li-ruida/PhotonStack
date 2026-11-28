@@ -1,3 +1,5 @@
+#include "photonstack/ParallelRanges.hpp"
+#include <atomic>
 #include "photonstack/AstroDevelop.hpp"
 #include "DisplayGamut.hpp"
 #include "MaskedImageSampling.hpp"
@@ -358,75 +360,85 @@ AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelop
     const bool useAsinh = opt.toneCurve == AstroToneCurve::Asinh;
     const double slope = (1 - opt.background) / (result.toneScale * (useAsinh ? asinhNorm : 1));
     const double skyLight = detail::decodeSRGB(opt.background);
-    for (std::size_t p = 0; p < im.pixelCount(); ++p) {
-        const auto o = p * im.channels;
-        bool valid = im.channels != 4 || (std::isfinite(im.pixels[o + 3]) && im.pixels[o + 3] > 0);
-        for (int c = 0; c < 3; ++c)
-            valid = valid && std::isfinite(im.pixels[o + c]);
-        if (!valid) {
-            for (int c = 0; c < im.channels; ++c)
-                result.image.pixels[o + c] = 0;
-            continue;
+    std::atomic<std::size_t> displayCount{0}, blackCount{0}, whiteCount{0};
+    detail::parallelRanges(im.pixelCount(), 32768, [&](std::size_t first, std::size_t last) noexcept {
+        std::size_t display = 0, black = 0, white = 0;
+        for (std::size_t p = first; p < last; ++p) {
+            const auto o = p * im.channels;
+            bool valid = im.channels != 4 || (std::isfinite(im.pixels[o + 3]) && im.pixels[o + 3] > 0);
+            for (int c = 0; c < 3; ++c)
+                valid = valid && std::isfinite(im.pixels[o + c]);
+            if (!valid) {
+                for (int c = 0; c < im.channels; ++c)
+                    result.image.pixels[o + c] = 0;
+                continue;
+            }
+            std::array<double, 3> color;
+            for (int c = 0; c < 3; ++c)
+                color[c] = (static_cast<double>(working.pixels[o + c]) - result.sky[c]) * result.gains[c];
+            const double lum = color[0] * .2126 + color[1] * .7152 + color[2] * .0722;
+            double mapped;
+            if (lum >= 0) {
+                mapped = mapPositiveLuminance(lum);
+            } else {
+                mapped = opt.background > 0 ? opt.background * std::exp(slope * lum / opt.background) : 0;
+            }
+            // The tone curve always sets neutral brightness in sRGB code values.
+            // Older renders applied stellar color ratios directly in that space.
+            const double neutral = opt.linearDisplayColor ? detail::decodeSRGB(mapped) : mapped;
+            double colorSlope;
+            double shadowChroma = 1;
+            if (!opt.linearDisplayColor) {
+                const double denominator = result.toneScale + std::max(0.0, lum);
+                colorSlope = useAsinh ? (lum > 0 ? (mapped - opt.background) / lum : slope)
+                                      : (1 - opt.background) / denominator;
+                if (lum < 0) shadowChroma = opt.background > 0 ? mapped / opt.background : 0;
+            } else if (lum > 0 && mapped > opt.background) {
+                colorSlope = (neutral - skyLight) / lum;
+            } else {
+                const double decodeSlope = mapped <= .04045 ? 1 / 12.92 : 2.4 * neutral / (mapped + .055);
+                const double shadow = lum < 0 && opt.background > 0 ? mapped / opt.background : 1;
+                colorSlope = slope * decodeSlope * shadow;
+            }
+            // A gradual highlight chroma rolloff keeps bright cores from turning
+            // into flat, saturated color patches while retaining middle-tone color.
+            const double signal=std::max(0.0,lum), limit=3*result.shadowNoise;
+            const double confidence=limit>0 ? signal*signal/(signal*signal+limit*limit) : 1;
+            const double neutralization=1-opt.shadowNeutralization*(1-confidence);
+            const double highlightChroma = 1 - .65 * mapped * mapped * mapped * mapped;
+            for (int c = 0; c < 3; ++c)
+                color[c] = neutral + (color[c] - lum) * colorSlope * opt.saturation * shadowChroma *
+                                        highlightChroma * neutralization;
+            // Compress chroma smoothly near the gamut boundary. Merely scaling an
+            // out-of-gamut color to the boundary makes a channel exactly 0 or 1,
+            // flattening colored highlights even when luminance is still graded.
+            // A rational shoulder preserves the luminance and chroma direction,
+            // leaves colors within 80% of the available gamut alone, and retains
+            // more endpoint headroom than an exponentially saturating shoulder.
+            double availableChroma = std::numeric_limits<double>::infinity();
+            for (double c : color) {
+                if (c > neutral)
+                    availableChroma = std::min(availableChroma, (1 - neutral) / (c - neutral));
+                if (c < neutral)
+                    availableChroma = std::min(availableChroma, neutral / (neutral - c));
+            }
+            const double chroma = detail::softGamutScale(availableChroma);
+            for (int c = 0; c < 3; ++c) {
+                const double value = std::clamp(neutral + (color[c] - neutral) * chroma, 0.0, 1.0);
+                result.image.pixels[o + c] = static_cast<float>(opt.linearDisplayColor ? detail::encodeSRGB(value) : value);
+            }
+            ++display;
+            const auto* rgb = result.image.pixels.data() + o;
+            black += *std::max_element(rgb, rgb + 3) <= 1.0F / 255;
+            white += *std::min_element(rgb, rgb + 3) >= .995F;
         }
-        std::array<double, 3> color;
-        for (int c = 0; c < 3; ++c)
-            color[c] = (static_cast<double>(working.pixels[o + c]) - result.sky[c]) * result.gains[c];
-        const double lum = color[0] * .2126 + color[1] * .7152 + color[2] * .0722;
-        double mapped;
-        if (lum >= 0) {
-            mapped = mapPositiveLuminance(lum);
-        } else {
-            mapped = opt.background > 0 ? opt.background * std::exp(slope * lum / opt.background) : 0;
-        }
-        // The tone curve always sets neutral brightness in sRGB code values.
-        // Older renders applied stellar color ratios directly in that space.
-        const double neutral = opt.linearDisplayColor ? detail::decodeSRGB(mapped) : mapped;
-        double colorSlope;
-        double shadowChroma = 1;
-        if (!opt.linearDisplayColor) {
-            const double denominator = result.toneScale + std::max(0.0, lum);
-            colorSlope = useAsinh ? (lum > 0 ? (mapped - opt.background) / lum : slope)
-                                  : (1 - opt.background) / denominator;
-            if (lum < 0) shadowChroma = opt.background > 0 ? mapped / opt.background : 0;
-        } else if (lum > 0 && mapped > opt.background) {
-            colorSlope = (neutral - skyLight) / lum;
-        } else {
-            const double decodeSlope = mapped <= .04045 ? 1 / 12.92 : 2.4 * neutral / (mapped + .055);
-            const double shadow = lum < 0 && opt.background > 0 ? mapped / opt.background : 1;
-            colorSlope = slope * decodeSlope * shadow;
-        }
-        // A gradual highlight chroma rolloff keeps bright cores from turning
-        // into flat, saturated color patches while retaining middle-tone color.
-        const double signal=std::max(0.0,lum), limit=3*result.shadowNoise;
-        const double confidence=limit>0 ? signal*signal/(signal*signal+limit*limit) : 1;
-        const double neutralization=1-opt.shadowNeutralization*(1-confidence);
-        const double highlightChroma = 1 - .65 * mapped * mapped * mapped * mapped;
-        for (int c = 0; c < 3; ++c)
-            color[c] = neutral + (color[c] - lum) * colorSlope * opt.saturation * shadowChroma *
-                                    highlightChroma * neutralization;
-        // Compress chroma smoothly near the gamut boundary. Merely scaling an
-        // out-of-gamut color to the boundary makes a channel exactly 0 or 1,
-        // flattening colored highlights even when luminance is still graded.
-        // A rational shoulder preserves the luminance and chroma direction,
-        // leaves colors within 80% of the available gamut alone, and retains
-        // more endpoint headroom than an exponentially saturating shoulder.
-        double availableChroma = std::numeric_limits<double>::infinity();
-        for (double c : color) {
-            if (c > neutral)
-                availableChroma = std::min(availableChroma, (1 - neutral) / (c - neutral));
-            if (c < neutral)
-                availableChroma = std::min(availableChroma, neutral / (neutral - c));
-        }
-        const double chroma = detail::softGamutScale(availableChroma);
-        for (int c = 0; c < 3; ++c) {
-            const double value = std::clamp(neutral + (color[c] - neutral) * chroma, 0.0, 1.0);
-            result.image.pixels[o + c] = static_cast<float>(opt.linearDisplayColor ? detail::encodeSRGB(value) : value);
-        }
-        ++result.displayPixels;
-        const auto* rgb = result.image.pixels.data() + o;
-        result.nearBlackPixels += *std::max_element(rgb, rgb + 3) <= 1.0F / 255;
-        result.nearWhitePixels += *std::min_element(rgb, rgb + 3) >= .995F;
-    }
+        displayCount.fetch_add(display, std::memory_order_relaxed);
+        blackCount.fetch_add(black, std::memory_order_relaxed);
+        whiteCount.fetch_add(white, std::memory_order_relaxed);
+    });
+    result.displayPixels = displayCount.load();
+    result.nearBlackPixels = blackCount.load();
+    result.nearWhitePixels = whiteCount.load();
     result.image.colorEncoding = ColorEncoding::SRGB;
     result.ok = true;
     return result;

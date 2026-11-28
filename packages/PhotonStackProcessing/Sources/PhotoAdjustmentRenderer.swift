@@ -14,11 +14,43 @@ public struct PhotoClippingWarnings: OptionSet, Sendable {
 /// An editor retains one downsampled, oriented source. Export uses the same
 /// filter chain on the full-resolution image in Core Image's linear working space.
 public actor PhotoAdjustmentRenderer {
-    private static let context = CIContext(options: [.cacheIntermediates: false])
+    private static let context = CIContext(options: [.cacheIntermediates: true])
+    private static let exportContext = CIContext(options: [.cacheIntermediates: false])
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
     private var thumbnail: (url: URL, image: CIImage, sourceSize: CGSize)?
 
     private var fullSource: (url: URL, image: CIImage)?
+    private var fullGeometry: (url: URL, settings: PhotoAdjustments, image: CIImage)?
+
+    private struct SourceStamp: Equatable {
+        let url: URL, modified: Date
+        let size: Int64, inode: UInt64
+    }
+    private var stamp: SourceStamp?
+    private func refreshSource(_ url: URL) throws {
+        let attrs = try FileManager.default.attributesOfItem(atPath: url.resolvingSymlinksInPath().path)
+        let current = SourceStamp(url: url, modified: attrs[.modificationDate] as? Date ?? .distantPast,
+                                  size: (attrs[.size] as? NSNumber)?.int64Value ?? 0,
+                                  inode: (attrs[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0)
+        if current != stamp {
+            fullGeometry = nil
+            fullSource = nil
+            thumbnail = nil
+            stamp = current
+        }
+    }
+
+    private func croppedSource(at url: URL, adjustments: PhotoAdjustments) throws -> CIImage {
+        if let cached = fullGeometry, cached.url == url,
+           cached.settings.quarterTurns == adjustments.quarterTurns, cached.settings.mirror == adjustments.mirror,
+           cached.settings.flipVertical == adjustments.flipVertical, cached.settings.aspect == adjustments.aspect,
+           cached.settings.cropScale == adjustments.cropScale {
+            return cached.image
+        }
+        let image = geometry(try fullImage(at: url), adjustments)
+        fullGeometry = (url, adjustments, image)
+        return image
+    }
 
     public init() {}
 
@@ -34,9 +66,10 @@ public actor PhotoAdjustmentRenderer {
     /// The point is normalized to the displayed crop, measured from its top left.
     /// Sample a five-by-five footprint from the original, in linear sRGB.
     public func neutralSample(input: URL, adjustments: PhotoAdjustments, at point: CGPoint) throws -> PhotoAdjustments.NeutralSample? {
+        try refreshSource(input)
         guard (0...1).contains(point.x), (0...1).contains(point.y) else { return nil }
         try Task.checkCancellation()
-        let source = geometry(try fullImage(at: input), adjustments)
+        let source = try croppedSource(at: input, adjustments: adjustments)
         let bounds = source.extent
         let x = min(floor(point.x * bounds.width), bounds.width - 1)
         let y = bounds.height - 1 - min(floor(point.y * bounds.height), bounds.height - 1)
@@ -61,9 +94,10 @@ public actor PhotoAdjustmentRenderer {
     }
 
     public func preview(input: URL, adjustments: PhotoAdjustments, warnings: PhotoClippingWarnings = []) throws -> (image: CGImage, sourceSize: CGSize) {
+        try refreshSource(input)
         try Task.checkCancellation()
         if !warnings.isEmpty {
-            let full = filtered(try fullImage(at: input), adjustments)
+            let full = adjustColor(try croppedSource(at: input, adjustments: adjustments), adjustments)
             let image = clippingPreview(full, warnings: warnings)
             guard let result = Self.context.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: colorSpace)
             else { throw CocoaError(.fileReadCorruptFile) }
@@ -137,13 +171,14 @@ public actor PhotoAdjustmentRenderer {
     }
 
     public func writeTIFF(input: URL, output: URL, adjustments: PhotoAdjustments) throws {
+        try refreshSource(input)
         try Task.checkCancellation()
         guard let source = CIImage(contentsOf: input, options: [.applyOrientationProperty: true]) else {
             throw CocoaError(.fileReadCorruptFile)
         }
         let staged = output.deletingLastPathComponent().appendingPathComponent(UUID().uuidString + ".tiff")
         defer { try? FileManager.default.removeItem(at: staged) }
-        try Self.context.writeTIFFRepresentation(of: filtered(source, adjustments), to: staged,
+        try Self.exportContext.writeTIFFRepresentation(of: filtered(source, adjustments), to: staged,
                                             format: .RGBA16, colorSpace: colorSpace)
         try Task.checkCancellation()
         if FileManager.default.fileExists(atPath: output.path) {
@@ -168,7 +203,11 @@ public actor PhotoAdjustmentRenderer {
     }
 
     private func filtered(_ source: CIImage, _ settings: PhotoAdjustments) -> CIImage {
-        var image = geometry(source, settings)
+        adjustColor(geometry(source, settings), settings)
+    }
+
+    private func adjustColor(_ source: CIImage, _ settings: PhotoAdjustments) -> CIImage {
+        var image = source
         if let sample = settings.neutralSample {
             let target = sample.luminance
             image = image.applyingFilter("CIColorMatrix", parameters: [

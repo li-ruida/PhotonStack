@@ -88,7 +88,7 @@ private struct SourceAssetsWorkspaceView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(model.project.assets) { asset in
                             SourceAssetWorkspaceRow(model: model, asset: asset)
                         }
@@ -105,12 +105,14 @@ private struct SourceAssetWorkspaceRow: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     let asset: PhotonStackAsset
 
+    @State private var missing = false
+
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: model.isAssetMissing(asset) ? "exclamationmark.triangle.fill" : "photo")
+            Image(systemName: missing ? "exclamationmark.triangle.fill" : "photo")
                 .frame(width: 18)
                 .foregroundStyle(
-                    model.isAssetMissing(asset)
+                    missing
                         ? Color.orange
                         : (model.selectedAssetID == asset.id ? Color.accentColor : Color.secondary)
                 )
@@ -121,7 +123,7 @@ private struct SourceAssetWorkspaceRow: View {
                 Text("\(model.roleName(asset.role)) / \(asset.kind.rawValue.uppercased())")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                if model.isAssetMissing(asset) {
+                if missing {
                     Text(model.localized(.missingAssetStatus))
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.orange)
@@ -139,7 +141,7 @@ private struct SourceAssetWorkspaceRow: View {
             .buttonStyle(.borderless)
             .help(model.localized(.previewProduct))
             .accessibilityLabel("\(model.localized(.previewProduct)): \(asset.displayName)")
-            .disabled(model.isProcessing || model.isAssetMissing(asset))
+            .disabled(model.isProcessing || missing)
 
             Button {
                 model.createLayer(from: asset)
@@ -149,7 +151,7 @@ private struct SourceAssetWorkspaceRow: View {
             }
             .buttonStyle(.borderless)
             .help(model.localized(.addLayerFromSource))
-            .disabled(model.canModifyWorkspaceProducts == false || model.isAssetMissing(asset))
+            .disabled(model.canModifyWorkspaceProducts == false || missing)
 
             Button {
                 presentRelinkPanel(for: asset, model: model)
@@ -172,6 +174,7 @@ private struct SourceAssetWorkspaceRow: View {
             .disabled(model.isProcessing)
         }
         .padding(.vertical, 3)
+        .modifier(AssetAvailability(url: asset.originalURL, missing: $missing))
         .contextMenu {
             Button {
                 presentRelinkPanel(for: asset, model: model)
@@ -203,7 +206,7 @@ private struct SmartObjectsWorkspaceView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(model.project.artifacts.reversed()) { artifact in
                             SmartObjectWorkspaceRow(model: model, artifact: artifact, iconName: artifactIcon(artifact.kind))
                         }
@@ -344,7 +347,7 @@ private struct LayersWorkspaceView: View {
                     .foregroundStyle(.secondary)
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(model.project.layers.reversed()) { layer in
                             ProcessingLayerRow(model: model, layer: layer)
                         }
@@ -530,19 +533,11 @@ private struct ProcessingLayerRow: View {
                     .frame(width: 94)
                     .disabled(model.isProcessing || isWorkspaceSourceAvailable == false)
 
-                    Slider(value: opacityBinding, in: 0.0...1.0) { editing in
-                        if editing {
-                            model.beginLayerOpacityAdjustment(layer.id)
-                        } else {
-                            model.endLayerOpacityAdjustment(layer.id)
-                        }
+                    LayerAdjustmentSlider(value: model.layerOpacity(layer.id), range: 0...1,
+                        labelWidth: 36, format: formatPercent) {
+                        model.commitLayerSlider(.opacity($0), to: layer.id)
                     }
-                        .disabled(model.isProcessing || isWorkspaceSourceAvailable == false)
-
-                    Text(formatPercent(model.layerOpacity(layer.id)))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 36, alignment: .trailing)
+                    .disabled(!model.canModifyWorkspaceProducts || !isWorkspaceSourceAvailable)
                 }
                 .padding(.leading, 54)
             }
@@ -625,18 +620,11 @@ private struct ProcessingLayerRow: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .frame(width: 48, alignment: .leading)
-                            Slider(value: maskDensityBinding, in: 0...1) { editing in
-                                if editing {
-                                    model.beginLayerMaskAdjustment(layer.id)
-                                } else {
-                                    model.endLayerMaskAdjustment(layer.id)
-                                }
+                            LayerAdjustmentSlider(value: model.layerMaskDensity(layer.id), range: 0...1,
+                                labelWidth: 36, format: formatPercent) {
+                                model.commitLayerSlider(.maskDensity($0), to: layer.id)
                             }
-                                .disabled(model.isProcessing)
-                            Text(formatPercent(model.layerMaskDensity(layer.id)))
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .frame(width: 36, alignment: .trailing)
+                            .disabled(!model.canModifyWorkspaceProducts)
                         }
 
                         HStack(spacing: 8) {
@@ -644,18 +632,11 @@ private struct ProcessingLayerRow: View {
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .frame(width: 48, alignment: .leading)
-                            Slider(value: maskFeatherBinding, in: maskFeatherRange) { editing in
-                                if editing {
-                                    model.beginLayerMaskAdjustment(layer.id)
-                                } else {
-                                    model.endLayerMaskAdjustment(layer.id)
-                                }
+                            LayerAdjustmentSlider(value: model.layerMaskFeatherRadius(layer.id), range: maskFeatherRange,
+                                labelWidth: 48, format: { "\(Int($0.rounded())) px" }) {
+                                model.commitLayerSlider(.maskFeather($0), to: layer.id)
                             }
-                                .disabled(model.isProcessing)
-                            Text("\(Int(model.layerMaskFeatherRadius(layer.id).rounded())) px")
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .frame(width: 48, alignment: .trailing)
+                            .disabled(!model.canModifyWorkspaceProducts)
                         }
                     }
                 }
@@ -680,31 +661,10 @@ private struct ProcessingLayerRow: View {
         }
     }
 
-    private var opacityBinding: Binding<Double> {
-        Binding(
-            get: { model.layerOpacity(layer.id) },
-            set: { model.setLayerOpacity(layer.id, opacity: $0) }
-        )
-    }
-
     private var blendModeBinding: Binding<ProcessingLayerBlendMode> {
         Binding(
             get: { model.layerBlendMode(layer.id) },
             set: { model.setLayerBlendMode(layer.id, blendMode: $0) }
-        )
-    }
-
-    private var maskDensityBinding: Binding<Double> {
-        Binding(
-            get: { model.layerMaskDensity(layer.id) },
-            set: { model.setLayerMaskDensity(layer.id, density: $0) }
-        )
-    }
-
-    private var maskFeatherBinding: Binding<Double> {
-        Binding(
-            get: { model.layerMaskFeatherRadius(layer.id) },
-            set: { model.setLayerMaskFeatherRadius(layer.id, radius: $0) }
         )
     }
 
@@ -717,5 +677,44 @@ private struct ProcessingLayerRow: View {
 
     private func formatPercent(_ value: Double) -> String {
         "\(Int((value * 100).rounded()))%"
+    }
+}
+
+
+private struct LayerAdjustmentSlider: View {
+    let value: Double
+    let range: ClosedRange<Double>
+    let labelWidth: CGFloat
+    let format: (Double) -> String
+    let commit: (Double) -> Void
+    @State private var draft: Double?
+    @State private var dragging = false
+    @State private var pending: Task<Void, Never>?
+
+    private func applyDraft() {
+        pending?.cancel()
+        if let draft, draft != value { commit(draft) }
+        draft = nil
+    }
+
+    var body: some View {
+        Slider(value: Binding(get: { draft ?? value }, set: { updated in
+            draft = updated
+            pending?.cancel()
+            if !dragging {
+                pending = Task { @MainActor in
+                    do { try await Task.sleep(for: .milliseconds(160)) } catch { return }
+                    applyDraft()
+                }
+            }
+        }), in: range) { editing in
+            dragging = editing
+            if editing { pending?.cancel() } else { applyDraft() }
+        }
+        .onDisappear { pending?.cancel() }
+        Text(format(draft ?? value))
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .frame(width: labelWidth, alignment: .trailing)
     }
 }

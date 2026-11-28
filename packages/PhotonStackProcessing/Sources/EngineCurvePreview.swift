@@ -44,6 +44,15 @@ public enum EngineCurvePreview {
             return nil
         }
 
+        let numbers = [rawOptions.manualWhiteBalanceTemperature, rawOptions.manualWhiteBalanceTint,
+                       rawOptions.exposureBias, rawOptions.manualBlackLevel] + points.flatMap { [$0.0, $0.1] }
+        guard width > 0, width <= Int(UInt32.max), numbers.allSatisfy({ $0.isFinite && Float($0).isFinite }) else {
+            throw ProcessingServiceError.invalidArguments("Curve preview dimensions and numeric controls must be finite and valid.")
+        }
+        try Task.checkCancellation()
+        let transaction = AtomicOutputTransaction(arguments: ["preview", "--output", output.path],
+                                                  workingDirectory: output.deletingLastPathComponent())!
+        defer { transaction.cleanUp() }
         var request = photonstack_default_curve_preview_request()
         request.width = UInt32(max(width, 1))
         request.rawWhiteBalanceMode = bridgeRawWhiteBalanceMode(rawOptions.whiteBalanceMode)
@@ -66,7 +75,7 @@ public enum EngineCurvePreview {
         var errorBuffer = Array(repeating: CChar(0), count: errorBufferSize)
 
         let bridgeResult = try input.path.withCString { inputCString in
-            try output.path.withCString { outputCString in
+            try transaction.temporaryURL.path.withCString { outputCString in
                 try points.withUnsafeBufferPointer { pointsBuffer in
                     let bridgePoints = pointsBuffer.map { point in
                         PhotonStackCurvePoint(input: Float(point.0), output: Float(point.1))
@@ -100,6 +109,9 @@ public enum EngineCurvePreview {
             }
         }
 
+        try Task.checkCancellation()
+        try transaction.commit()
+
         let fallbackCodeText = decodeCString(fallbackCode)
         let fallbackMessageText = decodeCString(fallbackMessage)
         let duration = Date().timeIntervalSince(start) * 1000.0
@@ -123,7 +135,7 @@ public enum EngineCurvePreview {
           "rawBlackValue": \(rawOptions.manualBlackLevel),
           "rawDemosaic": "\(rawDemosaicName(rawOptions.demosaicQuality))",
           "rawLinear": \(rawOptions.linearOutput ? "true" : "false"),
-          "curveApplied": true,
+          "curveApplied": \(!points.isEmpty),
           "curveChannel": "\(curveChannelName(channel))",
           "output": "\(jsonEscape(output.path))"
         }

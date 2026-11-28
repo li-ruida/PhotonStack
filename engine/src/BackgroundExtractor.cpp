@@ -1,3 +1,5 @@
+#include <array>
+#include "WeightedQuantile.hpp"
 #include "photonstack/BackgroundExtractor.hpp"
 
 #include <algorithm>
@@ -48,44 +50,7 @@ struct WeightedSample {
 };
 
 std::optional<float> weightedQuantile(std::vector<WeightedSample>& samples, double quantile) {
-    if (samples.empty()) {
-        return std::nullopt;
-    }
-    std::sort(samples.begin(), samples.end(), [](const WeightedSample& left, const WeightedSample& right) {
-        return left.value < right.value;
-    });
-    double totalWeight = 0.0;
-    for (const auto& sample : samples) {
-        totalWeight += sample.weight;
-    }
-    if (!std::isfinite(totalWeight) || totalWeight <= 0.0) {
-        return std::nullopt;
-    }
-
-    double cumulative = 0.0;
-    double previousPosition = 0.0;
-    float previousValue = samples.front().value;
-    bool hasPrevious = false;
-    for (const auto& sample : samples) {
-        cumulative += sample.weight;
-        const double position = (cumulative - static_cast<double>(sample.weight) * 0.5) / totalWeight;
-        if (position >= quantile) {
-            if (!hasPrevious || position <= previousPosition) {
-                return sample.value;
-            }
-            const double fraction = std::clamp(
-                (quantile - previousPosition) / (position - previousPosition),
-                0.0,
-                1.0
-            );
-            return static_cast<float>(static_cast<double>(previousValue) +
-                                      (static_cast<double>(sample.value) - previousValue) * fraction);
-        }
-        previousPosition = position;
-        previousValue = sample.value;
-        hasPrevious = true;
-    }
-    return samples.back().value;
+    return detail::weightedSampleQuantile(samples, quantile);
 }
 
 std::optional<float> weightedMedian(std::vector<WeightedSample>& samples) {
@@ -250,6 +215,7 @@ BackgroundExtractionResult BackgroundExtractor::extractGlobal(const ImageBuffer&
         }
     }
     const auto measuredBackground = weightedMedian(samples);
+    std::vector<WeightedSample>().swap(samples);
     if (!measuredBackground.has_value()) {
         return backgroundError("ImageCoverageEmpty", "Background extraction requires at least one valid pixel");
     }
@@ -350,12 +316,17 @@ BackgroundExtractionResult BackgroundExtractor::extractGrid(const ImageBuffer& i
         if (!std::isfinite(e.x) || !std::isfinite(e.y) || !std::isfinite(e.major) || !std::isfinite(e.minor) ||
             !std::isfinite(e.angleDegrees) || e.major <= 0 || e.minor <= 0)
             return backgroundError("ArgumentInvalid", "Invalid background exclusion ellipse");
+    struct Ellipse { double x, y, major, minor, cosine, sine; };
+    std::vector<Ellipse> ellipses;
+    for (const auto& e : options.exclusions) {
+        const double angle = e.angleDegrees * 3.141592653589793 / 180;
+        ellipses.push_back({e.x, e.y, e.major, e.minor, std::cos(angle), std::sin(angle)});
+    }
     const auto sampleAllowed = [&](std::uint32_t x, std::uint32_t y) {
-        for (const auto& e : options.exclusions) {
-            const double angle=e.angleDegrees*3.141592653589793/180;
-            const double dx=double(x)-e.x, dy=double(y)-e.y;
-            const double u=(dx*std::cos(angle)+dy*std::sin(angle))/e.major;
-            const double v=(-dx*std::sin(angle)+dy*std::cos(angle))/e.minor;
+        for (const auto& e : ellipses) {
+            const double dx = double(x) - e.x, dy = double(y) - e.y;
+            const double u = (dx*e.cosine + dy*e.sine) / e.major;
+            const double v = (-dx*e.sine + dy*e.cosine) / e.minor;
             if(u*u+v*v<=1) return false;
         }
         return true;
@@ -365,28 +336,37 @@ BackgroundExtractionResult BackgroundExtractor::extractGrid(const ImageBuffer& i
     // for bright-target protection. Their holes need the same sky-only fill.
     const bool fillUnsampled = options.protectBrightTargets || !options.exclusions.empty();
     const auto colorChannels = colorChannelCount(image);
-    std::vector<WeightedSample> validLuminance;
-    validLuminance.reserve(image.pixelCount());
-    for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
-        if (pixelIsValid(image, pixel)) {
-            const float luminance = luminanceAt(image, pixel);
-            if (std::isfinite(luminance)) {
-                validLuminance.push_back({luminance, pixelCoverage(image, pixel)});
+    float fallbackBackground = 0;
+    float fallbackChannelBackgrounds[3]{};
+    if (fillUnsampled) {
+        bool hasSky = false;
+        for (std::size_t p = 0; !hasSky && p < image.pixelCount(); ++p)
+            hasSky = pixelIsValid(image, p) && std::isfinite(luminanceAt(image, p));
+        if (!hasSky) return backgroundError("ImageCoverageEmpty", "Background extraction requires at least one valid pixel");
+    } else {
+        std::vector<WeightedSample> validLuminance;
+        validLuminance.reserve(image.pixelCount());
+        for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
+            if (pixelIsValid(image, pixel)) {
+                const float luminance = luminanceAt(image, pixel);
+                if (std::isfinite(luminance)) {
+                    validLuminance.push_back({luminance, pixelCoverage(image, pixel)});
+                }
             }
         }
-    }
-    const auto measuredFallback = weightedMedian(validLuminance);
-    if (!measuredFallback.has_value()) {
-        return backgroundError("ImageCoverageEmpty", "Background extraction requires at least one valid pixel");
-    }
-    const float fallbackBackground = *measuredFallback;
-    float fallbackChannelBackgrounds[3] = {fallbackBackground, fallbackBackground, fallbackBackground};
-    for (std::uint16_t channel = 0; channel < colorChannels; ++channel) {
-        const auto channelBackground = channelMedian(image, channel);
-        if (!channelBackground.has_value()) {
+        const auto measuredFallback = weightedMedian(validLuminance);
+        if (!measuredFallback.has_value()) {
             return backgroundError("ImageCoverageEmpty", "Background extraction requires at least one valid pixel");
         }
-        fallbackChannelBackgrounds[channel] = *channelBackground;
+        fallbackBackground = *measuredFallback;
+        std::vector<WeightedSample>().swap(validLuminance);
+        for (std::uint16_t channel = 0; channel < colorChannels; ++channel) {
+            const auto channelBackground = channelMedian(image, channel);
+            if (!channelBackground.has_value()) {
+                return backgroundError("ImageCoverageEmpty", "Background extraction requires at least one valid pixel");
+            }
+            fallbackChannelBackgrounds[channel] = *channelBackground;
+        }
     }
     std::vector<float> grid(gridSize, 0.0F);
     std::vector<float> channelGrid(gridSize * std::max<std::uint16_t>(1, colorChannels), 0.0F);
@@ -405,13 +385,20 @@ BackgroundExtractionResult BackgroundExtractor::extractGrid(const ImageBuffer& i
             samples.clear();
             samples.reserve(static_cast<std::size_t>(std::max<std::uint32_t>(1, x1 - x0)) *
                             std::max<std::uint32_t>(1, y1 - y0));
+            std::array<std::vector<WeightedSample>, 3> colors;
+            const auto area = static_cast<std::size_t>(x1 - x0) * (y1 - y0);
+            const bool collectAll = area <= (64U << 20) / (sizeof(WeightedSample) * colorChannels);
+            if (collectAll) for (std::uint16_t c = 0; c < colorChannels; ++c) colors[c].reserve(area);
             for (std::uint32_t y = y0; y < y1; ++y) {
                 for (std::uint32_t x = x0; x < x1; ++x) {
                     const auto pixel = static_cast<std::size_t>(y) * image.width + x;
                     if (pixelIsValid(image, pixel) && sampleAllowed(x, y)) {
+                        const auto coverage = pixelCoverage(image, pixel);
+                        if (collectAll) for (std::uint16_t c = 0; c < colorChannels; ++c)
+                            colors[c].push_back({image.pixels[pixel * image.channels + c], coverage});
                         const float luminance = luminanceAt(image, pixel);
                         if (std::isfinite(luminance)) {
-                            samples.push_back({luminance, pixelCoverage(image, pixel)});
+                            samples.push_back({luminance, coverage});
                         }
                     }
                 }
@@ -440,20 +427,16 @@ BackgroundExtractionResult BackgroundExtractor::extractGrid(const ImageBuffer& i
             grid[cellIndex] = *cellBackground;
 
             for (std::uint16_t channel = 0; channel < colorChannels; ++channel) {
-                samples.clear();
-                samples.reserve(static_cast<std::size_t>(std::max<std::uint32_t>(1, x1 - x0)) *
-                                std::max<std::uint32_t>(1, y1 - y0));
-                for (std::uint32_t y = y0; y < y1; ++y) {
-                    for (std::uint32_t x = x0; x < x1; ++x) {
-                        const auto pixel = static_cast<std::size_t>(y) * image.width + x;
-                        if (pixelIsValid(image, pixel) && sampleAllowed(x, y)) {
-                            samples.push_back({image.pixels[pixel * image.channels + channel],
-                                               pixelCoverage(image, pixel)});
-                        }
+                if (!collectAll) {
+                    samples.clear();
+                    for (auto y = y0; y < y1; ++y) for (auto x = x0; x < x1; ++x) {
+                        const auto p = std::size_t(y) * image.width + x;
+                        if (pixelIsValid(image, p) && sampleAllowed(x, y))
+                            samples.push_back({image.pixels[p * image.channels + channel], pixelCoverage(image, p)});
                     }
                 }
                 channelGrid[cellIndex * colorChannels + channel] =
-                    gridBackgroundSample(samples, options.protectBrightTargets)
+                    gridBackgroundSample(collectAll ? colors[channel] : samples, options.protectBrightTargets)
                         .value_or(fallbackChannelBackgrounds[channel]);
             }
         }

@@ -36,8 +36,9 @@ public final class WorkflowBatchRun: ObservableObject {
     public func run(workflow: ReusableWorkflow, folders: [URL], output: URL, execute: Executor) async throws {
         guard !isRunning else { throw WorkflowError("工作流正在运行 / Workflow is already running") }
         try workflow.validate()
-        guard !folders.isEmpty, folders.count <= 100, output.isFileURL else { throw WorkflowError("请选择 1–100 个目标文件夹和输出位置 / Choose target folders and output location") }
-        let folders = Array(Set(folders.map { $0.resolvingSymlinksInPath().standardizedFileURL })).sorted { $0.path < $1.path }
+        guard !folders.isEmpty, folders.count <= 100, folders.allSatisfy(\.isFileURL), output.isFileURL else { throw WorkflowError("请选择 1–100 个目标文件夹和输出位置 / Choose target folders and output location") }
+        let folders = Set(folders.map { PhotonStackProject.assetIdentityPath(for: $0) })
+            .sorted().map { URL(fileURLWithPath: $0, isDirectory: true) }
         let root = output.resolvingSymlinksInPath().appendingPathComponent("PhotonStack-Workflow-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         outputDirectory = root

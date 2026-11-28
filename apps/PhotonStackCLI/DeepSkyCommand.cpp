@@ -1,4 +1,5 @@
 #include "DeepSkyCommand.hpp"
+#include "OutputPath.hpp"
 #include "photonstack/StageProfile.hpp"
 #include "DeepSkyPreflight.hpp"
 #include "photonstack/DeepSkyRecipe.hpp"
@@ -235,10 +236,11 @@ std::string performanceReport(const detail::StageProfile& profile, const DeepSky
     return out.str();
 }
 void saveNew(const fs::path& path, const std::string& text) {
-    if (fs::exists(path)) throw std::invalid_argument("Refusing to replace existing file: " + path.string());
-    std::ofstream file(path, std::ios::binary);
+    photonstack::cli::NewOutputFile publication(path);
+    std::ofstream file(publication.file(), std::ios::binary);
     file << text; file.close();
     if (!file) throw std::runtime_error("Cannot save " + path.string());
+    publication.publish();
 }
 std::vector<fs::path> directoryInputs(const fs::path& path) {
     const std::set<std::string> extensions{".fit", ".fits", ".fts", ".tif", ".tiff", ".nef", ".arw", ".cr2", ".cr3", ".dng", ".orf", ".raf", ".rw2", ".srw"};
@@ -380,7 +382,9 @@ int runDeepSkyCommand(const std::vector<std::string>& args) {
         std::cout << text;
         return result.ok ? 0 : 1;
     } catch (const std::exception& e) {
-        std::cerr << "{\"type\":\"error\",\"command\":\"deep-sky\",\"errorCode\":\"RecipeInvalid\",\"message\":" << json(e.what()) << "}\n";
+        const char* code = dynamic_cast<const std::invalid_argument*>(&e) ? "RecipeInvalid" : "DeepSkyFailed";
+        std::cerr << "{\"type\":\"error\",\"command\":\"deep-sky\",\"code\":" << json(code)
+                  << ",\"errorCode\":" << json(code) << ",\"message\":" << json(e.what()) << "}\n";
         return 1;
     }
 }

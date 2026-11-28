@@ -18,10 +18,10 @@ public enum StructuredDocumentError: LocalizedError, Equatable {
     }
 }
 
-enum BoundedDocumentIO {
+package enum BoundedDocumentIO {
     private static let readChunkBytes = 64 * 1_024
 
-    static func read(
+    package static func read(
         from url: URL,
         maximumBytes: UInt64,
         fileManager: FileManager

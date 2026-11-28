@@ -118,6 +118,7 @@ let package = Package(
                 .headerSearchPath("include"),
             ],
             linkerSettings: [
+                .linkedFramework("Accelerate"),
                 .linkedFramework("CoreFoundation"),
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("CoreImage"),

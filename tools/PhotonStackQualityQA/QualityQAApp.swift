@@ -49,7 +49,7 @@ private struct QAWindowLayoutProbe: NSViewRepresentable {
     func updateNSView(_ nsView: ProbeView, context: Context) {}
 
     final class ProbeView: NSView {
-        private var pending = false
+        private var pending: Task<Void, Never>?
 
         override func layout() {
             super.layout()
@@ -62,14 +62,19 @@ private struct QAWindowLayoutProbe: NSViewRepresentable {
         }
 
         private func recordLayout() {
-            guard !pending else { return }
-            pending = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                guard let self else { return }
-                self.pending = false
+            guard window != nil else {
+                pending?.cancel()
+                pending = nil
+                return
+            }
+            guard pending == nil else { return }
+            pending = Task { @MainActor [weak self] in
+                do { try await Task.sleep(for: .milliseconds(200)) } catch { return }
+                guard let self, !Task.isCancelled else { return }
+                self.pending = nil
                 guard let window = self.window, let content = window.contentView,
                       let path = Bundle.main.object(forInfoDictionaryKey: "PhotonStackQADataRoot") as? String else { return }
-                func tree(_ view: NSView, depth: Int) -> [String] {
+                @MainActor func tree(_ view: NSView, depth: Int) -> [String] {
                     let inset = view.safeAreaInsets
                     let row = "\(String(repeating: "  ", count: depth))\(type(of: view)) frame=\(view.frame) bounds=\(view.bounds) safe=\(inset) intrinsic=\(view.intrinsicContentSize)"
                     return [row] + (depth < 12 ? view.subviews.flatMap { tree($0, depth: depth + 1) } : [])

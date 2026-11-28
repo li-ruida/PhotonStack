@@ -134,6 +134,8 @@ class ImageCodec {
     ImageReadResult read(const std::filesystem::path& path, const ImageReadOptions& options) const;
     ImageWriteResult write(const ImageBuffer& image, const std::filesystem::path& path) const;
     ImageWriteResult write(const ImageBuffer& image, const std::filesystem::path& path, const ImageWriteOptions& options) const;
+    ImageWriteResult encodedTIFFSHA256(const ImageBuffer& image, const ImageWriteOptions& options,
+                                       std::string& digest) const;
     ImageWriteResult writeRows(const ImageBuffer& prototype, const std::filesystem::path& path,
                                const ImageRowProducer& producer) const;
     ImageWriteResult writeRows(const ImageBuffer& prototype, const std::filesystem::path& path,

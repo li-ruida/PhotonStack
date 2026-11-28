@@ -107,6 +107,7 @@ target_compile_definitions(photonstack_engine
 if(APPLE)
   target_link_libraries(photonstack_engine
     PUBLIC
+      "-framework Accelerate"
       "-framework CoreFoundation"
       "-framework CoreGraphics"
       "-framework CoreImage"

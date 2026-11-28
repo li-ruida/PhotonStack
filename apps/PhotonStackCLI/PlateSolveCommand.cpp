@@ -18,12 +18,21 @@ struct Recipe {
     unsigned timeout=120;double low=0,high=0;std::map<std::string,std::string> products;
 };
 const std::set<std::string> products{"solved.fits","report.json","sources.xyls","solution.wcs","solution.corr","solution-indx.xyls"};
-void verify(const Recipe& r,bool dependencies){
-    if(!r.source.is_absolute()||!channelSHA(r.sourceSHA)||fileSHA256(r.source)!=r.sourceSHA)throw std::runtime_error("Plate solve source changed");
+void validateInputs(const Recipe& r){
+    if(!r.source.is_absolute()||!channelSHA(r.sourceSHA))throw std::runtime_error("Invalid plate solve source");
     if(!r.executable.is_absolute()||!channelSHA(r.executableSHA)||r.indices.empty()||r.indices.size()>128||r.timeout<1||r.timeout>600||
        !std::isfinite(r.low)||!std::isfinite(r.high)||r.low<0||r.high<0||((r.low==0)!=(r.high==0))||(r.low>0&&(r.high<=r.low||r.high>3600)))throw std::invalid_argument("Invalid plate solve recipe");
-    if(dependencies&&fileSHA256(r.executable)!=r.executableSHA)throw std::runtime_error("Local solve-field changed");
-    std::set<fs::path> paths;for(const auto& [p,sha]:r.indices){if(!p.is_absolute()||!channelSHA(sha)||!paths.insert(p).second)throw std::runtime_error("Invalid index record");if(dependencies&&fileSHA256(p)!=sha)throw std::runtime_error("Astrometry index changed");}
+    std::set<fs::path> paths;
+    for(const auto& [p,sha]:r.indices)
+        if(!p.is_absolute()||!channelSHA(sha)||!paths.insert(p).second)throw std::runtime_error("Invalid index record");
+}
+void verify(const Recipe& r,bool dependencies){
+    validateInputs(r);
+    if(fileSHA256(r.source)!=r.sourceSHA)throw std::runtime_error("Plate solve source changed");
+    if(!dependencies)return;
+    if(fileSHA256(r.executable)!=r.executableSHA)throw std::runtime_error("Local solve-field changed");
+    for(const auto& [p,sha]:r.indices)
+        if(fileSHA256(p)!=sha)throw std::runtime_error("Astrometry index changed");
 }
 void writeRecipe(const fs::path& file,const Recipe& r){
     std::ofstream out(file);out<<std::setprecision(17)<<"PhotonStack-PlateSolve-1 ICRS\n"<<std::quoted(r.source.string())<<' '<<r.sourceSHA<<'\n'<<std::quoted(r.executable.string())<<' '<<r.executableSHA<<'\n'<<r.timeout<<' '<<r.low<<' '<<r.high<<' '<<r.indices.size()<<'\n';
@@ -87,7 +96,7 @@ int runPlateSolve(const std::vector<std::string>& args){
         else throw std::invalid_argument("Unknown plate solve option: "+k);
     }
     if(fresh){if(r.source.empty()||r.executable.empty()||indexPaths.empty()||frame!="ICRS")throw std::invalid_argument("Specify --input master.fits, --solver /path/solve-field, --index /path/index.fits and --index-frame ICRS (declared index reference frame)");
-        r.sourceSHA=fileSHA256(r.source);r.executableSHA=fileSHA256(r.executable);for(const auto& p:indexPaths)r.indices.emplace_back(p,fileSHA256(p));verify(r,true);
+        r.sourceSHA=fileSHA256(r.source);r.executableSHA=fileSHA256(r.executable);for(const auto& p:indexPaths)r.indices.emplace_back(p,fileSHA256(p));validateInputs(r);
     }else{if(recipe.empty())throw std::invalid_argument("Specify --recipe");r=readRecipe(recipe,inspect||exporting);if(inspect){std::ifstream in(recipe.parent_path()/"report.json");std::cout<<in.rdbuf();return 0;}}
     if(output.empty()||fs::exists(output)||fs::is_symlink(output))throw std::invalid_argument("Choose a new plate solve output directory");
     if(exporting){
@@ -132,7 +141,7 @@ int runPlateSolve(const std::vector<std::string>& args){
         r.products.clear();for(const auto& name:products)r.products[name]=fileSHA256(output/name);writeRecipe(output/"recipe.txt",r);
         fs::remove_all(output/"indices");std::cout<<report.str();
     }catch(const std::exception& failure){
-        std::ifstream log(output/"solver.log",std::ios::binary);if(log){log.seekg(0,std::ios::end);auto length=log.tellg();log.seekg(std::max<std::streamoff>(0,static_cast<std::streamoff>(length)-4096));std::cerr<<log.rdbuf()<<'\n';}
+        std::ifstream log(output/"solver.log",std::ios::binary);if(log){log.seekg(0,std::ios::end);auto length=log.tellg();log.seekg(std::max<std::streamoff>(0,static_cast<std::streamoff>(length)-4096));if(length>0){const std::string tail{std::istreambuf_iterator<char>(log), {}};std::cerr<<tail<<'\n';}}
         std::error_code ec;fs::remove(output/"solved.fits",ec);fs::remove(output/"recipe.txt",ec);fs::remove_all(output/"indices",ec);
         std::ofstream failed(output/"failure.txt");failed<<failure.what()<<'\n';throw;
     }

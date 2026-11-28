@@ -33,7 +33,14 @@ struct DeepSkyReviewEvidence {
     private let residualLimit: Double?
     private let starMeasurementDisabled: Bool
 
+    let searchTerms: [String: [String]]
+
     init(report: DeepSkyReport) {
+        var index: [String: [String]] = [:]
+        for frame in report.frames {
+            index[frame.input] = DeepSkyReview.searchTerms(frame)
+        }
+        searchTerms = index
         // Only the recorded recipe can supply a numeric threshold. Historical
         // recipes missing a value must not inherit today's project defaults.
         let keys: Set<String> = ["selection.maximum-eccentricity", "selection.maximum-noise-ratio",

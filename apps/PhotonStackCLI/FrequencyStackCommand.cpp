@@ -1,4 +1,6 @@
 #include "FrequencyStackCommand.hpp"
+#include "OutputPath.hpp"
+#include "photonstack/WorkingMemory.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/FrequencyCoadd.hpp"
 #include "photonstack/ImageCodec.hpp"
@@ -14,7 +16,6 @@
 #include <iostream>
 #include <limits>
 #include <map>
-#include <random>
 #include <set>
 #include <stdexcept>
 
@@ -185,13 +186,40 @@ class Plan {
         if (!in || in.peek() != EOF)
             throw std::runtime_error("Cannot read complete binary input: " + file.string());
         identity.check(file);
+        convertLittleEndian(result);
+        return result;
+    }
+
+    std::vector<float> readCrop(const fs::path& file) const {
+        const auto& identity = identities.at(file);
+        identity.check(file);
+        std::ifstream input(file, std::ios::binary);
+        std::vector<float> result(w * h * 4);
+        const auto readRows = [&](std::size_t row, std::size_t count) {
+            input.seekg(std::streamoff(((row + y) * sw + x) * 4 * sizeof(float)));
+            input.read(reinterpret_cast<char*>(result.data() + row * w * 4),
+                       std::streamsize(count * w * 4 * sizeof(float)));
+            if (!input) throw std::runtime_error("Cannot read prepared crop: " + file.string());
+        };
+        if (w == sw) readRows(0, h);
+        else for (std::size_t row = 0; row < h; ++row) readRows(row, 1);
+        identity.check(file);
+        convertLittleEndian(result);
+        for (std::size_t i = 3; i < result.size(); i += 4) {
+            if (!std::isfinite(result[i]) || result[i] < .999F || result[i] > 1)
+                throw std::invalid_argument("Prepared crop requires finite full coverage in every frame");
+        }
+        return result;
+    }
+
+  private:
+    template <class T> static void convertLittleEndian(std::vector<T>& values) {
         if constexpr (std::endian::native != std::endian::little) {
-            for (auto& value : result) {
+            for (auto& value : values) {
                 auto* bytes = reinterpret_cast<unsigned char*>(&value);
                 std::reverse(bytes, bytes + sizeof(T));
             }
         }
-        return result;
     }
 };
 
@@ -205,30 +233,6 @@ std::size_t reflect(long long i, std::size_t n) {
     return std::size_t(i < static_cast<long long>(n) ? i : period - i);
 }
 
-// The temporary directory is exclusively created beside the destination. Hard-link
-// publication is atomic and never replaces an existing output, including symlinks.
-class Publication {
-    fs::path directory;
-
-  public:
-    fs::path file;
-    explicit Publication(const fs::path& output) {
-        std::random_device random;
-        for (int attempt = 0; attempt < 32; ++attempt) {
-            directory = output.parent_path() / (".photonstack-frequency-" + std::to_string(random()));
-            if (fs::create_directory(directory)) {
-                file = directory / "result.fits";
-                return;
-            }
-        }
-        throw std::runtime_error("Cannot create frequency output staging directory");
-    }
-    ~Publication() {
-        std::error_code ec;
-        fs::remove_all(directory, ec);
-    }
-    void publish(const fs::path& output) { fs::create_hard_link(file, output); }
-};
 } // namespace
 
 int runFrequencyStack(const std::vector<std::string>& args) {
@@ -275,52 +279,65 @@ int runFrequencyStack(const std::vector<std::string>& args) {
     result.height = static_cast<std::uint32_t>(plan.h);
     result.pixels.resize(plan.w * plan.h * 4, 1);
     std::array<std::size_t, 3> floored{};
-    for (std::size_t c = 0; c < 3; ++c) {
-        FrequencyCoadd accumulator(plan.fw, plan.fh, threads);
+    // Include the output, crop, target, FFT scratch and all three persistent
+    // numerator/information spectra before admitting the one-read RGB path.
+    const auto bins = plan.fh * stride;
+    const auto parallelBytes = plan.w * plan.h * 32ULL + plan.fw * plan.fh * 48ULL + bins * 160ULL;
+    const std::size_t channelsPerPass = parallelBytes <= photonstack::detail::workingMemoryBudget() ? 3 : 1;
+    for (std::size_t first = 0; first < 3; first += channelsPerPass) {
+        std::vector<FrequencyCoadd> accumulators;
+        accumulators.reserve(channelsPerPass);
+        for (std::size_t k = 0; k < channelsPerPass; ++k) accumulators.emplace_back(plan.fw, plan.fh, threads);
         for (std::size_t j = 0; j < plan.frames.size(); ++j) {
             const auto& frame = plan.frames[j];
-            const auto& m = frame.models[c];
-            const auto kernel = plan.binary<double>(m.kernel, m.kw * m.kh);
-            const auto transfer = accumulator.psfTransfer(kernel, m.kw, m.kh, m.cx, m.cy);
-            const auto noise = accumulator.noisePower(m.correlations);
-            floored[c] += noise.flooredBins;
-            const auto raw = plan.binary<float>(frame.path, plan.sw * plan.sh * 4);
-            std::vector<double> sample(plan.fw * plan.fh);
-            for (std::size_t y = 0; y < plan.fh; ++y) {
-                const auto sy = reflect(static_cast<long long>(y) - static_cast<long long>(plan.py), plan.h) + plan.y;
-                for (std::size_t x = 0; x < plan.fw; ++x) {
-                    const auto sx =
-                        reflect(static_cast<long long>(x) - static_cast<long long>(plan.px), plan.w) + plan.x;
-                    const auto offset = (sy * plan.sw + sx) * 4;
-                    if (!std::isfinite(raw[offset + 3]) || raw[offset + 3] < .999F || raw[offset + 3] > 1)
-                        throw std::invalid_argument("Prepared crop requires finite full coverage in every frame");
-                    sample[y * plan.fw + x] = double(raw[offset + c]) - m.sky;
+            const auto raw = plan.readCrop(frame.path);
+            for (std::size_t k = 0; k < channelsPerPass; ++k) {
+                const auto c = first + k;
+                auto& accumulator = accumulators[k];
+                const auto& m = frame.models[c];
+                const auto kernel = plan.binary<double>(m.kernel, m.kw * m.kh);
+                const auto transfer = accumulator.psfTransfer(kernel, m.kw, m.kh, m.cx, m.cy);
+                const auto noise = accumulator.noisePower(m.correlations);
+                floored[c] += noise.flooredBins;
+                std::vector<double> sample(plan.fw * plan.fh);
+                for (std::size_t y = 0; y < plan.fh; ++y) {
+                    const auto sy = reflect(static_cast<long long>(y) - static_cast<long long>(plan.py), plan.h);
+                    for (std::size_t x = 0; x < plan.fw; ++x) {
+                        const auto sx =
+                            reflect(static_cast<long long>(x) - static_cast<long long>(plan.px), plan.w);
+                        const auto offset = (sy * plan.w + sx) * 4;
+                        sample[y * plan.fw + x] = double(raw[offset + c]) - m.sky;
+                    }
                 }
+                accumulator.add(sample, transfer, frame.flux, m.variance, noise.values);
             }
-            accumulator.add(sample, transfer, frame.flux, m.variance, noise.values);
-            if ((j + 1) % 32 == 0 || j + 1 == plan.frames.size())
-                std::cout << "{\"type\":\"progress\",\"task\":\"stack\",\"stage\":\"accumulating\",\"command\":"
-                             "\"frequency-stack\",\"channel\":"
-                          << c << ",\"frames\":" << j + 1 << ",\"total\":" << plan.frames.size()
-                          << ",\"progress\":" << .95 * (double(c) + double(j + 1) / plan.frames.size()) / 3 << "}"
-                          << std::endl;
+            if ((j + 1) % 32 == 0 || j + 1 == plan.frames.size()) {
+                const auto progress = (first + channelsPerPass * double(j + 1) / plan.frames.size()) / 3;
+                std::cout << R"({"type":"progress","task":"stack","stage":"accumulating","command":"frequency-stack","channel":)"
+                          << first << ",\"frames\":" << j + 1 << ",\"total\":" << plan.frames.size()
+                          << ",\"progress\":" << .95 * progress << "}" << std::endl;
+            }
         }
-        const auto image = accumulator.render(target);
-        for (std::size_t y = 0; y < plan.h; ++y)
-            for (std::size_t x = 0; x < plan.w; ++x) {
-                const double value = image[(y + plan.py) * plan.fw + x + plan.px];
-                if (std::abs(value) > std::numeric_limits<float>::max())
-                    throw std::overflow_error("Frequency output exceeds scientific float32 FITS range");
-                result.pixels[(y * plan.w + x) * 4 + c] = static_cast<float>(value);
-            }
+        for (std::size_t k = 0; k < channelsPerPass; ++k) {
+            const auto c = first + k;
+            auto& accumulator = accumulators[k];
+            const auto image = accumulator.render(target);
+            for (std::size_t y = 0; y < plan.h; ++y)
+                for (std::size_t x = 0; x < plan.w; ++x) {
+                    const double value = image[(y + plan.py) * plan.fw + x + plan.px];
+                    if (std::abs(value) > std::numeric_limits<float>::max())
+                        throw std::overflow_error("Frequency output exceeds scientific float32 FITS range");
+                    result.pixels[(y * plan.w + x) * 4 + c] = static_cast<float>(value);
+                }
+        }
     }
     for (const auto& [path, identity] : plan.identities)
         identity.check(path);
-    Publication publication(output);
-    const auto written = photonstack::ImageCodec{}.write(result, publication.file);
+    photonstack::cli::NewOutputFile publication(output);
+    const auto written = photonstack::ImageCodec{}.write(result, publication.file());
     if (!written.ok)
         throw std::runtime_error(written.errorCode + ": " + written.message);
-    publication.publish(output);
+    publication.publish();
     std::cout << "{\"type\":\"progress\",\"task\":\"stack\",\"stage\":\"complete\",\"command\":\"frequency-stack\","
                  "\"progress\":1}"
               << std::endl;

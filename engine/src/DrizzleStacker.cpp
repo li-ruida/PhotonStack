@@ -1,3 +1,4 @@
+#include "FrameReadAhead.hpp"
 #include "photonstack/DrizzleStacker.hpp"
 
 #include <algorithm>
@@ -261,28 +262,35 @@ DrizzleResult DrizzleStacker::drizzle(const std::vector<std::filesystem::path>& 
     } catch (const std::length_error&) {
         return drizzleError("MemoryAllocationFailed", "Unable to allocate drizzle projection footprints");
     }
-    if (options.alignment == DrizzleAlignment::None) {
-        std::vector<float>().swap(reference.pixels);
-    }
-
     const Registration registration;
+    std::optional<PreparedRegistrationReference> prepared;
+    if (options.alignment != DrizzleAlignment::None && inputs.size() > 1)
+        prepared.emplace(registration.prepareReference(std::move(reference), options.registration,
+                                                       options.alignment == DrizzleAlignment::Distortion));
+    else
+        std::vector<float>().swap(reference.pixels);
+    const auto& referenceGeometry = prepared ? prepared->image() : reference;
     std::size_t alignedFrames = 0;
     std::size_t alignmentFallbacks = 0;
     std::size_t minimumAlignmentMatches = std::numeric_limits<std::size_t>::max();
+    detail::FrameReadAhead ahead(referenceGeometry.width, referenceGeometry.height, true,
+                                  std::uint64_t(output.pixelCount()) * (sizeof(double) * 5 + sizeof(float) * 4));
+    const auto decodeFrame = [&](const std::filesystem::path& path) { return codec.read(path, readOptions); };
     for (std::size_t frame = 1; frame < inputs.size(); ++frame) {
         const double frameStart = framePhaseStart + frameSpan * static_cast<double>(frame);
         const double frameEnd = frameStart + frameSpan;
         const double readEnd = frameStart + frameSpan * 0.08;
         const double alignmentEnd = frameStart + frameSpan * 0.45;
         reportProgress(DrizzleProgressStage::Reading, frameStart, frame + 1, 0, 0);
-        auto read = codec.read(inputs[frame], readOptions);
+        auto read = ahead.read(inputs[frame], decodeFrame);
+        if (read.ok && frame + 1 < inputs.size()) ahead.schedule(inputs[frame + 1], decodeFrame);
         if (!read.ok) {
             return drizzleError(read.errorCode, "Failed to read " + inputs[frame].string() + ": " + read.message);
         }
-        if (!sameShape(reference, read.image)) {
+        if (!sameShape(referenceGeometry, read.image)) {
             return drizzleError("ImageDimensionsMismatch", "All drizzle inputs must share dimensions and channels");
         }
-        if (reference.colorEncoding != read.image.colorEncoding) {
+        if (referenceGeometry.colorEncoding != read.image.colorEncoding) {
             return drizzleError("ImageColorEncodingMismatch",
                                 "All drizzle inputs must use the same color encoding");
         }
@@ -301,7 +309,7 @@ DrizzleResult DrizzleStacker::drizzle(const std::vector<std::filesystem::path>& 
                 break;
             case DrizzleAlignment::Translation:
                 reportProgress(DrizzleProgressStage::Aligning, readEnd, frame + 1, 0, 0);
-                aligned = registration.estimateTranslation(reference, read.image, options.registration);
+                aligned = registration.estimateTranslation(*prepared, read.image);
                 reportProgress(DrizzleProgressStage::Aligning, alignmentEnd, frame + 1, 0, 0);
                 if (aligned.ok) {
                     accumulateSeparable(read.image, aligned.translation, frame + 1, alignmentEnd, frameEnd);
@@ -309,7 +317,7 @@ DrizzleResult DrizzleStacker::drizzle(const std::vector<std::filesystem::path>& 
                 break;
             case DrizzleAlignment::Similarity:
                 reportProgress(DrizzleProgressStage::Aligning, readEnd, frame + 1, 0, 0);
-                aligned = registration.estimateSimilarity(reference, read.image, options.registration);
+                aligned = registration.estimateSimilarity(*prepared, read.image);
                 reportProgress(DrizzleProgressStage::Aligning, alignmentEnd, frame + 1, 0, 0);
                 if (aligned.ok) {
                     const auto transform = aligned.transform;
@@ -325,7 +333,7 @@ DrizzleResult DrizzleStacker::drizzle(const std::vector<std::filesystem::path>& 
                 break;
             case DrizzleAlignment::Affine:
                 reportProgress(DrizzleProgressStage::Aligning, readEnd, frame + 1, 0, 0);
-                aligned = registration.estimateAffine(reference, read.image, options.registration);
+                aligned = registration.estimateAffine(*prepared, read.image);
                 reportProgress(DrizzleProgressStage::Aligning, alignmentEnd, frame + 1, 0, 0);
                 if (aligned.ok) {
                     const auto transform = aligned.affine;
@@ -338,7 +346,7 @@ DrizzleResult DrizzleStacker::drizzle(const std::vector<std::filesystem::path>& 
             case DrizzleAlignment::Distortion: {
                 DistortionTransform transform;
                 reportProgress(DrizzleProgressStage::Aligning, readEnd, frame + 1, 0, 0);
-                aligned = registration.estimateDistortion(reference, read.image, transform, options.registration);
+                aligned = registration.estimateDistortion(*prepared, read.image, transform);
                 reportProgress(DrizzleProgressStage::Aligning, alignmentEnd, frame + 1, 0, 0);
                 if (aligned.ok) {
                     reportProgress(DrizzleProgressStage::Accumulating, alignmentEnd, frame + 1, 0,

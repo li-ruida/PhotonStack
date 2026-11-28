@@ -1,3 +1,5 @@
+#include "photonstack/ParallelRanges.hpp"
+#include <memory>
 #include "photonstack/ArtifactTrailRemover.hpp"
 #include "ChromaticBeaconDetector.hpp"
 
@@ -30,6 +32,38 @@ ArtifactTrailResult artifactError(std::string code, std::string message) {
     return result;
 }
 
+// Detection and externally supplied geometry must obey the same input contract.
+ArtifactTrailResult validateArtifactInput(const ImageBuffer& image, const ArtifactTrailOptions& options) {
+    if (image.empty() || image.channels == 0 || image.pixels.size() != image.sampleCount() ||
+        image.width > INT32_MAX / 8 || image.height > INT32_MAX / 8 ||
+        std::any_of(image.pixels.begin(), image.pixels.end(), [](float v) { return !std::isfinite(v); })) {
+        return artifactError("ImageBufferInvalid", "Artifact removal requires a non-empty finite image buffer");
+    }
+    if (!std::isfinite(options.sigmaThreshold) || !std::isfinite(options.minPeak) ||
+        !std::isfinite(options.minLength) || !std::isfinite(options.airplaneLength) ||
+        !std::isfinite(options.maxWidth) || options.sigmaThreshold <= 0 || options.minPeak < 0 ||
+        options.minLength <= 0 || options.airplaneLength <= 0 || options.maxWidth <= 0 ||
+        options.maskRadius > 64 || options.inpaintRadius > 64) {
+        return artifactError("ArgumentInvalid", "Artifact trail options are outside valid ranges");
+    }
+    if (options.useDetectedTrails) {
+        const double extent = 4.0 * std::hypot(double(image.width), double(image.height));
+        const auto coordinate = [&](float v) { return std::isfinite(v) && std::abs(double(v)) <= extent; };
+        for (const auto& trail : options.detectedTrails) {
+            const float fields[] = {trail.confidence, trail.length, trail.width, trail.angleRadians,
+                trail.peakPosition, trail.taperScore, trail.colorVariance, trail.warmEvidence,
+                trail.meanBrightness, trail.weight};
+            if (!coordinate(trail.x1) || !coordinate(trail.y1) || !coordinate(trail.x2) || !coordinate(trail.y2) ||
+                trail.width < 0 || trail.width > extent || trail.length < 0 || trail.length > extent ||
+                std::any_of(std::begin(fields), std::end(fields), [](float v) { return !std::isfinite(v); }) ||
+                std::any_of(trail.path.begin(), trail.path.end(), [&](const auto& p) { return !coordinate(p.x) || !coordinate(p.y); })) {
+                return artifactError("ArgumentInvalid", "Detected trail geometry must be finite and within the image extent");
+            }
+        }
+    }
+    ArtifactTrailResult result; result.ok = true; return result;
+}
+
 template <typename Callback>
 void parallelForRowRanges(std::uint32_t rowCount, Callback callback) {
     const unsigned int availableWorkers = std::max(1U, std::thread::hardware_concurrency());
@@ -42,7 +76,7 @@ void parallelForRowRanges(std::uint32_t rowCount, Callback callback) {
     }
 
     const std::uint32_t rowsPerWorker = (rowCount + workerCount - 1) / workerCount;
-    std::vector<std::thread> workers;
+    std::vector<std::jthread> workers;
     workers.reserve(workerCount);
     for (unsigned int worker = 0; worker < workerCount; ++worker) {
         const std::uint32_t begin = std::min(rowCount, static_cast<std::uint32_t>(worker) * rowsPerWorker);
@@ -9934,11 +9968,62 @@ const char* toString(ArtifactTrailKind kind) {
     return "unknown";
 }
 
+// Each cleanup pass reads a stable input and accumulates edits separately.
+struct TrailPatch {
+    explicit TrailPatch(ImageBuffer& image) : target(image), blocks((image.pixels.size() + blockSize - 1) / blockSize) {}
+    float& operator[](std::size_t sample) {
+        const auto index = sample / blockSize;
+        auto& block = blocks[index];
+        if (!block) {
+            const auto begin = index * blockSize;
+            const auto count = std::min(blockSize, target.pixels.size() - begin);
+            block = std::make_unique_for_overwrite<float[]>(count);
+            std::copy_n(target.pixels.data() + begin, count, block.get());
+        }
+        return block[sample % blockSize];
+    }
+    void apply() {
+        for (std::size_t i = 0; i < blocks.size(); ++i) {
+            if (!blocks[i]) continue;
+            const auto begin = i * blockSize;
+            const auto count = std::min(blockSize, target.pixels.size() - begin);
+            std::copy_n(blocks[i].get(), count, target.pixels.data() + begin);
+            blocks[i].reset();
+        }
+    }
+  private:
+    static constexpr std::size_t blockSize = 256;
+    ImageBuffer& target;
+    std::vector<std::unique_ptr<float[]>> blocks;
+};
+
+struct TrailStatistics {
+    std::vector<float> luminance;
+    float mean = 0;
+    float standardDeviation = 0;
+};
+
+void measureTrailStatistics(const ImageBuffer& image, TrailStatistics& stats) {
+    auto& luminance = stats.luminance;
+    luminance.resize(image.pixelCount());
+    detail::parallelRanges(luminance.size(), 32768, [&](std::size_t begin, std::size_t end) noexcept {
+        for (auto pixel = begin; pixel < end; ++pixel) luminance[pixel] = luminanceAt(image, pixel);
+    });
+    // Preserve the original Float32 accumulation order at classification thresholds.
+    stats.mean = std::accumulate(luminance.begin(), luminance.end(), 0.0F) / static_cast<float>(luminance.size());
+    float variance = 0;
+    for (const float value : luminance) {
+        const float delta = value - stats.mean;
+        variance += delta * delta;
+    }
+    stats.standardDeviation = std::sqrt(variance / static_cast<float>(luminance.size()));
+}
+
 ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
                                          const ArtifactTrailOptions& options,
                                          ArtifactTrailProgressReporter& progress,
                                          double start,
-                                         double end) {
+                                         double end, TrailStatistics* saved = nullptr) {
     const bool profileStages = std::getenv("PHOTONSTACK_PROFILE_ARTIFACTS") != nullptr;
     auto profileStartedAt = std::chrono::steady_clock::now();
     const auto profileStage = [&](const char* name) {
@@ -9953,43 +10038,15 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
     const auto scaled = [&](double fraction) {
         return start + (end - start) * fraction;
     };
-    if (image.empty() || image.channels == 0 || image.pixels.size() != image.sampleCount()) {
-        return artifactError("ImageBufferInvalid", "Input image must be a non-empty float buffer");
-    }
-    if (!std::isfinite(options.sigmaThreshold) || !std::isfinite(options.minPeak) ||
-        !std::isfinite(options.minLength) || !std::isfinite(options.airplaneLength) ||
-        !std::isfinite(options.maxWidth) || options.sigmaThreshold <= 0.0F || options.minPeak < 0.0F ||
-        options.minLength <= 0.0F || options.airplaneLength <= 0.0F || options.maxWidth <= 0.0F) {
-        return artifactError("ArgumentInvalid", "Artifact trail options are outside valid ranges");
-    }
-    if (options.maskRadius > 64 || options.inpaintRadius > 64) {
-        return artifactError("ArgumentInvalid", "Artifact trail repair radii must not exceed 64 pixels");
-    }
+    if (auto validation = validateArtifactInput(image, options); !validation.ok) return validation;
 
     progress.report(ArtifactTrailProgressStage::Analyzing, start, 0, 0, 0, image.height);
-    std::vector<float> luminance(image.pixelCount(), 0.0F);
-    for (std::uint32_t y = 0; y < image.height; ++y) {
-        for (std::uint32_t x = 0; x < image.width; ++x) {
-            const auto pixel = static_cast<std::size_t>(y) * image.width + x;
-            luminance[pixel] = luminanceAt(image, pixel);
-        }
-        progress.reportRow(ArtifactTrailProgressStage::Analyzing, y, image.height,
-                           start, scaled(0.10));
-    }
-    const float mean = std::accumulate(luminance.begin(), luminance.end(), 0.0F) / static_cast<float>(luminance.size());
-    float variance = 0.0F;
-    for (std::uint32_t y = 0; y < image.height; ++y) {
-        const auto rowStart = static_cast<std::size_t>(y) * image.width;
-        const auto rowEnd = rowStart + image.width;
-        for (auto pixel = rowStart; pixel < rowEnd; ++pixel) {
-            const float delta = luminance[pixel] - mean;
-            variance += delta * delta;
-        }
-        progress.reportRow(ArtifactTrailProgressStage::Analyzing, y, image.height,
-                           scaled(0.10), scaled(0.16));
-    }
-    variance /= static_cast<float>(luminance.size());
-    const float standardDeviation = std::sqrt(variance);
+    TrailStatistics local;
+    auto& stats = saved ? *saved : local;
+    measureTrailStatistics(image, stats);
+    const auto& luminance = stats.luminance;
+    const float mean = stats.mean, standardDeviation = stats.standardDeviation;
+    progress.report(ArtifactTrailProgressStage::Analyzing, scaled(0.16));
     const float threshold = std::max(options.minPeak, mean + options.sigmaThreshold * standardDeviation);
     profileStage("statistics");
 
@@ -10172,8 +10229,10 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
     ArtifactTrailProgressReporter progress(options.progress);
     ArtifactTrailOptions detectionOptions = options;
     detectionOptions.includeMeteors = options.includeMeteors || (options.removeMeteors && !options.preserveMeteors);
+    TrailStatistics stats;
     ArtifactTrailResult result;
     if (options.useDetectedTrails) {
+        if (auto validation = validateArtifactInput(image, options); !validation.ok) return validation;
         result.ok = true;
         result.image = image;
         result.trails = options.detectedTrails;
@@ -10184,7 +10243,7 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
         ));
         progress.report(ArtifactTrailProgressStage::Refining, 0.55);
     } else {
-        result = detectArtifactTrails(image, detectionOptions, progress, 0.0, 0.55);
+        result = detectArtifactTrails(image, detectionOptions, progress, 0.0, 0.55, &stats);
     }
     if (!result.ok) {
         return result;
@@ -10239,27 +10298,10 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
     std::vector<ArtifactTrail> removedDottedDroneTrails;
     std::vector<ArtifactTrail> removedMidLowArtificialTrails;
     progress.report(ArtifactTrailProgressStage::Analyzing, 0.55, 0, 0, 0, image.height);
-    std::vector<float> luminance(image.pixelCount(), 0.0F);
-    for (std::uint32_t y = 0; y < image.height; ++y) {
-        for (std::uint32_t x = 0; x < image.width; ++x) {
-            const auto pixel = static_cast<std::size_t>(y) * image.width + x;
-            luminance[pixel] = luminanceAt(image, pixel);
-        }
-        progress.reportRow(ArtifactTrailProgressStage::Analyzing, y, image.height, 0.55, 0.575);
-    }
-    const float mean = std::accumulate(luminance.begin(), luminance.end(), 0.0F) / static_cast<float>(luminance.size());
-    float variance = 0.0F;
-    for (std::uint32_t y = 0; y < image.height; ++y) {
-        const auto rowStart = static_cast<std::size_t>(y) * image.width;
-        const auto rowEnd = rowStart + image.width;
-        for (auto pixel = rowStart; pixel < rowEnd; ++pixel) {
-            const float delta = luminance[pixel] - mean;
-            variance += delta * delta;
-        }
-        progress.reportRow(ArtifactTrailProgressStage::Analyzing, y, image.height, 0.575, 0.60);
-    }
-    variance /= static_cast<float>(luminance.size());
-    const float standardDeviation = std::sqrt(variance);
+    if (stats.luminance.empty()) measureTrailStatistics(image, stats);
+    const auto& luminance = stats.luminance;
+    const float mean = stats.mean, standardDeviation = stats.standardDeviation;
+    progress.report(ArtifactTrailProgressStage::Analyzing, 0.60);
     for (std::size_t trailIndex = 0; trailIndex < result.trails.size(); ++trailIndex) {
         const double maskFraction = result.trails.empty()
                                         ? 1.0
@@ -10325,10 +10367,10 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                 maxTrailY = std::max(maxTrailY, point.y);
             }
         }
-        const auto minX = static_cast<std::int32_t>(std::floor(minTrailX - radius - 1.0F));
-        const auto maxX = static_cast<std::int32_t>(std::ceil(maxTrailX + radius + 1.0F));
-        const auto minY = static_cast<std::int32_t>(std::floor(minTrailY - radius - 1.0F));
-        const auto maxY = static_cast<std::int32_t>(std::ceil(maxTrailY + radius + 1.0F));
+        const auto minX = static_cast<std::int32_t>(std::clamp(std::floor(minTrailX - radius - 1.0F), 0.0F, float(image.width - 1)));
+        const auto maxX = static_cast<std::int32_t>(std::clamp(std::ceil(maxTrailX + radius + 1.0F), 0.0F, float(image.width - 1)));
+        const auto minY = static_cast<std::int32_t>(std::clamp(std::floor(minTrailY - radius - 1.0F), 0.0F, float(image.height - 1)));
+        const auto maxY = static_cast<std::int32_t>(std::clamp(std::ceil(maxTrailY + radius + 1.0F), 0.0F, float(image.height - 1)));
         for (std::int32_t y = minY; y <= maxY; ++y) {
             for (std::int32_t x = minX; x <= maxX; ++x) {
                 if (x < 0 || y < 0 || x >= static_cast<std::int32_t>(image.width) ||
@@ -10418,215 +10460,222 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
 
     const auto radius = static_cast<std::int32_t>(
         std::max<std::uint32_t>(std::max<std::uint32_t>(1, options.inpaintRadius), options.maskRadius + 5));
-    for (std::uint32_t y = 0; y < image.height; ++y) {
-        for (std::uint32_t x = 0; x < image.width; ++x) {
-            const auto pixel = static_cast<std::size_t>(y) * image.width + x;
-            if (!mask[pixel]) {
-                continue;
-            }
-            const auto& metadata = trailMaskMetadataAt(maskMetadata, pixel);
-            std::array<float, 3> backgroundReference{};
-            std::array<bool, 3> hasBackgroundReference{};
+    const auto workers = std::clamp<std::size_t>(image.pixelCount() / 65536, 1, 8);
+    for (std::size_t first = 0; first < image.height; first += 128) {
+        const auto rows = std::min<std::size_t>(128, image.height - first);
+        detail::runWorkers(std::min(workers, rows), [&](std::size_t worker) {
+            for (auto y = first + rows * worker / std::min(workers, rows);
+                 y < first + rows * (worker + 1) / std::min(workers, rows); ++y) {
+                for (std::uint32_t x = 0; x < image.width; ++x) {
+                    const auto pixel = static_cast<std::size_t>(y) * image.width + x;
+                    if (!mask[pixel]) {
+                        continue;
+                    }
+                    const auto& metadata = trailMaskMetadataAt(maskMetadata, pixel);
+                    std::array<float, 3> backgroundReference{};
+                    std::array<bool, 3> hasBackgroundReference{};
 
-            for (std::uint16_t channel = 0; channel < std::min<std::uint16_t>(3, image.channels); ++channel) {
-                std::vector<float> samples;
-                float negativeSideSample = 0.0F;
-                float positiveSideSample = 0.0F;
-                float negativeSideTextureSample = 0.0F;
-                float positiveSideTextureSample = 0.0F;
-                std::vector<float> negativeSideSamples;
-                std::vector<float> positiveSideSamples;
-                bool hasNegativeSideSample = false;
-                bool hasPositiveSideSample = false;
-                const bool dottedPixel = dottedDroneMask[pixel] != 0;
-                const float normalX = -metadata.unitY;
-                const float normalY = metadata.unitX;
-                const float signedDistance = metadata.signedDistance;
-                const float sampleBand = static_cast<float>(radius + 4);
-                negativeSideSamples.reserve(5);
-                positiveSideSamples.reserve(5);
-                for (int side : {-1, 1}) {
-                    const float targetOffset = sampleBand * static_cast<float>(side);
-                    // Translate the source patch instead of projecting every masked pixel
-                    // onto one parallel line. Projection collapses normal-axis texture into
-                    // visible columns along long dotted trails.
-                    const float firstStep = targetOffset;
-                    for (std::int32_t extra = 0; extra <= 18; extra += 3) {
-                        float sample = 0.0F;
-                        const float step = firstStep + static_cast<float>(extra * side);
-                        const float sx = static_cast<float>(x) + normalX * step;
-                        const float sy = static_cast<float>(y) + normalY * step;
-                        if (sampleChannelBilinear(image, mask, sx, sy, channel, sample)) {
-                            if (side < 0) {
-                                negativeSideSamples.push_back(sample);
-                            } else {
-                                positiveSideSamples.push_back(sample);
+                    for (std::uint16_t channel = 0; channel < std::min<std::uint16_t>(3, image.channels); ++channel) {
+                        std::vector<float> samples;
+                        float negativeSideSample = 0.0F;
+                        float positiveSideSample = 0.0F;
+                        float negativeSideTextureSample = 0.0F;
+                        float positiveSideTextureSample = 0.0F;
+                        std::vector<float> negativeSideSamples;
+                        std::vector<float> positiveSideSamples;
+                        bool hasNegativeSideSample = false;
+                        bool hasPositiveSideSample = false;
+                        const bool dottedPixel = dottedDroneMask[pixel] != 0;
+                        const float normalX = -metadata.unitY;
+                        const float normalY = metadata.unitX;
+                        const float signedDistance = metadata.signedDistance;
+                        const float sampleBand = static_cast<float>(radius + 4);
+                        negativeSideSamples.reserve(5);
+                        positiveSideSamples.reserve(5);
+                        for (int side : {-1, 1}) {
+                            const float targetOffset = sampleBand * static_cast<float>(side);
+                            // Translate the source patch instead of projecting every masked pixel
+                            // onto one parallel line. Projection collapses normal-axis texture into
+                            // visible columns along long dotted trails.
+                            const float firstStep = targetOffset;
+                            for (std::int32_t extra = 0; extra <= 18; extra += 3) {
+                                float sample = 0.0F;
+                                const float step = firstStep + static_cast<float>(extra * side);
+                                const float sx = static_cast<float>(x) + normalX * step;
+                                const float sy = static_cast<float>(y) + normalY * step;
+                                if (sampleChannelBilinear(image, mask, sx, sy, channel, sample)) {
+                                    if (side < 0) {
+                                        negativeSideSamples.push_back(sample);
+                                    } else {
+                                        positiveSideSamples.push_back(sample);
+                                    }
+                                }
                             }
                         }
-                    }
-                }
-                if (!negativeSideSamples.empty()) {
-                    negativeSideTextureSample = negativeSideSamples.front();
-                    negativeSideSample = median(negativeSideSamples);
-                    hasNegativeSideSample = true;
-                }
-                if (!positiveSideSamples.empty()) {
-                    positiveSideTextureSample = positiveSideSamples.front();
-                    positiveSideSample = median(positiveSideSamples);
-                    hasPositiveSideSample = true;
-                }
+                        if (!negativeSideSamples.empty()) {
+                            negativeSideTextureSample = negativeSideSamples.front();
+                            negativeSideSample = median(negativeSideSamples);
+                            hasNegativeSideSample = true;
+                        }
+                        if (!positiveSideSamples.empty()) {
+                            positiveSideTextureSample = positiveSideSamples.front();
+                            positiveSideSample = median(positiveSideSamples);
+                            hasPositiveSideSample = true;
+                        }
 
-                const std::int32_t maxSearchRadius = radius * 2 + 2;
-                for (std::int32_t searchRadius = radius;
-                     samples.size() < 6 && searchRadius <= maxSearchRadius;
-                     searchRadius = searchRadius * 2 + 1) {
-                    samples.clear();
-                    samples.reserve(static_cast<std::size_t>((searchRadius * 2 + 1) * (searchRadius * 2 + 1)));
-                    for (std::int32_t dy = -searchRadius; dy <= searchRadius; ++dy) {
-                        for (std::int32_t dx = -searchRadius; dx <= searchRadius; ++dx) {
-                            const std::int32_t sx = static_cast<std::int32_t>(x) + dx;
-                            const std::int32_t sy = static_cast<std::int32_t>(y) + dy;
-                            if (sx < 0 || sy < 0 || sx >= static_cast<std::int32_t>(image.width) ||
-                                sy >= static_cast<std::int32_t>(image.height)) {
-                                continue;
+                        const std::int32_t maxSearchRadius = radius * 2 + 2;
+                        for (std::int32_t searchRadius = radius;
+                             samples.size() < 6 && searchRadius <= maxSearchRadius;
+                             searchRadius = searchRadius * 2 + 1) {
+                            samples.clear();
+                            samples.reserve(static_cast<std::size_t>((searchRadius * 2 + 1) * (searchRadius * 2 + 1)));
+                            for (std::int32_t dy = -searchRadius; dy <= searchRadius; ++dy) {
+                                for (std::int32_t dx = -searchRadius; dx <= searchRadius; ++dx) {
+                                    const std::int32_t sx = static_cast<std::int32_t>(x) + dx;
+                                    const std::int32_t sy = static_cast<std::int32_t>(y) + dy;
+                                    if (sx < 0 || sy < 0 || sx >= static_cast<std::int32_t>(image.width) ||
+                                        sy >= static_cast<std::int32_t>(image.height)) {
+                                        continue;
+                                    }
+                                    const auto samplePixel =
+                                        static_cast<std::size_t>(static_cast<std::uint32_t>(sy)) * image.width +
+                                        static_cast<std::uint32_t>(sx);
+                                    if (mask[samplePixel]) {
+                                        continue;
+                                    }
+                                    if (likelyNeutralBrightStarSample(image, samplePixel)) {
+                                        continue;
+                                    }
+                                    samples.push_back(image.pixels[samplePixel * image.channels + channel]);
+                                }
                             }
-                            const auto samplePixel =
-                                static_cast<std::size_t>(static_cast<std::uint32_t>(sy)) * image.width +
-                                static_cast<std::uint32_t>(sx);
-                            if (mask[samplePixel]) {
-                                continue;
+                        }
+                        if (!samples.empty()) {
+                            const auto [sampleMinIterator, sampleMaxIterator] =
+                                std::minmax_element(samples.begin(), samples.end());
+                            const float sampleMin = *sampleMinIterator;
+                            const float sampleMax = *sampleMaxIterator;
+                            const float medianSample = median(samples);
+                            std::vector<float> absoluteDeviations;
+                            absoluteDeviations.reserve(samples.size());
+                            for (const auto sample : samples) {
+                                absoluteDeviations.push_back(std::fabs(sample - medianSample));
                             }
-                            if (likelyNeutralBrightStarSample(image, samplePixel)) {
-                                continue;
+                            const float medianAbsoluteDeviation = median(absoluteDeviations);
+                            const float robustRadius = std::max(0.003F, medianAbsoluteDeviation * 3.5F);
+                            float robustSum = 0.0F;
+                            std::size_t robustCount = 0;
+                            for (const auto sample : samples) {
+                                if (std::fabs(sample - medianSample) <= robustRadius) {
+                                    robustSum += sample;
+                                    robustCount += 1;
+                                }
                             }
-                            samples.push_back(image.pixels[samplePixel * image.channels + channel]);
+                            const float meanSample = robustCount > 0 ? robustSum / static_cast<float>(robustCount) : medianSample;
+                            float varianceSample = 0.0F;
+                            for (const auto sample : samples) {
+                                if (std::fabs(sample - medianSample) <= robustRadius) {
+                                    const float delta = sample - meanSample;
+                                    varianceSample += delta * delta;
+                                }
+                            }
+                            varianceSample /= static_cast<float>(std::max<std::size_t>(1, robustCount));
+                            float cloneSample = medianSample;
+                            float clonedTextureResidual = 0.0F;
+                            bool hasCloneSample = false;
+                            if (hasNegativeSideSample && hasPositiveSideSample) {
+                                const float alongCoordinate =
+                                    static_cast<float>(x) * metadata.unitX + static_cast<float>(y) * metadata.unitY;
+                                const auto alongBlock = static_cast<std::uint32_t>(
+                                    std::max(0.0F, std::floor(alongCoordinate / 18.0F)));
+                                const float coherentSideBias = deterministicNoise(alongBlock, 0U, 19U) * 0.14F;
+                                const float sideMix =
+                                    dottedPixel
+                                        ? std::clamp(0.50F + signedDistance / std::max(1.0F, sampleBand * 3.0F) +
+                                                         coherentSideBias,
+                                                     0.14F,
+                                                     0.86F)
+                                        : std::clamp((signedDistance + sampleBand) / std::max(1.0F, sampleBand * 2.0F), 0.0F, 1.0F);
+                                cloneSample = negativeSideSample * (1.0F - sideMix) + positiveSideSample * sideMix;
+                                const bool useNegativeTexture =
+                                    signedDistance < -0.75F ||
+                                    (std::fabs(signedDistance) <= 0.75F && deterministicNoise(alongBlock, 0U, 47U) < 0.0F);
+                                const float textureClone =
+                                    useNegativeTexture ? negativeSideTextureSample : positiveSideTextureSample;
+                                const float textureBackground = useNegativeTexture ? negativeSideSample : positiveSideSample;
+                                clonedTextureResidual = std::clamp(textureClone - textureBackground, -0.040F, 0.040F);
+                                hasCloneSample = true;
+                            } else if (hasNegativeSideSample || hasPositiveSideSample) {
+                                cloneSample = hasNegativeSideSample ? negativeSideSample : positiveSideSample;
+                                hasCloneSample = true;
+                            }
+                            const float contextualSample =
+                                dottedPixel ? medianSample * 0.54F + meanSample * 0.46F : medianSample * 0.72F + meanSample * 0.28F;
+                            const float directionalWeight = hasCloneSample ? (dottedPixel ? 0.96F : 0.50F) : 0.0F;
+                            const float base = contextualSample * (1.0F - directionalWeight) + cloneSample * directionalWeight;
+                            backgroundReference[channel] = hasCloneSample ? cloneSample : contextualSample;
+                            hasBackgroundReference[channel] = true;
+                            const float textureNoise =
+                                deterministicNoise(x, y, 97) * 0.85F + deterministicNoise(x, y, channel) * 0.15F;
+                            const float texture = dottedPixel
+                                                      ? clonedTextureResidual +
+                                                            textureNoise * std::sqrt(std::max(0.0F, varianceSample)) * 0.18F
+                                                      : textureNoise * std::sqrt(std::max(0.0F, varianceSample)) * 0.20F;
+                            const float repaired = std::clamp(base + texture, sampleMin, sampleMax);
+                            const float alpha = std::clamp(metadata.alpha, 0.0F, 1.0F);
+                            const float original = image.pixels[pixel * image.channels + channel];
+                            output.pixels[pixel * output.channels + channel] = original * (1.0F - alpha) + repaired * alpha;
                         }
                     }
-                }
-                if (!samples.empty()) {
-                    const auto [sampleMinIterator, sampleMaxIterator] =
-                        std::minmax_element(samples.begin(), samples.end());
-                    const float sampleMin = *sampleMinIterator;
-                    const float sampleMax = *sampleMaxIterator;
-                    const float medianSample = median(samples);
-                    std::vector<float> absoluteDeviations;
-                    absoluteDeviations.reserve(samples.size());
-                    for (const auto sample : samples) {
-                        absoluteDeviations.push_back(std::fabs(sample - medianSample));
-                    }
-                    const float medianAbsoluteDeviation = median(absoluteDeviations);
-                    const float robustRadius = std::max(0.003F, medianAbsoluteDeviation * 3.5F);
-                    float robustSum = 0.0F;
-                    std::size_t robustCount = 0;
-                    for (const auto sample : samples) {
-                        if (std::fabs(sample - medianSample) <= robustRadius) {
-                            robustSum += sample;
-                            robustCount += 1;
+
+                    if (output.channels >= 3) {
+                        auto& red = output.pixels[pixel * output.channels];
+                        auto& green = output.pixels[pixel * output.channels + 1];
+                        auto& blue = output.pixels[pixel * output.channels + 2];
+                        const float redExcess = red - std::max(green, blue);
+                        const float magentaExcess = std::min(red, blue) - green;
+                        const float alpha = std::clamp(metadata.alpha, 0.0F, 1.0F);
+                        if (redExcess > 0.006F) {
+                            const float target = std::max(green, blue) + 0.004F;
+                            const float strength = std::clamp((redExcess - 0.006F) / 0.070F, 0.0F, 0.74F) * alpha;
+                            red = red * (1.0F - strength) + target * strength;
+                        }
+                        if (magentaExcess > 0.006F) {
+                            const float target = std::max(green, std::min(red, blue) - 0.004F);
+                            const float strength = std::clamp((magentaExcess - 0.006F) / 0.070F, 0.0F, 0.62F) * alpha;
+                            green = green * (1.0F - strength) + target * strength;
+                        } else {
+                            const float chroma = std::max({red, green, blue}) - std::min({red, green, blue});
+                            const bool hasReference =
+                                hasBackgroundReference[0] && hasBackgroundReference[1] && hasBackgroundReference[2];
+                            const float referenceChroma =
+                                hasReference
+                                    ? std::max({backgroundReference[0], backgroundReference[1], backgroundReference[2]}) -
+                                          std::min({backgroundReference[0], backgroundReference[1], backgroundReference[2]})
+                                    : 0.0F;
+                            const float allowedChroma = std::max(0.070F, referenceChroma + 0.018F);
+                            if (chroma > allowedChroma) {
+                                const float average = (red + green + blue) / 3.0F;
+                                const float strength =
+                                    std::clamp((chroma - allowedChroma) / 0.120F, 0.0F, 0.30F) * alpha;
+                                const float targetRed = hasReference ? backgroundReference[0] : average;
+                                const float targetGreen = hasReference ? backgroundReference[1] : average;
+                                const float targetBlue = hasReference ? backgroundReference[2] : average;
+                                red = red * (1.0F - strength) + targetRed * strength;
+                                green = green * (1.0F - strength) + targetGreen * strength;
+                                blue = blue * (1.0F - strength) + targetBlue * strength;
+                            }
                         }
                     }
-                    const float meanSample = robustCount > 0 ? robustSum / static_cast<float>(robustCount) : medianSample;
-                    float varianceSample = 0.0F;
-                    for (const auto sample : samples) {
-                        if (std::fabs(sample - medianSample) <= robustRadius) {
-                            const float delta = sample - meanSample;
-                            varianceSample += delta * delta;
-                        }
-                    }
-                    varianceSample /= static_cast<float>(std::max<std::size_t>(1, robustCount));
-                    float cloneSample = medianSample;
-                    float clonedTextureResidual = 0.0F;
-                    bool hasCloneSample = false;
-                    if (hasNegativeSideSample && hasPositiveSideSample) {
-                        const float alongCoordinate =
-                            static_cast<float>(x) * metadata.unitX + static_cast<float>(y) * metadata.unitY;
-                        const auto alongBlock = static_cast<std::uint32_t>(
-                            std::max(0.0F, std::floor(alongCoordinate / 18.0F)));
-                        const float coherentSideBias = deterministicNoise(alongBlock, 0U, 19U) * 0.14F;
-                        const float sideMix =
-                            dottedPixel
-                                ? std::clamp(0.50F + signedDistance / std::max(1.0F, sampleBand * 3.0F) +
-                                                 coherentSideBias,
-                                             0.14F,
-                                             0.86F)
-                                : std::clamp((signedDistance + sampleBand) / std::max(1.0F, sampleBand * 2.0F), 0.0F, 1.0F);
-                        cloneSample = negativeSideSample * (1.0F - sideMix) + positiveSideSample * sideMix;
-                        const bool useNegativeTexture =
-                            signedDistance < -0.75F ||
-                            (std::fabs(signedDistance) <= 0.75F && deterministicNoise(alongBlock, 0U, 47U) < 0.0F);
-                        const float textureClone =
-                            useNegativeTexture ? negativeSideTextureSample : positiveSideTextureSample;
-                        const float textureBackground = useNegativeTexture ? negativeSideSample : positiveSideSample;
-                        clonedTextureResidual = std::clamp(textureClone - textureBackground, -0.040F, 0.040F);
-                        hasCloneSample = true;
-                    } else if (hasNegativeSideSample || hasPositiveSideSample) {
-                        cloneSample = hasNegativeSideSample ? negativeSideSample : positiveSideSample;
-                        hasCloneSample = true;
-                    }
-                    const float contextualSample =
-                        dottedPixel ? medianSample * 0.54F + meanSample * 0.46F : medianSample * 0.72F + meanSample * 0.28F;
-                    const float directionalWeight = hasCloneSample ? (dottedPixel ? 0.96F : 0.50F) : 0.0F;
-                    const float base = contextualSample * (1.0F - directionalWeight) + cloneSample * directionalWeight;
-                    backgroundReference[channel] = hasCloneSample ? cloneSample : contextualSample;
-                    hasBackgroundReference[channel] = true;
-                    const float textureNoise =
-                        deterministicNoise(x, y, 97) * 0.85F + deterministicNoise(x, y, channel) * 0.15F;
-                    const float texture = dottedPixel
-                                              ? clonedTextureResidual +
-                                                    textureNoise * std::sqrt(std::max(0.0F, varianceSample)) * 0.18F
-                                              : textureNoise * std::sqrt(std::max(0.0F, varianceSample)) * 0.20F;
-                    const float repaired = std::clamp(base + texture, sampleMin, sampleMax);
-                    const float alpha = std::clamp(metadata.alpha, 0.0F, 1.0F);
-                    const float original = image.pixels[pixel * image.channels + channel];
-                    output.pixels[pixel * output.channels + channel] = original * (1.0F - alpha) + repaired * alpha;
                 }
             }
-
-            if (output.channels >= 3) {
-                auto& red = output.pixels[pixel * output.channels];
-                auto& green = output.pixels[pixel * output.channels + 1];
-                auto& blue = output.pixels[pixel * output.channels + 2];
-                const float redExcess = red - std::max(green, blue);
-                const float magentaExcess = std::min(red, blue) - green;
-                const float alpha = std::clamp(metadata.alpha, 0.0F, 1.0F);
-                if (redExcess > 0.006F) {
-                    const float target = std::max(green, blue) + 0.004F;
-                    const float strength = std::clamp((redExcess - 0.006F) / 0.070F, 0.0F, 0.74F) * alpha;
-                    red = red * (1.0F - strength) + target * strength;
-                }
-                if (magentaExcess > 0.006F) {
-                    const float target = std::max(green, std::min(red, blue) - 0.004F);
-                    const float strength = std::clamp((magentaExcess - 0.006F) / 0.070F, 0.0F, 0.62F) * alpha;
-                    green = green * (1.0F - strength) + target * strength;
-                } else {
-                    const float chroma = std::max({red, green, blue}) - std::min({red, green, blue});
-                    const bool hasReference =
-                        hasBackgroundReference[0] && hasBackgroundReference[1] && hasBackgroundReference[2];
-                    const float referenceChroma =
-                        hasReference
-                            ? std::max({backgroundReference[0], backgroundReference[1], backgroundReference[2]}) -
-                                  std::min({backgroundReference[0], backgroundReference[1], backgroundReference[2]})
-                            : 0.0F;
-                    const float allowedChroma = std::max(0.070F, referenceChroma + 0.018F);
-                    if (chroma > allowedChroma) {
-                        const float average = (red + green + blue) / 3.0F;
-                        const float strength =
-                            std::clamp((chroma - allowedChroma) / 0.120F, 0.0F, 0.30F) * alpha;
-                        const float targetRed = hasReference ? backgroundReference[0] : average;
-                        const float targetGreen = hasReference ? backgroundReference[1] : average;
-                        const float targetBlue = hasReference ? backgroundReference[2] : average;
-                        red = red * (1.0F - strength) + targetRed * strength;
-                        green = green * (1.0F - strength) + targetGreen * strength;
-                        blue = blue * (1.0F - strength) + targetBlue * strength;
-                    }
-                }
-            }
-        }
-        progress.reportRow(ArtifactTrailProgressStage::Inpainting, y, image.height, 0.65, 0.78);
+        });
+        progress.reportRow(ArtifactTrailProgressStage::Inpainting, first + rows - 1, image.height, 0.65, 0.78);
     }
 
     progress.report(ArtifactTrailProgressStage::Cleaning, 0.78);
     if (output.channels >= 3) {
-        ImageBuffer harmonized = output;
+        TrailPatch harmonized(output);
         for (std::uint32_t y = 0; y < image.height; ++y) {
             for (std::uint32_t x = 0; x < image.width; ++x) {
                 const auto pixel = static_cast<std::size_t>(y) * image.width + x;
@@ -10691,8 +10740,8 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                                    0.018F);
                     const float strength = 0.28F * alpha;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        harmonized.pixels[base + channel] =
-                            std::clamp(harmonized.pixels[base + channel] + delta * strength, 0.0F, 1.0F);
+                        harmonized[base + channel] =
+                            std::clamp(harmonized[base + channel] + delta * strength, 0.0F, 1.0F);
                     }
                 }
 
@@ -10720,18 +10769,18 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                     const float strength = 0.08F * alpha;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
                         const float smoothed = neighborSum[channel] / neighborWeight;
-                        harmonized.pixels[base + channel] =
-                            harmonized.pixels[base + channel] * (1.0F - strength) + smoothed * strength;
+                        harmonized[base + channel] =
+                            harmonized[base + channel] * (1.0F - strength) + smoothed * strength;
                     }
                 }
             }
         }
-        output = std::move(harmonized);
+        harmonized.apply();
     }
     progress.report(ArtifactTrailProgressStage::Cleaning, 0.79);
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer cleaned = output;
+        TrailPatch cleaned(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio >= 0.90F && trail.path.size() >= 2) {
@@ -10847,17 +10896,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
                         const float cleanupTarget =
                             maskedDottedPixel ? target[channel] * 0.92F + targetMean[channel] * 0.08F : target[channel];
-                        cleaned.pixels[base + channel] =
+                        cleaned[base + channel] =
                             output.pixels[base + channel] * (1.0F - strength) + cleanupTarget * strength;
                     }
                 }
             }
         }
-        output = std::move(cleaned);
+        cleaned.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer lowHorizonPeaks = output;
+        TrailPatch lowHorizonPeaks(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.90F || trail.path.size() < 2) {
@@ -11050,18 +11099,18 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                         const float strength = std::clamp(
                             std::max(residualWeight, originalWeight) * (1.0F - ellipse * 0.56F), 0.0F, 0.88F);
                         for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                            lowHorizonPeaks.pixels[base + channel] =
+                            lowHorizonPeaks[base + channel] =
                                 output.pixels[base + channel] * (1.0F - strength) + target[channel] * strength;
                         }
                     }
                 }
             }
         }
-        output = std::move(lowHorizonPeaks);
+        lowHorizonPeaks.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer coreMatched = output;
+        TrailPatch coreMatched(output);
         std::vector<std::uint8_t> touched(image.pixelCount(), 0);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
@@ -11184,18 +11233,18 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                         }
                         strength = std::clamp(strength, 0.0F, horizonTrail ? 0.94F : 0.72F);
                         for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                            coreMatched.pixels[base + channel] =
+                            coreMatched[base + channel] =
                                 output.pixels[base + channel] * (1.0F - strength) + target[channel] * strength;
                         }
                     }
                 }
             }
         }
-        output = std::move(coreMatched);
+        coreMatched.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer spotPatched = output;
+        TrailPatch spotPatched(output);
         std::vector<std::uint8_t> processed(image.pixelCount(), 0);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
@@ -11349,8 +11398,8 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                     static_cast<std::uint32_t>(x);
                                 const auto base = pixel * output.channels;
                                 for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                                    spotPatched.pixels[base + channel] =
-                                        spotPatched.pixels[base + channel] * (1.0F - strength) +
+                                    spotPatched[base + channel] =
+                                        spotPatched[base + channel] * (1.0F - strength) +
                                         target[channel] * strength;
                                 }
                             }
@@ -11359,13 +11408,13 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                 }
             }
         }
-        output = std::move(spotPatched);
+        spotPatched.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
         for (std::uint8_t sideBeaconPass = 0; sideBeaconPass < 2; ++sideBeaconPass) {
             const bool selectivePass = sideBeaconPass == 1;
-            ImageBuffer sideBeaconPatched = output;
+            TrailPatch sideBeaconPatched(output);
             std::vector<std::uint8_t> processed(image.pixelCount(), 0);
             for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
@@ -11500,8 +11549,8 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                     static_cast<std::uint32_t>(x);
                                 const auto base = pixel * output.channels;
                                 for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                                    sideBeaconPatched.pixels[base + channel] =
-                                        sideBeaconPatched.pixels[base + channel] * (1.0F - strength) +
+                                    sideBeaconPatched[base + channel] =
+                                        sideBeaconPatched[base + channel] * (1.0F - strength) +
                                         target[channel] * strength;
                                 }
                             }
@@ -11510,13 +11559,13 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                 }
             }
             }
-            output = std::move(sideBeaconPatched);
+            sideBeaconPatched.apply();
         }
     }
     progress.report(ArtifactTrailProgressStage::Cleaning, 0.81);
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer dottedResidualPatched = output;
+        TrailPatch dottedResidualPatched(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F || centerRatio > 0.970F || trail.path.size() < 2) {
@@ -11832,19 +11881,19 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                                           0.0F,
                                                           horizonTrail ? 0.94F : 0.72F);
                         for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                            dottedResidualPatched.pixels[base + channel] =
-                                dottedResidualPatched.pixels[base + channel] * (1.0F - strength) +
+                            dottedResidualPatched[base + channel] =
+                                dottedResidualPatched[base + channel] * (1.0F - strength) +
                                 target[channel] * strength;
                         }
                     }
                 }
             }
         }
-        output = std::move(dottedResidualPatched);
+        dottedResidualPatched.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer horizonNeedlePatched = output;
+        TrailPatch horizonNeedlePatched(output);
         std::vector<std::uint8_t> touched(image.pixelCount(), 0);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
@@ -12035,8 +12084,8 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                 const auto patchBase = pixel * output.channels;
                                 const float strength = std::clamp(baseStrength * (1.0F - ellipse * 0.58F), 0.0F, 0.78F);
                                 for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                                    horizonNeedlePatched.pixels[patchBase + channel] =
-                                        horizonNeedlePatched.pixels[patchBase + channel] * (1.0F - strength) +
+                                    horizonNeedlePatched[patchBase + channel] =
+                                        horizonNeedlePatched[patchBase + channel] * (1.0F - strength) +
                                         target[channel] * strength;
                                 }
                             }
@@ -12045,11 +12094,11 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                 }
             }
         }
-        output = std::move(horizonNeedlePatched);
+        horizonNeedlePatched.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer horizonTextureBlended = output;
+        TrailPatch horizonTextureBlended(output);
         std::vector<std::uint8_t> touched(image.pixelCount(), 0);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
@@ -12184,8 +12233,8 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                                            static_cast<std::uint32_t>(y),
                                                            channel + 41U) *
                                         std::sqrt(std::max(0.0F, channelVariance[channel])) * 0.16F;
-                                    horizonTextureBlended.pixels[patchBase + channel] =
-                                        horizonTextureBlended.pixels[patchBase + channel] * (1.0F - strength) +
+                                    horizonTextureBlended[patchBase + channel] =
+                                        horizonTextureBlended[patchBase + channel] * (1.0F - strength) +
                                         std::clamp(target[channel] + texture, 0.0F, 1.0F) * strength;
                                 }
                             }
@@ -12194,11 +12243,11 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                 }
             }
         }
-        output = std::move(horizonTextureBlended);
+        horizonTextureBlended.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer horizonSeamSoftened = output;
+        TrailPatch horizonSeamSoftened(output);
         std::vector<std::uint8_t> touched(image.pixelCount(), 0);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
@@ -12311,21 +12360,21 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                                    static_cast<std::uint32_t>(centerY),
                                                    channel + 83U) *
                                 std::sqrt(std::max(0.0F, channelVariance[channel])) * 0.12F;
-                            horizonSeamSoftened.pixels[base + channel] =
-                                horizonSeamSoftened.pixels[base + channel] * (1.0F - strength) +
+                            horizonSeamSoftened[base + channel] =
+                                horizonSeamSoftened[base + channel] * (1.0F - strength) +
                                 std::clamp(target[channel] + texture, 0.0F, 1.0F) * strength;
                         }
                     }
                 }
             }
         }
-        output = std::move(horizonSeamSoftened);
+        horizonSeamSoftened.apply();
     }
     progress.report(ArtifactTrailProgressStage::Cleaning, 0.83);
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
         for (std::uint8_t profilePass = 0; profilePass < 3; ++profilePass) {
-            ImageBuffer horizonProfileBalanced = output;
+            TrailPatch horizonProfileBalanced(output);
             std::vector<std::uint8_t> touched(image.pixelCount(), 0);
             for (const auto& trail : removedDottedDroneTrails) {
                 const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
@@ -12417,20 +12466,20 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                 liftingDarkSeam ? std::clamp(lumaDelta * strength, 0.0F, 0.0120F)
                                                 : std::clamp(lumaDelta * strength, -0.0090F, 0.0F);
                             for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                                horizonProfileBalanced.pixels[base + channel] =
-                                    std::clamp(horizonProfileBalanced.pixels[base + channel] + correction, 0.0F, 1.0F);
+                                horizonProfileBalanced[base + channel] =
+                                    std::clamp(horizonProfileBalanced[base + channel] + correction, 0.0F, 1.0F);
                             }
                         }
                     }
                 }
             }
-            output = std::move(horizonProfileBalanced);
+            horizonProfileBalanced.apply();
         }
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
         for (std::uint8_t trenchPass = 0; trenchPass < 2; ++trenchPass) {
-            ImageBuffer trenchFilled = output;
+            TrailPatch trenchFilled(output);
             for (const auto& trail : removedDottedDroneTrails) {
                 const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
                 if (centerRatio < 0.80F || centerRatio > 0.970F || trail.path.size() < 2) {
@@ -12551,18 +12600,18 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                                           0.16F, lowHorizonTrail ? 0.78F : 0.76F) *
                                                distanceWeight;
                         for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                            trenchFilled.pixels[base + channel] =
+                            trenchFilled[base + channel] =
                                 output.pixels[base + channel] * (1.0F - strength) + target[channel] * strength;
                         }
                     }
                 }
             }
-            output = std::move(trenchFilled);
+            trenchFilled.apply();
         }
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer profilePolished = output;
+        TrailPatch profilePolished(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F || centerRatio > 0.970F || trail.path.size() < 2) {
@@ -12701,18 +12750,18 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                                channel + 157U) *
                             std::sqrt(std::max(0.0F, channelVariance[channel])) * (lowHorizonTrail ? 0.10F : 0.085F);
                         const float texturedTarget = std::clamp(target[channel] + texture, 0.0F, 1.0F);
-                        profilePolished.pixels[base + channel] =
+                        profilePolished[base + channel] =
                             output.pixels[base + channel] * (1.0F - strength) + texturedTarget * strength;
                     }
                 }
             }
         }
-        output = std::move(profilePolished);
+        profilePolished.apply();
     }
     progress.report(ArtifactTrailProgressStage::Cleaning, 0.85);
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer grainRestored = output;
+        TrailPatch grainRestored(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F || centerRatio > 0.970F || trail.path.size() < 2) {
@@ -12815,17 +12864,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                         deterministicNoise(static_cast<std::uint32_t>(x), static_cast<std::uint32_t>(y), 211U) *
                         sideStdDev * (lowHorizonTrail ? 0.38F : 0.30F) * distanceWeight;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        grainRestored.pixels[base + channel] =
-                            std::clamp(grainRestored.pixels[base + channel] + grain, 0.0F, 1.0F);
+                        grainRestored[base + channel] =
+                            std::clamp(grainRestored[base + channel] + grain, 0.0F, 1.0F);
                     }
                 }
             }
         }
-        output = std::move(grainRestored);
+        grainRestored.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer horizonResidualScrubbed = output;
+        TrailPatch horizonResidualScrubbed(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.90F || centerRatio > 0.970F || trail.path.size() < 2) {
@@ -12968,17 +13017,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                                channel + 283U) *
                             std::sqrt(std::max(0.0F, channelVariance[channel])) * 0.08F;
                         const float texturedTarget = std::clamp(target[channel] + texture, 0.0F, 1.0F);
-                        horizonResidualScrubbed.pixels[base + channel] =
+                        horizonResidualScrubbed[base + channel] =
                             output.pixels[base + channel] * (1.0F - strength) + texturedTarget * strength;
                     }
                 }
             }
         }
-        output = std::move(horizonResidualScrubbed);
+        horizonResidualScrubbed.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer horizonLumaCapped = output;
+        TrailPatch horizonLumaCapped(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.90F || centerRatio > 0.970F || trail.path.size() < 2) {
@@ -13066,17 +13115,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                         1.0F - std::clamp(distance.distance / std::max(0.1F, capRadius), 0.0F, 1.0F) * 0.52F;
                     const float reduction = std::min(0.014F, (excess - 0.0048F) * 0.40F) * distanceWeight;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        horizonLumaCapped.pixels[base + channel] =
+                        horizonLumaCapped[base + channel] =
                             std::clamp(output.pixels[base + channel] - reduction, 0.0F, 1.0F);
                     }
                 }
             }
         }
-        output = std::move(horizonLumaCapped);
+        horizonLumaCapped.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer horizonContrastBalanced = output;
+        TrailPatch horizonContrastBalanced(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.90F || centerRatio > 0.970F || trail.path.size() < 2) {
@@ -13166,18 +13215,18 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                     const float adjustment =
                         std::clamp(delta * 0.32F, -maxAdjustment, maxAdjustment) * distanceWeight;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        horizonContrastBalanced.pixels[base + channel] =
+                        horizonContrastBalanced[base + channel] =
                             std::clamp(output.pixels[base + channel] + adjustment, 0.0F, 1.0F);
                     }
                 }
             }
         }
-        output = std::move(horizonContrastBalanced);
+        horizonContrastBalanced.apply();
     }
     progress.report(ArtifactTrailProgressStage::Cleaning, 0.87);
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer horizonShiftedDottedCleanup = output;
+        TrailPatch horizonShiftedDottedCleanup(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.90F || centerRatio > 0.970F) {
@@ -13430,7 +13479,7 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                 const float coreTarget = brightDottedCore ? percentileValue(targetSamples[channel], 0.36F)
                                                                           : target[channel];
                                 const float texturedTarget = std::clamp(coreTarget + noise, 0.0F, 1.0F);
-                                horizonShiftedDottedCleanup.pixels[base + channel] =
+                                horizonShiftedDottedCleanup[base + channel] =
                                     output.pixels[base + channel] * (1.0F - strength) + texturedTarget * strength;
                             }
                             }
@@ -13439,7 +13488,7 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                 }
             }
         }
-        output = std::move(horizonShiftedDottedCleanup);
+        horizonShiftedDottedCleanup.apply();
     }
 
     // Dotted drone trails close to the horizon are sparse point series; the wider
@@ -13453,7 +13502,7 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
         removedDottedDroneTrails.end());
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer balanced = output;
+        TrailPatch balanced(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const bool lowHorizonTrail = centerY(trail) / std::max(1.0F, static_cast<float>(image.height)) >= 0.90F;
             const float balanceRadius = std::clamp(trail.width * 0.78F + 0.95F, 1.80F, 2.75F);
@@ -13557,17 +13606,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                    lowHorizonTrail ? 0.90F : 0.68F) *
                         distanceWeight;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        balanced.pixels[base + channel] =
+                        balanced[base + channel] =
                             output.pixels[base + channel] * (1.0F - strength) + target[channel] * strength;
                     }
                 }
             }
         }
-        output = std::move(balanced);
+        balanced.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer lifted = output;
+        TrailPatch lifted(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             const bool lowHorizonTrail = centerRatio >= 0.90F;
@@ -13712,17 +13761,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                         strength = std::max(strength, (lowHorizonTrail ? 0.46F : 0.38F) * distanceWeight * maskWeight);
                     }
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        lifted.pixels[base + channel] =
+                        lifted[base + channel] =
                             output.pixels[base + channel] * (1.0F - strength) + blendTarget[channel] * strength;
                     }
                 }
             }
         }
-        output = std::move(lifted);
+        lifted.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer chromaMatched = output;
+        TrailPatch chromaMatched(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F) {
@@ -13865,18 +13914,18 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                    strengthCeiling) *
                         distanceWeight * maskWeight;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        chromaMatched.pixels[base + channel] =
+                        chromaMatched[base + channel] =
                             output.pixels[base + channel] * (1.0F - strength) + colorTarget[channel] * strength;
                     }
                 }
             }
         }
-        output = std::move(chromaMatched);
+        chromaMatched.apply();
     }
     progress.report(ArtifactTrailProgressStage::Cleaning, 0.89);
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer damped = output;
+        TrailPatch damped(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F) {
@@ -14018,17 +14067,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                         strength = std::max(strength, (lowHorizonTrail ? 0.60F : 0.62F) * distanceWeight);
                     }
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        damped.pixels[base + channel] =
+                        damped[base + channel] =
                             output.pixels[base + channel] * (1.0F - strength) + target[channel] * strength;
                     }
                 }
             }
         }
-        output = std::move(damped);
+        damped.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer scrubbed = output;
+        TrailPatch scrubbed(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F) {
@@ -14141,17 +14190,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                    lowHorizonTrail ? 0.97F : 0.94F) *
                         distanceWeight;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        scrubbed.pixels[base + channel] =
+                        scrubbed[base + channel] =
                             output.pixels[base + channel] * (1.0F - strength) + target[channel] * strength;
                     }
                 }
             }
         }
-        output = std::move(scrubbed);
+        scrubbed.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer beaconPatched = output;
+        TrailPatch beaconPatched(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F) {
@@ -14281,17 +14330,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                    lowHorizonTrail ? 0.99F : 0.94F) *
                         distanceWeight;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        beaconPatched.pixels[base + channel] =
+                        beaconPatched[base + channel] =
                             output.pixels[base + channel] * (1.0F - strength) + target[channel] * strength;
                     }
                 }
             }
         }
-        output = std::move(beaconPatched);
+        beaconPatched.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer peakPatched = output;
+        TrailPatch peakPatched(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             const bool lowHorizonTrail = centerRatio >= 0.90F;
@@ -14526,7 +14575,7 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                         const float strength = std::clamp(1.0F - ellipseDistance * 0.25F, 0.76F, 0.995F);
                         const auto base = pixel * output.channels;
                         for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                            peakPatched.pixels[base + channel] =
+                            peakPatched[base + channel] =
                                 output.pixels[base + channel] * (1.0F - strength) + target[channel] * strength;
                         }
                     }
@@ -14534,11 +14583,11 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
             }
 
         }
-        output = std::move(peakPatched);
+        peakPatched.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer residualMatched = output;
+        TrailPatch residualMatched(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.90F || trail.path.size() < 2) {
@@ -14649,18 +14698,18 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                         continue;
                     }
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        residualMatched.pixels[base + channel] =
+                        residualMatched[base + channel] =
                             output.pixels[base + channel] * (1.0F - strength) + target[channel] * strength;
                     }
                 }
             }
         }
-        output = std::move(residualMatched);
+        residualMatched.apply();
     }
     progress.report(ArtifactTrailProgressStage::Cleaning, 0.91);
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer ribbonMatched = output;
+        TrailPatch ribbonMatched(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F) {
@@ -14778,18 +14827,18 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                                distanceWeight +
                                            evidenceBoost;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        ribbonMatched.pixels[base + channel] =
+                        ribbonMatched[base + channel] =
                             output.pixels[base + channel] * (1.0F - std::clamp(strength, 0.0F, 0.96F)) +
                             target[channel] * std::clamp(strength, 0.0F, 0.96F);
                     }
                 }
             }
         }
-        output = std::move(ribbonMatched);
+        ribbonMatched.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer midLowResidualScrubbed = output;
+        TrailPatch midLowResidualScrubbed(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F || centerRatio >= 0.90F || trail.path.size() < 2) {
@@ -14938,17 +14987,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                                channel + 317U) *
                             std::sqrt(std::max(0.0F, channelVariance[channel])) * 0.075F;
                         const float texturedTarget = std::clamp(target[channel] + texture, 0.0F, 1.0F);
-                        midLowResidualScrubbed.pixels[base + channel] =
+                        midLowResidualScrubbed[base + channel] =
                             output.pixels[base + channel] * (1.0F - strength) + texturedTarget * strength;
                     }
                 }
             }
         }
-        output = std::move(midLowResidualScrubbed);
+        midLowResidualScrubbed.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer midLowLumaCapped = output;
+        TrailPatch midLowLumaCapped(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F || centerRatio >= 0.90F || trail.path.size() < 2) {
@@ -15035,17 +15084,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                         1.0F - std::clamp(distance.distance / std::max(0.1F, capRadius), 0.0F, 1.0F) * 0.50F;
                     const float reduction = std::min(0.012F, (excess - 0.0060F) * 0.36F) * distanceWeight;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        midLowLumaCapped.pixels[base + channel] =
+                        midLowLumaCapped[base + channel] =
                             std::clamp(output.pixels[base + channel] - reduction, 0.0F, 1.0F);
                     }
                 }
             }
         }
-        output = std::move(midLowLumaCapped);
+        midLowLumaCapped.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer midLowContrastBalanced = output;
+        TrailPatch midLowContrastBalanced(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F || centerRatio >= 0.90F || trail.path.size() < 2) {
@@ -15135,17 +15184,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                     const float adjustment =
                         std::clamp(delta * 0.30F, -maxAdjustment, maxAdjustment) * distanceWeight;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        midLowContrastBalanced.pixels[base + channel] =
+                        midLowContrastBalanced[base + channel] =
                             std::clamp(output.pixels[base + channel] + adjustment, 0.0F, 1.0F);
                     }
                 }
             }
         }
-        output = std::move(midLowContrastBalanced);
+        midLowContrastBalanced.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer midLowTextureRestored = output;
+        TrailPatch midLowTextureRestored(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F || centerRatio >= 0.90F || trail.path.size() < 2) {
@@ -15269,17 +15318,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                                static_cast<std::uint16_t>(channel + 467U)) *
                             channelStd[channel] * textureStrength;
                         const float toned = current[channel] * (1.0F - toneStrength) + target[channel] * toneStrength;
-                        midLowTextureRestored.pixels[base + channel] = std::clamp(toned + noise, 0.0F, 1.0F);
+                        midLowTextureRestored[base + channel] = std::clamp(toned + noise, 0.0F, 1.0F);
                     }
                 }
             }
         }
-        output = std::move(midLowTextureRestored);
+        midLowTextureRestored.apply();
     }
     progress.report(ArtifactTrailProgressStage::Cleaning, 0.93);
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer midLowShoulderBalanced = output;
+        TrailPatch midLowShoulderBalanced(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.80F || centerRatio >= 0.90F || trail.path.size() < 2) {
@@ -15373,17 +15422,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
 
                     const float adjustment = std::clamp(delta * 0.34F, -0.0080F, 0.0100F) * shoulderWeight;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        midLowShoulderBalanced.pixels[base + channel] =
+                        midLowShoulderBalanced[base + channel] =
                             std::clamp(output.pixels[base + channel] + adjustment, 0.0F, 1.0F);
                     }
                 }
             }
         }
-        output = std::move(midLowShoulderBalanced);
+        midLowShoulderBalanced.apply();
     }
 
     if (output.channels >= 3 && !removedMidLowArtificialTrails.empty()) {
-        ImageBuffer endpointBandTextured = output;
+        TrailPatch endpointBandTextured(output);
         for (const auto& trail : removedMidLowArtificialTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             const bool midLowTrail = centerRatio >= 0.60F && centerRatio < 0.90F && trail.length >= 160.0F &&
@@ -15573,16 +15622,16 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                         const float restored =
                             current[channel] * (1.0F - originalRestoreStrength) + originalValue * originalRestoreStrength;
                         const float toned = restored * (1.0F - toneStrength) + target[channel] * toneStrength;
-                        endpointBandTextured.pixels[base + channel] = std::clamp(toned + noise, 0.0F, 1.0F);
+                        endpointBandTextured[base + channel] = std::clamp(toned + noise, 0.0F, 1.0F);
                     }
                 }
             }
         }
-        output = std::move(endpointBandTextured);
+        endpointBandTextured.apply();
     }
 
     if (output.channels >= 3 && !removedMidLowArtificialTrails.empty()) {
-        ImageBuffer midShortCoreMatched = output;
+        TrailPatch midShortCoreMatched(output);
         for (const auto& trail : removedMidLowArtificialTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             const bool midShortEndpointDrone = trail.kind == ArtifactTrailKind::Drone && trail.path.size() < 2 &&
@@ -15751,17 +15800,17 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                             current[channel] * (1.0F - originalRestoreStrength) +
                             image.pixels[base + channel] * originalRestoreStrength;
                         const float toned = restored * (1.0F - toneStrength) + target[channel] * toneStrength;
-                        midShortCoreMatched.pixels[base + channel] = std::clamp(toned + noise, 0.0F, 1.0F);
+                        midShortCoreMatched[base + channel] = std::clamp(toned + noise, 0.0F, 1.0F);
                     }
                 }
             }
         }
-        output = std::move(midShortCoreMatched);
+        midShortCoreMatched.apply();
     }
     progress.report(ArtifactTrailProgressStage::Cleaning, 0.95);
 
     if (output.channels >= 3 && !removedMidLowArtificialTrails.empty()) {
-        ImageBuffer bottomEdgeScratchMatched = output;
+        TrailPatch bottomEdgeScratchMatched(output);
         for (const auto& trail : removedMidLowArtificialTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             const bool bottomEdgeHorizonAirplane = trail.kind == ArtifactTrailKind::Airplane && trail.path.size() < 2 &&
@@ -15847,19 +15896,19 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                     const float strength = std::clamp(0.58F + distanceWeight * 0.40F, 0.58F, 0.98F);
                     const auto base = pixel * output.channels;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        bottomEdgeScratchMatched.pixels[base + channel] =
+                        bottomEdgeScratchMatched[base + channel] =
                             output.pixels[base + channel] * (1.0F - strength) + target[channel] * strength;
                     }
                 }
             }
         }
-        output = std::move(bottomEdgeScratchMatched);
+        bottomEdgeScratchMatched.apply();
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
         for (std::uint8_t microPass = 0; microPass < 2; ++microPass) {
             const bool conservativePass = microPass == 1;
-            ImageBuffer microMatched = output;
+            TrailPatch microMatched(output);
             for (const auto& trail : removedDottedDroneTrails) {
                 const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
                 if (centerRatio < 0.90F || trail.path.size() < 2) {
@@ -16005,18 +16054,18 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                             continue;
                         }
                         for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                            microMatched.pixels[base + channel] =
+                            microMatched[base + channel] =
                                 output.pixels[base + channel] * (1.0F - strength) + target[channel] * strength;
                         }
                     }
                 }
             }
-            output = std::move(microMatched);
+            microMatched.apply();
         }
     }
 
     if (output.channels >= 3 && !removedDottedDroneTrails.empty()) {
-        ImageBuffer cappedResiduals = output;
+        TrailPatch cappedResiduals(output);
         for (const auto& trail : removedDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.90F || trail.path.size() < 2) {
@@ -16053,10 +16102,10 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                         }
                         const auto pixel = static_cast<std::size_t>(static_cast<std::uint32_t>(y)) * image.width +
                                            static_cast<std::uint32_t>(x);
-                        const auto base = pixel * cappedResiduals.channels;
-                        const float currentLuma = cappedResiduals.pixels[base] * 0.2126F +
-                                                  cappedResiduals.pixels[base + 1] * 0.7152F +
-                                                  cappedResiduals.pixels[base + 2] * 0.0722F;
+                        const auto base = pixel * output.channels;
+                        const float currentLuma = cappedResiduals[base] * 0.2126F +
+                                                  cappedResiduals[base + 1] * 0.7152F +
+                                                  cappedResiduals[base + 2] * 0.0722F;
 
                         std::vector<float> backgroundSamples;
                         backgroundSamples.reserve(8);
@@ -16071,10 +16120,10 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                 const auto samplePixel =
                                     static_cast<std::size_t>(static_cast<std::uint32_t>(sy)) * image.width +
                                     static_cast<std::uint32_t>(sx);
-                                const auto sampleBase = samplePixel * cappedResiduals.channels;
-                                backgroundSamples.push_back(cappedResiduals.pixels[sampleBase] * 0.2126F +
-                                                            cappedResiduals.pixels[sampleBase + 1] * 0.7152F +
-                                                            cappedResiduals.pixels[sampleBase + 2] * 0.0722F);
+                                const auto sampleBase = samplePixel * output.channels;
+                                backgroundSamples.push_back(cappedResiduals[sampleBase] * 0.2126F +
+                                                            cappedResiduals[sampleBase + 1] * 0.7152F +
+                                                            cappedResiduals[sampleBase + 2] * 0.0722F);
                             }
                         }
                         if (backgroundSamples.size() < 4) {
@@ -16123,10 +16172,10 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                             const auto samplePixel =
                                 static_cast<std::size_t>(static_cast<std::uint32_t>(sy)) * image.width +
                                 static_cast<std::uint32_t>(sx);
-                            const auto sampleBase = samplePixel * cappedResiduals.channels;
-                            targetSamples[0].push_back(cappedResiduals.pixels[sampleBase]);
-                            targetSamples[1].push_back(cappedResiduals.pixels[sampleBase + 1]);
-                            targetSamples[2].push_back(cappedResiduals.pixels[sampleBase + 2]);
+                            const auto sampleBase = samplePixel * output.channels;
+                            targetSamples[0].push_back(cappedResiduals[sampleBase]);
+                            targetSamples[1].push_back(cappedResiduals[sampleBase + 1]);
+                            targetSamples[2].push_back(cappedResiduals[sampleBase + 2]);
                         }
                     }
                     if (targetSamples[0].size() < 4 || targetSamples[1].size() < 4 || targetSamples[2].size() < 4) {
@@ -16159,10 +16208,10 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                 if (likelyNeutralBrightStarSample(image, pixel)) {
                                     continue;
                                 }
-                                const auto base = pixel * cappedResiduals.channels;
-                                const float currentLuma = cappedResiduals.pixels[base] * 0.2126F +
-                                                          cappedResiduals.pixels[base + 1] * 0.7152F +
-                                                          cappedResiduals.pixels[base + 2] * 0.0722F;
+                                const auto base = pixel * output.channels;
+                                const float currentLuma = cappedResiduals[base] * 0.2126F +
+                                                          cappedResiduals[base + 1] * 0.7152F +
+                                                          cappedResiduals[base + 2] * 0.0722F;
                                 const float excess = currentLuma - lumaCap;
                                 if (excess <= 0.0F) {
                                     continue;
@@ -16176,8 +16225,8 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                     strength *= 0.38F;
                                 }
                                 for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                                    cappedResiduals.pixels[base + channel] =
-                                        cappedResiduals.pixels[base + channel] * (1.0F - strength) +
+                                    cappedResiduals[base + channel] =
+                                        cappedResiduals[base + channel] * (1.0F - strength) +
                                         target[channel] * strength;
                                 }
                                 localChanged = true;
@@ -16190,11 +16239,11 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                 }
             }
         }
-        output = std::move(cappedResiduals);
+        cappedResiduals.apply();
     }
 
     if (output.channels >= 3 && !removedHorizonDottedDroneTrails.empty()) {
-        ImageBuffer offAxisResiduals = output;
+        TrailPatch offAxisResiduals(output);
         for (const auto& trail : removedHorizonDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.90F || trail.path.size() < 2 || trail.length < 520.0F) {
@@ -16377,9 +16426,9 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                             const auto pixel = static_cast<std::size_t>(static_cast<std::uint32_t>(y)) * image.width +
                                                static_cast<std::uint32_t>(x);
                             const auto base = pixel * output.channels;
-                            const float currentLuma = offAxisResiduals.pixels[base] * 0.2126F +
-                                                      offAxisResiduals.pixels[base + 1] * 0.7152F +
-                                                      offAxisResiduals.pixels[base + 2] * 0.0722F;
+                            const float currentLuma = offAxisResiduals[base] * 0.2126F +
+                                                      offAxisResiduals[base + 1] * 0.7152F +
+                                                      offAxisResiduals[base + 2] * 0.0722F;
                             const float currentExcess = currentLuma - bestTargetLuma;
                             const float originalPointEvidence = localDottedPointScore(
                                 trail, luminance, image, static_cast<float>(x), static_cast<float>(y));
@@ -16412,8 +16461,8 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                 continue;
                             }
                             for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                                offAxisResiduals.pixels[base + channel] =
-                                    offAxisResiduals.pixels[base + channel] * (1.0F - strength) +
+                                offAxisResiduals[base + channel] =
+                                    offAxisResiduals[base + channel] * (1.0F - strength) +
                                     bestTarget[channel] * strength;
                             }
                         }
@@ -16421,12 +16470,12 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                 }
             }
         }
-        output = std::move(offAxisResiduals);
+        offAxisResiduals.apply();
     }
     progress.report(ArtifactTrailProgressStage::Cleaning, 0.97);
 
     if (output.channels >= 3 && !removedHorizonDottedDroneTrails.empty()) {
-        ImageBuffer horizonPathScratchMatched = output;
+        TrailPatch horizonPathScratchMatched(output);
         for (const auto& trail : removedHorizonDottedDroneTrails) {
             const float centerRatio = centerY(trail) / std::max(1.0F, static_cast<float>(image.height));
             if (centerRatio < 0.90F || trail.path.size() < 2 || trail.length < 520.0F) {
@@ -16526,13 +16575,13 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                             const float targetLuma = percentileValue(targetLumaSamples, 0.52F);
                             const auto base = pixel * output.channels;
                             const float currentLuma =
-                                horizonPathScratchMatched.pixels[base] * 0.2126F +
-                                horizonPathScratchMatched.pixels[base + 1] * 0.7152F +
-                                horizonPathScratchMatched.pixels[base + 2] * 0.0722F;
+                                horizonPathScratchMatched[base] * 0.2126F +
+                                horizonPathScratchMatched[base + 1] * 0.7152F +
+                                horizonPathScratchMatched[base + 2] * 0.0722F;
                             float colorResidual = 0.0F;
                             for (std::uint16_t channel = 0; channel < 3; ++channel) {
                                 colorResidual =
-                                    std::max(colorResidual, std::fabs(horizonPathScratchMatched.pixels[base + channel] - target[channel]));
+                                    std::max(colorResidual, std::fabs(horizonPathScratchMatched[base + channel] - target[channel]));
                             }
 
                             const float lumaResidual = std::fabs(currentLuma - targetLuma);
@@ -16548,8 +16597,8 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                             }
                             strength = std::max(strength, 0.34F * distanceWeight);
                             for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                                horizonPathScratchMatched.pixels[base + channel] =
-                                    horizonPathScratchMatched.pixels[base + channel] * (1.0F - strength) +
+                                horizonPathScratchMatched[base + channel] =
+                                    horizonPathScratchMatched[base + channel] * (1.0F - strength) +
                                     target[channel] * strength;
                             }
                         }
@@ -16557,12 +16606,12 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                 }
             }
         }
-        output = std::move(horizonPathScratchMatched);
+        horizonPathScratchMatched.apply();
     }
 
     if (output.channels >= 3 &&
         (!removedMidLowArtificialTrails.empty() || !removedHorizonDottedDroneTrails.empty())) {
-        ImageBuffer lowHorizonShoulderRestored = output;
+        TrailPatch lowHorizonShoulderRestored(output);
         const auto restoreShoulder = [&](const ArtifactTrail& trail,
                                          float coreRadius,
                                          float shoulderRadius,
@@ -16710,7 +16759,7 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                                static_cast<std::uint32_t>(y),
                                                static_cast<std::uint16_t>(channel + 911U)) *
                             channelStd[channel] * 0.68F * strength;
-                        lowHorizonShoulderRestored.pixels[base + channel] =
+                        lowHorizonShoulderRestored[base + channel] =
                             std::clamp(output.pixels[base + channel] + lumaOffset + texture + originalTexture, 0.0F, 1.0F);
                     }
                 }
@@ -16734,12 +16783,12 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
         // a narrow cleanup mask. A broad shoulder reconstruction here would
         // replace untouched sky up to 72 pixels away and leave a visible band.
 
-        output = std::move(lowHorizonShoulderRestored);
+        lowHorizonShoulderRestored.apply();
     }
 
     if (output.channels >= 3 &&
         (!removedMidLowArtificialTrails.empty() || !removedHorizonDottedDroneTrails.empty())) {
-        ImageBuffer lowHorizonCrossSectionMatched = output;
+        TrailPatch lowHorizonCrossSectionMatched(output);
         const auto repairCrossSection = [&](const ArtifactTrail& trail,
                                             float repairRadius,
                                             float sampleRadius,
@@ -16851,7 +16900,7 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                               output.pixels[base + 2] * 0.0722F;
                     const float lumaOffset = std::clamp(targetLuma - currentLuma, -0.024F, 0.024F) * strength;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        lowHorizonCrossSectionMatched.pixels[base + channel] =
+                        lowHorizonCrossSectionMatched[base + channel] =
                             std::clamp(output.pixels[base + channel] + lumaOffset, 0.0F, 1.0F);
                     }
                 }
@@ -16891,13 +16940,13 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                0.0020F);
         }
 
-        output = std::move(lowHorizonCrossSectionMatched);
+        lowHorizonCrossSectionMatched.apply();
     }
     progress.report(ArtifactTrailProgressStage::Cleaning, 0.985);
 
     if (output.channels >= 3 &&
         (!removedMidLowArtificialTrails.empty() || !removedHorizonDottedDroneTrails.empty())) {
-        ImageBuffer lowHorizonCoreDiffused = output;
+        TrailPatch lowHorizonCoreDiffused(output);
         const auto diffuseLowHorizonCore = [&](const ArtifactTrail& trail,
                                                float diffuseRadius,
                                                float evidenceThreshold,
@@ -16952,7 +17001,7 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                     const auto imageBase = imagePixel * output.channels;
                     const auto patchBase = patchPixel * output.channels;
                     for (std::uint16_t channel = 0; channel < output.channels; ++channel) {
-                        patch[patchBase + channel] = lowHorizonCoreDiffused.pixels[imageBase + channel];
+                        patch[patchBase + channel] = lowHorizonCoreDiffused[imageBase + channel];
                     }
                 }
             }
@@ -17023,8 +17072,8 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                     const auto imageBase = imagePixel * output.channels;
                     const auto patchBase = patchPixel * output.channels;
                     for (std::uint16_t channel = 0; channel < 3; ++channel) {
-                        lowHorizonCoreDiffused.pixels[imageBase + channel] =
-                            lowHorizonCoreDiffused.pixels[imageBase + channel] * (1.0F - strength) +
+                        lowHorizonCoreDiffused[imageBase + channel] =
+                            lowHorizonCoreDiffused[imageBase + channel] * (1.0F - strength) +
                             patch[patchBase + channel] * strength;
                     }
                 }
@@ -17059,12 +17108,12 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                   0.60F);
         }
 
-        output = std::move(lowHorizonCoreDiffused);
+        lowHorizonCoreDiffused.apply();
     }
 
     if (output.channels >= 3 &&
         (!removedMidLowArtificialTrails.empty() || !removedHorizonDottedDroneTrails.empty())) {
-        ImageBuffer lowHorizonTextureRebalanced = output;
+        TrailPatch lowHorizonTextureRebalanced(output);
         const auto rebalanceLowHorizonTexture = [&](const ArtifactTrail& trail,
                                                     float repairRadius,
                                                     float sampleRadius,
@@ -17275,7 +17324,7 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                                static_cast<std::uint32_t>(y),
                                                static_cast<std::uint16_t>(channel + 1471U)) *
                             channelStd[channel] * textureStrength * 0.18F * strength;
-                        lowHorizonTextureRebalanced.pixels[base + channel] =
+                        lowHorizonTextureRebalanced[base + channel] =
                             std::clamp(output.pixels[base + channel] + lumaOffset + lumaGrain + chromaGrain +
                                            originalTexture,
                                        0.0F,
@@ -17322,7 +17371,7 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
                                        1.04F);
         }
 
-        output = std::move(lowHorizonTextureRebalanced);
+        lowHorizonTextureRebalanced.apply();
     }
 
     detail::repairChromaticBeaconChains(image, output, selectedBeaconChains, [&](double fraction) {

@@ -31,8 +31,16 @@ struct SpectralProfileLibraryView: View {
             }
             HStack(alignment: .top, spacing: 14) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Toggle(t("已归档", "Archived"), isOn: $archived).disabled(operation != nil).accessibilityIdentifier("spcc.library.archived")
-                    List(entries, selection: $selection) { e in
+                    Toggle(t("已归档", "Archived"), isOn: Binding(get: { archived }, set: { value in
+                        guard operation == nil, archived != value else { return }
+                        archived = value
+                        perform { try await reload() }
+                    })).disabled(operation != nil).accessibilityIdentifier("spcc.library.archived")
+                    List(entries, selection: Binding(get: { selection }, set: { value in
+                        guard operation == nil, selection != value else { return }
+                        selection = value
+                        perform { try await inspectSelection() }
+                    })) { e in
                         VStack(alignment: .leading, spacing: 3) {
                             Text(e.label).lineLimit(2)
                             Text(e.issue == nil ? quality(e.profile?.quality ?? "") : t("配置记录损坏", "Damaged record"))
@@ -69,13 +77,11 @@ struct SpectralProfileLibraryView: View {
                 Spacer()
                 Button(t("使用此配置", "Use profile")) {
                     guard let e = selected else { return }
-                    perform { let verified = try await library.select(e); use(verified); dismiss() }
+                    perform { let verified = try await library.select(e); try Task.checkCancellation(); use(verified); dismiss() }
                 }.buttonStyle(.borderedProminent).disabled(operation != nil || inspected == nil || archived).accessibilityIdentifier("spcc.library.use")
             }
         }.padding(18).frame(width: 900, height: 690)
             .task { perform { try await reload() } }
-            .onChange(of: selection) { _, _ in if operation == nil { perform { try await inspectSelection() } } }
-            .onChange(of: archived) { _, _ in perform { try await reload() } }
             .onDisappear { operation?.cancel() }
             .sheet(isPresented: $creatingNarrowband) {
                 if let e = selected, let s = inspected {
@@ -129,22 +135,34 @@ struct SpectralProfileLibraryView: View {
     }
     private func perform(_ action: @escaping @MainActor () async throws -> Void) {
         guard operation == nil else { return }; error = nil
-        operation = Task { defer { operation = nil }; do { try await action() } catch is CancellationError {} catch { self.error = error.localizedDescription } }
+        operation = Task {
+            defer { operation = nil }
+            do { try await action() }
+            catch is CancellationError {}
+            catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        }
     }
     private func reload(prefer: String? = nil) async throws {
-        inspected = nil; entries = try await library.list(archived: archived)
+        inspected = nil
+        let updated = try await library.list(archived: archived)
+        try Task.checkCancellation()
+        entries = updated
         selection = entries.first { $0.id == prefer }?.id ?? entries.first?.id
         try await inspectSelection()
     }
     private func inspectSelection() async throws {
         inspected = nil; name = selected?.label ?? ""
-        if let e = selected, e.issue == nil { inspected = try await library.select(e) }
+        if let e = selected, e.issue == nil {
+            let result = try await library.select(e)
+            try Task.checkCancellation()
+            inspected = result
+        }
     }
     private func importProfile() {
         let p = NSOpenPanel(); p.allowedContentTypes = [.plainText]
         p.message = t("选择 profile.txt；同目录的 response-source-license.txt 会一同保留。", "Choose profile.txt; response-source-license.txt from the same folder is retained when present.")
         if p.runModal() == .OK, let url = p.url {
-            perform { let id = try await library.importProfile(url); archived = false; try await reload(prefer: id) }
+            perform { let id = try await library.importProfile(url); try Task.checkCancellation(); archived = false; try await reload(prefer: id) }
         }
     }
     private func export(_ e: SpectralProfileLibrary.Entry) {

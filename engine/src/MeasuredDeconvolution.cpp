@@ -127,7 +127,17 @@ MeasuredDeconvolutionResult restoreMeasuredPsf(const ImageBuffer& source,const I
             for(std::size_t p=0;p<n;++p){
                 if(!coverage[p]){work[p]=0;continue;}
                 const double predicted=std::max(model[p],floor),residual=observed[p]-predicted;
-                const double damp=o.noiseSigma>0?std::pow(residual/std::hypot(residual,o.noiseSigma),2):1;
+                double damp = 1;
+                if (o.noiseSigma > 0) {
+                    const auto magnitude = std::abs(residual);
+                    if (magnitude > o.noiseSigma) {
+                        const auto q = o.noiseSigma / magnitude;
+                        damp = 1 / (1 + q * q);
+                    } else {
+                        const auto q = magnitude / o.noiseSigma;
+                        damp = q * q / (1 + q * q);
+                    }
+                }
                 const double ratio=std::max(0.,1+damp*residual/predicted);
                 work[p]=coverage[p]*ratio/support[p];
             }

@@ -171,7 +171,7 @@ public struct WorkflowStep: Codable, Equatable, Sendable {
         .background: ["model", "mode", "strength", "preserveBrightness", "protectBrightTargets"],
         .normalize: ["targetBackground", "targetScale"],
         .stretch: ["mode", "targetBackground", "linearDisplayColor", "stellarBalance", "toneCurve", "toneScale", "whitePoint", "brightness", "background", "skyPercentile", "starExposure", "starPeakThreshold", "starColorCleanup", "shadowNeutralization", "saturation", "redGain", "blueGain"],
-        .curves: ["black", "midInput", "midOutput", "white", "channel", "points"],
+        .curves: rawKeys.union(["black", "midInput", "midOutput", "white", "channel", "points"]),
         .localContrast: ["mode", "amount", "radius", "fineRadius", "starChroma", "points"],
         .denoise: ["mode", "amount", "chromaAmount", "radius"],
         .sharpen: ["amount", "radius"],

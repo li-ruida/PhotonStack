@@ -20,13 +20,10 @@ Snapshot snapshot(const std::filesystem::path& path, const std::string& expected
     const auto absolute = std::filesystem::canonical(path);
     if (!isFitsPath(absolute) || !std::filesystem::is_regular_file(absolute))
         throw std::invalid_argument("Acquisition inspection currently requires a FITS image");
-    const auto sha = fileSHA256(absolute);
-    if (!expected.empty() && expected != sha)
+    const auto verified = inspectVerifiedAcquisition(absolute);
+    if (!expected.empty() && expected != verified.sha)
         throw std::invalid_argument("Acquisition source changed");
-    const auto metadata = inspectCalibrationAcquisition(absolute);
-    if (fileSHA256(absolute) != sha)
-        throw std::runtime_error("Acquisition source changed during inspection");
-    return {absolute, sha, std::filesystem::file_size(absolute), metadata};
+    return {absolute, verified.sha, verified.bytes, verified.metadata};
 }
 void json(std::ostream& out, const Snapshot& s) {
     const auto& m = s.metadata;

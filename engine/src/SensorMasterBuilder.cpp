@@ -92,15 +92,19 @@ SensorMasterResult buildSensorMaster(std::vector<SensorMasterSource> sources, co
     if (o.darkFlat)
         darkFlat = snapshot(*o.darkFlat);
     std::vector<SensorFitsReader> readers;
+    // Large master sets use the open-per-tile path to respect the process FD budget.
+    const bool hashWhileReading = sources.size() + bias.has_value() + darkFlat.has_value() <= 16;
     for (const auto& s : sources)
-        readers.emplace_back(s.path);
+        readers.emplace_back(s.path, hashWhileReading);
     std::unique_ptr<SensorFitsReader> biasReader, darkReader;
     if (bias)
-        biasReader = std::make_unique<SensorFitsReader>(bias->path);
+        biasReader = std::make_unique<SensorFitsReader>(bias->path, hashWhileReading);
     if (darkFlat)
-        darkReader = std::make_unique<SensorFitsReader>(darkFlat->path);
+        darkReader = std::make_unique<SensorFitsReader>(darkFlat->path, hashWhileReading);
     SensorMasterResult result;
     result.sources = sources;
+    result.bias = bias;
+    result.darkFlat = darkFlat;
     result.role = o.role;
     result.method = o.method;
     result.biasState = (o.bias || o.role == "flat") ? "removed" : "included";
@@ -267,16 +271,16 @@ SensorMasterResult buildSensorMaster(std::vector<SensorMasterSource> sources, co
         result.missingSamples += sources.size() - std::size_t(result.accepted.pixels[p]);
     }
     require(result.invalidPixels < count, "No sensor pixel reaches the required valid sample count");
-    auto unchanged = [&](const SensorMasterSource& s) {
+    auto unchanged = [&](const SensorMasterSource& s, SensorFitsReader& reader) {
         cancel();
-        require(fileSHA256(s.path) == s.sha, "Sensor source changed during construction");
+        require(reader.sourceSHA256() == s.sha, "Sensor source changed during construction");
     };
-    for (const auto& s : sources)
-        unchanged(s);
+    for (std::size_t i = 0; i < sources.size(); ++i)
+        unchanged(sources[i], readers[i]);
     if (bias)
-        unchanged(*bias);
+        unchanged(*bias, *biasReader);
     if (darkFlat)
-        unchanged(*darkFlat);
+        unchanged(*darkFlat, *darkReader);
     return result;
 }
 } // namespace photonstack

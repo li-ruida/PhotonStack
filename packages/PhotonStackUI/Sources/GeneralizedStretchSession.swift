@@ -76,9 +76,10 @@ struct GeneralizedStretchReport: Decodable {
         }
     }
     func cancel() { task?.cancel() }
-    func close() {
+    func close(after operation: Task<Void, Never>? = nil) {
         let pending = task; pending?.cancel(); let directory = root
-        Task { await pending?.value; try? FileManager.default.removeItem(at: directory) }
+        operation?.cancel()
+        Task { await pending?.value; await operation?.value; try? FileManager.default.removeItem(at: directory) }
     }
     private func decode(_ text: String) throws -> GeneralizedStretchReport {
         let value = try JSONDecoder().decode(GeneralizedStretchReport.self, from: Data(text.utf8))

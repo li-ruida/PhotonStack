@@ -1,4 +1,6 @@
+#include "LinearSamples.hpp"
 #include "BackgroundReviewCommand.hpp"
+#include "OutputPath.hpp"
 #include "photonstack/BackgroundExtractor.hpp"
 #include "photonstack/FileDigest.hpp"
 #include "photonstack/FitsCodec.hpp"
@@ -103,6 +105,7 @@ int runBackgroundReview(const std::vector<std::string>& args) {
     }
     if (!opts.contains("--input") || !opts.contains("--output-dir"))
         throw std::invalid_argument("Specify --input and a new --output-dir");
+    photonstack::cli::requireNewOutputPath(opts.at("--output-dir"));
     const auto value = [&](const char* key, const char* initial) {
         return opts.contains(key) ? opts.at(key) : std::string(initial);
     };
@@ -140,7 +143,7 @@ int runBackgroundReview(const std::vector<std::string>& args) {
     auto& im = decoded.image;
     if (im.channels != 4 || im.width < 16 || im.height < 16)
         throw std::invalid_argument("Expected an image at least 16 by 16 pixels");
-    for (std::size_t p = 0; p < im.pixelCount(); ++p) {
+    photonstack::cli::processPixels(im.pixelCount(), [&](std::size_t p) {
         auto* v = &im.pixels[p * 4];
         if (!std::isfinite(v[3]))
             throw std::invalid_argument("Invalid image coverage");
@@ -150,9 +153,9 @@ int runBackgroundReview(const std::vector<std::string>& args) {
             if (!std::isfinite(v[c]))
                 throw std::invalid_argument("Nonfinite covered image sample");
             if (im.colorEncoding == ColorEncoding::SRGB)
-                v[c] = v[c] <= .04045F ? v[c] / 12.92F : std::pow((v[c] + .055F) / 1.055F, 2.4F);
+                v[c] = photonstack::cli::decodeUnitSRGB(v[c]);
         }
-    }
+    });
     im.colorEncoding = ColorEncoding::Linear;
     if (opts.contains("--samples")) {
         if (fs::file_size(opts.at("--samples")) > 262144)

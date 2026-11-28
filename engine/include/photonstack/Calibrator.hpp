@@ -12,6 +12,12 @@ enum class CalibrationBiasState {
     Removed,
 };
 
+struct CalibrationFlatMeans {
+    const ImageBuffer* flat = nullptr;
+    const ImageBuffer* bias = nullptr;
+    std::vector<double> channels;
+};
+
 struct CalibrationOptions {
     const ImageBuffer* dark = nullptr;
     const ImageBuffer* bias = nullptr;
@@ -20,6 +26,8 @@ struct CalibrationOptions {
     CalibrationBiasState flatBiasState = CalibrationBiasState::Unknown;
     float flatEpsilon = 1.0e-6F;
     bool clampNegativeValues = true;
+    // Optional session evidence for immutable master pixels.
+    const CalibrationFlatMeans* flatMeans = nullptr;
 };
 
 struct CalibrationResult {
@@ -35,6 +43,7 @@ const char* calibrationBiasStateName(CalibrationBiasState state);
 
 class Calibrator {
   public:
+    static CalibrationFlatMeans measureFlat(const CalibrationOptions& options);
     CalibrationResult calibrate(const ImageBuffer& light, const CalibrationOptions& options) const;
 };
 

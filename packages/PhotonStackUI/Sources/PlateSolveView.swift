@@ -106,10 +106,19 @@ struct PlateSolveView: View {
         if p.runModal() == .OK { session.settings.indices = p.urls.map(\.path).sorted(); session.settings.icrsConfirmed = false; if let data = try? JSONEncoder().encode(session.settings.indices), let value = String(data: data, encoding: .utf8) { indexPaths = value } }
     }
     private func folder() -> URL? { let p = NSOpenPanel(); p.canChooseFiles = false; p.canChooseDirectories = true; p.canCreateDirectories = true; return p.runModal() == .OK ? p.url : nil }
-    private func openResult() { guard let url = folder() else { return }; operation = Task { defer { operation = nil }; do { try await session.open(url); session.error = nil } catch { session.error = error.localizedDescription } } }
+    private func openResult() { guard let url = folder() else { return }; operation = Task { defer { operation = nil }; do { try await session.open(url); session.error = nil } catch is CancellationError { } catch { if !Task.isCancelled { session.error = error.localizedDescription } } } }
     private func save() {
         guard let parent = folder() else { return }; saving = true
-        operation = Task { defer { saving = false; operation = nil }; do { let file = try await session.save(to: parent.appendingPathComponent("PlateSolve-"+UUID().uuidString.prefix(8))); model.showDerivedImage(file); dismiss() } catch { session.error = error.localizedDescription } }
+        let projectID = model.project.id
+        operation = Task {
+            defer { saving = false; operation = nil }
+            do {
+                let file = try await session.save(to: parent.appendingPathComponent("PlateSolve-"+UUID().uuidString.prefix(8)))
+                try Task.checkCancellation()
+                guard model.project.id == projectID else { return }
+                model.showDerivedImage(file); dismiss()
+            } catch is CancellationError { } catch { if !Task.isCancelled { session.error = error.localizedDescription } }
+        }
     }
 }
 private struct PlateSolveMarks: View {

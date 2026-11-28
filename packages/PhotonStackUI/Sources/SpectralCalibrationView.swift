@@ -195,16 +195,20 @@ struct SpectralCalibrationView: View {
     }
     private func folder() -> URL? { let p = NSOpenPanel(); p.canChooseFiles = false; p.canChooseDirectories = true; p.canCreateDirectories = true; return p.runModal() == .OK ? p.url : nil }
     private func open() {
-        guard let folder = folder() else { return }; operation = Task { defer { operation = nil }; do { try await session.open(folder); session.error = nil; selected = nil; saved = nil } catch { session.error = error.localizedDescription } }
+        guard let folder = folder() else { return }; operation = Task { defer { operation = nil }; do { try await session.open(folder); session.error = nil; selected = nil; saved = nil } catch is CancellationError { } catch { if !Task.isCancelled { session.error = error.localizedDescription } } }
     }
     private func save(use: Bool) {
         guard let parent = folder() else { return }; let destination = parent.appendingPathComponent("SPCC-"+UUID().uuidString.prefix(8))
+        let projectID = model.project.id
         operation = Task {
             defer { operation = nil }
             do {
-                let image = try await session.save(to: destination); saved = destination; session.error = nil
+                let image = try await session.save(to: destination)
+                try Task.checkCancellation()
+                guard model.project.id == projectID else { return }
+                saved = destination; session.error = nil
                 if use, let image { model.showDerivedImage(image); dismiss() }
-            } catch { session.error = error.localizedDescription }
+            } catch is CancellationError { } catch { if !Task.isCancelled { session.error = error.localizedDescription } }
         }
     }
 }

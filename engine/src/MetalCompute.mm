@@ -565,15 +565,19 @@ kernel void reduceWinsor(device const float4* tile [[buffer(0)]], device float4*
     counts = simd_sum(counts);
     if (!lane) output[3*r.pixels+group] = float4(float3(counts),0);
 }
+kernel void validateFinite(device const float* pixels [[buffer(0)]], device atomic_uint* invalid [[buffer(1)]],
+                           constant ulong& count [[buffer(2)]], uint i [[thread_position_in_grid]]) {
+    if (i < count && !isfinite(pixels[i])) atomic_store_explicit(invalid, 1u, memory_order_relaxed);
+}
 )metal";
 
-enum class Kernel { Warp, CFA, Winsor, Peaks, Calibration, WinsorWide, Reduce, GuardLuminance, GuardSky, WinsorStream, ScientificCFA, Count };
+enum class Kernel { Warp, CFA, Winsor, Peaks, Calibration, WinsorWide, Reduce, GuardLuminance, GuardSky, WinsorStream, ScientificCFA, ValidateFinite, Count };
 constexpr std::array<const char*, unsigned(Kernel::Count)> kernelNames{
     "warp", "demosaic", "winsor", "peaks", "calibration", "winsorWide",
-    "reduceWinsor", "guardLuminance", "guardSky", "winsorStream", "scientificCFA"};
+    "reduceWinsor", "guardLuminance", "guardSky", "winsorStream", "scientificCFA", "validateFinite"};
 struct MetalSlot {
     bool busy = false;
-    id<MTLBuffer> input, output;
+    id<MTLBuffer> input, output, invalid;
     id<MTLBuffer> extra[3]{};
 };
 struct MetalDevice {
@@ -693,13 +697,30 @@ bool execute(Kernel kernel, std::span<const float> source, const Params& params,
             [encoder dispatchThreads:MTLSizeMake(threads, 1, 1)
                 threadsPerThreadgroup:MTLSizeMake(pipeline.threadExecutionWidth, 1, 1)];
             [encoder endEncoding];
+            const bool checkFinite = kernel == Kernel::Warp || kernel == Kernel::CFA ||
+                                     kernel == Kernel::Calibration || kernel == Kernel::Reduce;
+            if (checkFinite) {
+                auto check = gpu.pipelines[unsigned(Kernel::ValidateFinite)];
+                slot.invalid = grow(slot.invalid, sizeof(std::uint32_t));
+                if (!check || !slot.invalid || outputSamples > UINT32_MAX) return fallback("Metal validation unavailable");
+                *static_cast<std::uint32_t*>(slot.invalid.contents) = 0;
+                auto validation = [command computeCommandEncoder];
+                if (!validation) return fallback("Metal validation encoder unavailable");
+                const std::uint64_t count = outputSamples;
+                [validation setComputePipelineState:check];
+                [validation setBuffer:slot.output offset:0 atIndex:0];
+                [validation setBuffer:slot.invalid offset:0 atIndex:1];
+                [validation setBytes:&count length:sizeof(count) atIndex:2];
+                [validation dispatchThreads:MTLSizeMake(outputSamples, 1, 1)
+                      threadsPerThreadgroup:MTLSizeMake(check.threadExecutionWidth, 1, 1)];
+                [validation endEncoding];
+            }
             [command commit];
             [command waitUntilCompleted];
             if (command.status != MTLCommandBufferStatusCompleted)
                 return fallback("Metal command failed");
             const float* pixels = static_cast<const float*>(slot.output.contents);
-            if (kernel != Kernel::ScientificCFA && kernel != Kernel::GuardLuminance && kernel != Kernel::GuardSky && kernel != Kernel::Peaks && kernel != Kernel::Winsor && kernel != Kernel::WinsorWide && kernel != Kernel::WinsorStream &&
-                !std::all_of(pixels, pixels + outputSamples, [](float v) { return std::isfinite(v); }))
+            if (checkFinite && *static_cast<const std::uint32_t*>(slot.invalid.contents))
                 return fallback("Metal result exceeded finite range");
             result.assign(pixels, pixels + outputSamples);
             recordBackend(backend, "", command.GPUEndTime - command.GPUStartTime, kernelNames[unsigned(kernel)]);

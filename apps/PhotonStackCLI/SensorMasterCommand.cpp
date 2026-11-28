@@ -271,7 +271,7 @@ int runSensorMaster(const std::vector<std::string>& args) {
             throw std::invalid_argument("Source verification must be 0 or 1");
         verifySources = options.at("--verify-sources") == "1";
     }
-    if (verifySources)
+    if (inspect && verifySources)
         bind(r);
     if (fileSHA256(recipePath) != recipeSHA)
         throw std::runtime_error("Sensor recipe changed while reading");
@@ -309,7 +309,8 @@ int runSensorMaster(const std::vector<std::string>& args) {
     }
     if (!options.contains("--output-dir"))
         throw std::invalid_argument("Choose a new output directory");
-    const fs::path output = fs::absolute(options.at("--output-dir")).lexically_normal();
+    auto output = fs::absolute(options.at("--output-dir")).lexically_normal();
+    if (output.filename().empty()) output = output.parent_path();
     if (fs::exists(output) || fs::is_symlink(output) || !fs::is_directory(output.parent_path()))
         throw std::invalid_argument("Choose a new output directory with an existing parent");
     if (options.contains("--threads"))
@@ -322,6 +323,8 @@ int runSensorMaster(const std::vector<std::string>& args) {
     const auto begin = std::chrono::steady_clock::now();
     const auto built = buildSensorMaster(r.frames, r.options);
     r.frames = built.sources;
+    r.options.bias = built.bias;
+    r.options.darkFlat = built.darkFlat;
     std::string pattern = (output.parent_path() / ".sensor-master-XXXXXX").string();
     std::vector<char> buffer(pattern.begin(), pattern.end());
     buffer.push_back(0);

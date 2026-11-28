@@ -284,8 +284,17 @@ struct WorkflowLibrarySheet: View {
     private func exportWorkflow() {
         #if os(macOS)
         guard let selected, let url = NativeFilePanels.exportWorkflowURL(message: t("导出可复用工作流（不含原片路径）", "Export a portable workflow without source paths")) else { return }
-        perform { try await repository.exportWorkflow(selected, to: url) }
+        perform {
+            try await model.exportReusableWorkflow(selected, to: url, repository: repository)
+        }
         #endif
+    }
+}
+
+extension PhotonStackWorkspaceModel {
+    func exportReusableWorkflow(_ workflow: ReusableWorkflow, to url: URL, repository: WorkflowRepository) async throws {
+        try validateExportDestination(url, includesSidecar: false)
+        try await repository.exportWorkflow(workflow, to: url)
     }
 }
 

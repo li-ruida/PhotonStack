@@ -4,7 +4,10 @@
 #ifdef __APPLE__
 #include "MetalCompute.hpp"
 #endif
+#include "photonstack/ParallelRanges.hpp"
 #include <algorithm>
+#include <atomic>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -76,6 +79,22 @@ const char* calibrationBiasStateName(CalibrationBiasState state) {
             return "removed";
     }
     return "unknown";
+}
+
+CalibrationFlatMeans Calibrator::measureFlat(const CalibrationOptions& options) {
+    CalibrationFlatMeans result;
+    result.flat = options.flat;
+    result.bias = options.flatBiasState == CalibrationBiasState::Included ? options.bias : nullptr;
+    if (!result.flat || result.flat->empty() || result.flat->pixels.size() != result.flat->sampleCount() ||
+        (result.bias && !sameShape(*result.flat, *result.bias))) return result;
+    result.channels.assign(result.flat->channels, 1.);
+    for (std::uint16_t c = 0; c < result.flat->channels; ++c) {
+        if (isAlphaChannel(*result.flat, c)) continue;
+        const auto mean = positiveChannelMean(*result.flat, result.bias, c);
+        if (!mean || !std::isfinite(*mean) || *mean <= 0) { result.channels.clear(); break; }
+        result.channels[c] = *mean;
+    }
+    return result;
 }
 
 CalibrationResult Calibrator::calibrate(const ImageBuffer& light, const CalibrationOptions& options) const {
@@ -150,25 +169,17 @@ CalibrationResult Calibrator::calibrate(const ImageBuffer& light, const Calibrat
     const bool subtractBiasFromFlat = options.flat != nullptr && options.bias != nullptr &&
                                       options.flatBiasState == CalibrationBiasState::Included;
 
-    ImageBuffer output = light;
-    output.pixels.assign(light.sampleCount(), 0.0F);
-
-    std::vector<double> flatMeans(light.channels, 1.0);
-    if (options.flat != nullptr) {
-        for (std::uint16_t channel = 0; channel < light.channels; ++channel) {
-            if (isAlphaChannel(light, channel)) {
-                continue;
-            }
-            const auto mean = positiveChannelMean(
-                *options.flat,
-                subtractBiasFromFlat ? options.bias : nullptr,
-                channel
-            );
-            if (!mean.has_value() || !std::isfinite(*mean) || *mean <= 0.0) {
-                return calibrationError("CalibrationFlatInvalid", "Flat frame has no valid positive samples");
-            }
-            flatMeans[channel] = *mean;
-        }
+    ImageBuffer output{light.width, light.height, light.channels, light.format, light.colorEncoding,
+                       light.sourceBitsPerChannel, std::vector<float>(light.sampleCount())};
+    std::vector<double> flatMeans(light.channels, 1.);
+    if (options.flat) {
+        const auto* known = options.flatMeans;
+        if (known && known->flat == options.flat && known->bias == (subtractBiasFromFlat ? options.bias : nullptr))
+            flatMeans = known->channels;
+        else
+            flatMeans = measureFlat(options).channels;
+        if (flatMeans.size() != light.channels)
+            return calibrationError("CalibrationFlatInvalid", "Flat frame has no valid positive samples");
     }
 
 #ifdef __APPLE__
@@ -177,70 +188,74 @@ CalibrationResult Calibrator::calibrate(const ImageBuffer& light, const Calibrat
         detail::metalCalibrate(light, options, subtractBiasFromLight, subtractBiasFromFlat, flatMeans, output))
         return {true, std::move(output), subtractBiasFromLight, subtractBiasFromFlat, {}, {}};
 #endif
-    std::vector<double> calibrated(light.channels, 0.0);
-    for (std::size_t pixel = 0; pixel < light.pixelCount(); ++pixel) {
-        const auto offset = pixel * light.channels;
-        float coverage = detail::pixelCoverage(light, pixel);
-        if (options.dark != nullptr) {
-            coverage = std::min(coverage, detail::pixelCoverage(*options.dark, pixel));
-        }
-        if (subtractBiasFromLight || subtractBiasFromFlat) {
-            coverage = std::min(coverage, detail::pixelCoverage(*options.bias, pixel));
-        }
-        if (options.flat != nullptr) {
-            coverage = std::min(coverage, detail::pixelCoverage(*options.flat, pixel));
-        }
-        bool validPixel = coverage > 1.0e-6F;
-        std::fill(calibrated.begin(), calibrated.end(), 0.0F);
-        for (std::uint16_t channel = 0; channel < light.channels && validPixel; ++channel) {
-            if (isAlphaChannel(light, channel)) {
-                continue;
-            }
-            const auto sample = offset + channel;
-            double value = light.pixels[sample];
+    std::atomic<bool> overflow{false};
+    detail::parallelRanges(light.pixelCount(), 32768, [&](std::size_t begin, std::size_t end) noexcept {
+        std::array<double, 4> calibrated{};
+        for (auto pixel = begin; pixel < end; ++pixel) {
+            const auto offset = pixel * light.channels;
+            float coverage = detail::pixelCoverage(light, pixel);
             if (options.dark != nullptr) {
-                value -= static_cast<double>(options.dark->pixels[sample]);
+                coverage = std::min(coverage, detail::pixelCoverage(*options.dark, pixel));
             }
-            if (subtractBiasFromLight) {
-                value -= static_cast<double>(options.bias->pixels[sample]);
+            if (subtractBiasFromLight || subtractBiasFromFlat) {
+                coverage = std::min(coverage, detail::pixelCoverage(*options.bias, pixel));
             }
             if (options.flat != nullptr) {
-                const double flat = static_cast<double>(options.flat->pixels[sample]) -
-                                    (subtractBiasFromFlat
-                                         ? static_cast<double>(options.bias->pixels[sample])
-                                         : 0.0);
-                const double normalizedFlat = flat / flatMeans[channel];
-                validPixel = validPixel && std::isfinite(normalizedFlat) && normalizedFlat > options.flatEpsilon;
-                if (validPixel) {
-                    value /= normalizedFlat;
-                }
+                coverage = std::min(coverage, detail::pixelCoverage(*options.flat, pixel));
             }
+            bool validPixel = coverage > 1.0e-6F;
+            std::fill(calibrated.begin(), calibrated.end(), 0.0F);
+            for (std::uint16_t channel = 0; channel < light.channels && validPixel; ++channel) {
+                if (isAlphaChannel(light, channel)) {
+                    continue;
+                }
+                const auto sample = offset + channel;
+                double value = light.pixels[sample];
+                if (options.dark != nullptr) {
+                    value -= static_cast<double>(options.dark->pixels[sample]);
+                }
+                if (subtractBiasFromLight) {
+                    value -= static_cast<double>(options.bias->pixels[sample]);
+                }
+                if (options.flat != nullptr) {
+                    const double flat = static_cast<double>(options.flat->pixels[sample]) -
+                                        (subtractBiasFromFlat
+                                             ? static_cast<double>(options.bias->pixels[sample])
+                                             : 0.0);
+                    const double normalizedFlat = flat / flatMeans[channel];
+                    validPixel = validPixel && std::isfinite(normalizedFlat) && normalizedFlat > options.flatEpsilon;
+                    if (validPixel) {
+                        value /= normalizedFlat;
+                    }
+                }
+                if (!validPixel) {
+                    continue;
+                }
+                value = options.clampNegativeValues ? std::max(0.0, value) : value;
+                constexpr double maximum = std::numeric_limits<float>::max();
+                if (!std::isfinite(value) || value < -maximum || value > maximum) {
+                    overflow.store(true, std::memory_order_relaxed);
+                    return;
+                }
+                calibrated[channel] = value;
+            }
+
             if (!validPixel) {
+                for (std::uint16_t channel = 0; channel < light.channels; ++channel) {
+                    output.pixels[offset + channel] = 0.0F;
+                }
                 continue;
             }
-            value = options.clampNegativeValues ? std::max(0.0, value) : value;
-            constexpr double maximum = std::numeric_limits<float>::max();
-            if (!std::isfinite(value) || value < -maximum || value > maximum) {
-                return calibrationError(
-                    "ImageValueInvalid",
-                    "Calibrated sample exceeds the Float32 scientific value range"
-                );
+            for (std::uint16_t channel = 0; channel < light.channels; ++channel) {
+                output.pixels[offset + channel] = isAlphaChannel(light, channel)
+                                                      ? coverage
+                                                      : static_cast<float>(calibrated[channel]);
             }
-            calibrated[channel] = value;
         }
 
-        if (!validPixel) {
-            for (std::uint16_t channel = 0; channel < light.channels; ++channel) {
-                output.pixels[offset + channel] = 0.0F;
-            }
-            continue;
-        }
-        for (std::uint16_t channel = 0; channel < light.channels; ++channel) {
-            output.pixels[offset + channel] = isAlphaChannel(light, channel)
-                                                  ? coverage
-                                                  : static_cast<float>(calibrated[channel]);
-        }
-    }
+    });
+    if (overflow.load(std::memory_order_relaxed))
+        return calibrationError("ImageValueInvalid", "Calibrated sample exceeds the Float32 scientific value range");
 
     CalibrationResult result;
     result.ok = true;

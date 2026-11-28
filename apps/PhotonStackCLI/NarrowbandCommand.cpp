@@ -1,4 +1,5 @@
 #include "NarrowbandCommand.hpp"
+#include "OutputPath.hpp"
 #include "NarrowbandRecipe.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/Stacker.hpp"
@@ -175,7 +176,9 @@ int runNarrowband(const std::vector<std::string>& args) {
     if (args.at(0) == "narrowband-stack") {
         if (args.size() < 6 || args[1] != "--output-dir")
             throw std::invalid_argument("Specify --output-dir followed by at least three dual-band CFA exposures");
-        directory = args[2]; recipe.operation = "stack";
+        directory = args[2];
+        requireNewOutputPath(directory);
+        recipe.operation = "stack";
         for (std::size_t i = 3; i < args.size(); ++i) {
             if (args[i].starts_with("--")) {
                 if (i + 1 >= args.size() || !calibrationOption(args[i], args[i + 1])) throw std::invalid_argument("Unknown or incomplete stack option");
@@ -198,6 +201,7 @@ int runNarrowband(const std::vector<std::string>& args) {
         }
         if (!values.contains("--output-dir")) throw std::invalid_argument("Specify --output-dir");
         directory = values.at("--output-dir");
+        requireNewOutputPath(directory);
         if (args[0] == "narrowband-replay") {
             if (!values.contains("--recipe") || values.size() != 2U + values.contains("--green-ha") + values.contains("--sampling"))
                 throw std::invalid_argument("Expected --recipe, --output-dir and optional --green-ha or --sampling");
@@ -220,7 +224,6 @@ int runNarrowband(const std::vector<std::string>& args) {
             recipe.inputs = {{fs::canonical(values.at("--ha")), {}}, {fs::canonical(values.at("--oiii")), {}}};
         }
     }
-    if (fs::exists(directory)) throw std::invalid_argument("Choose a new output directory");
     std::set<fs::path> distinct;
     for (auto& file : recipe.inputs) {
         if (!distinct.insert(fs::canonical(file.path)).second) throw std::invalid_argument("Duplicate narrowband input");

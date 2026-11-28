@@ -1,4 +1,6 @@
+#include "LinearSamples.hpp"
 #include "SpectralCalibrationCommand.hpp"
+#include "OutputPath.hpp"
 #include "SpectralData.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include <algorithm>
@@ -78,7 +80,7 @@ void writeRecipe(const fs::path& path, const Recipe& r) {
         out << "product " << name << ' ' << sha << '\n';
     save(path, out.str());
 }
-Recipe readRecipe(const fs::path& path) {
+Recipe readRecipe(const fs::path& path, bool inspectDependencies) {
     if (fs::file_size(path) > 2 * 1024 * 1024)
         throw std::invalid_argument("Spectral recipe too large");
     Recipe r;
@@ -129,8 +131,10 @@ Recipe readRecipe(const fs::path& path) {
         !bytes(path.parent_path() / "report.json")
              .starts_with("{\"configuration\":" + channelJSON(configuration(r)) + ","))
         throw std::runtime_error("Spectral report does not match saved source, options and dependencies");
-    (void)readSpectralProfile(path.parent_path() / "profile.txt");
-    (void)readSpectralCatalog(path.parent_path() / "catalog.txt");
+    if (inspectDependencies) {
+        (void)readSpectralProfile(path.parent_path() / "profile.txt");
+        (void)readSpectralCatalog(path.parent_path() / "catalog.txt");
+    }
     return r;
 }
 void number(std::ostream& out, double value) {
@@ -322,19 +326,21 @@ std::pair<double, double> range(const ImageBuffer& image) {
         std::nth_element(values.begin() + lowIndex + 1, values.begin() + highIndex, values.end());
     return {low, values[highIndex]};
 }
-void preview(ImageBuffer image, double low, double high, const std::array<double, 3>& gains, const fs::path& output) {
+void preview(ImageBuffer image, double low, double high, const std::array<double, 3>& gains, const fs::path& output, std::string* digest = nullptr) {
     const double span = std::max(high - low, 1e-12);
-    for (std::size_t p = 0; p < image.pixelCount(); ++p)
+    photonstack::cli::processPixels(image.pixelCount(), [&](std::size_t p) {
         for (unsigned c = 0; c < 3; ++c) {
             // Transform the source black reference with the science gains.
             // Both images share one display scale and one source statistic.
             const double value = std::max(0., (image.pixels[p * image.channels + c] - low * gains[c]) / span);
             image.pixels[p * image.channels + c] = float(std::clamp(std::asinh(10 * value) / std::asinh(10.), 0., 1.));
         }
+    });
     image.colorEncoding = ColorEncoding::SRGB;
     ImageWriteOptions options;
     options.bitDepth = ImageWriteBitDepth::Sixteen;
-    const auto written = ImageCodec().write(image, output, options);
+    const auto written = digest ? ImageCodec().encodedTIFFSHA256(image, options, *digest)
+                                : ImageCodec().write(image, output, options);
     if (!written.ok)
         throw std::runtime_error(written.message);
 }
@@ -476,7 +482,7 @@ int runSpectralCalibration(const std::vector<std::string>& args) {
     if (!values.contains("--recipe"))
         throw std::invalid_argument("Specify spectral --recipe");
     const fs::path path = fs::canonical(values.at("--recipe"));
-    const auto r = readRecipe(path);
+    const auto r = readRecipe(path, !replay);
     if (values.contains("--expected-sha") && r.sha != values.at("--expected-sha"))
         throw std::runtime_error("Spectral recipe belongs to another source");
     if (values.contains("--full-resolution") && values.at("--full-resolution") != "0" && values.at("--full-resolution") != "1")
@@ -494,41 +500,34 @@ int runSpectralCalibration(const std::vector<std::string>& args) {
     if (!values.contains("--output") || !r.valid)
         throw std::invalid_argument("Export requires a validated spectral result and new --output");
     const fs::path output = values.at("--output");
-    if (output.empty() || fs::exists(output) ||
+    if (output.empty() ||
         (display ? output.extension() != ".tiff" && output.extension() != ".tif" : !isFitsPath(output)))
         throw std::invalid_argument(display ? "Choose a new TIFF preview path" : "Choose a new FITS export path");
     const std::string product = display ? "after.tiff" : "calibrated.fits";
-    bool copied = false;
-    try {
-        copied = fs::copy_file(path.parent_path() / product, output);
-        if (!copied || fileSHA256(output) != r.products.at(product))
+    NewOutputFile publication(output);
+    if (display && values.contains("--full-resolution") && values.at("--full-resolution") == "1") {
+        // Bind the full-size rendering to the saved comparison and its black reference.
+        const auto bounds = [&] {
+            const auto source = readLinearScienceImage(r.source);
+            auto small = resized(source.image);
+            const auto limits = range(small);
+            std::string digest;
+            preview(std::move(small), limits.first, limits.second, {1, 1, 1}, {}, &digest);
+            if (digest != r.products.at("before.tiff"))
+                throw std::runtime_error("Saved spectral display differs; create a fresh review");
+            return limits;
+        }();
+        auto calibrated = readLinearScienceImage(path.parent_path() / "calibrated.fits");
+        preview(std::move(calibrated.image), bounds.first, bounds.second, r.gains, publication.file());
+    } else {
+        fs::copy_file(path.parent_path() / product, publication.file());
+        if (fileSHA256(publication.file()) != r.products.at(product))
             throw std::runtime_error("Spectral export verification failed");
-        if (display && values.contains("--full-resolution") && values.at("--full-resolution") == "1") {
-            // Reproduce the saved comparison first. This binds the display
-            // statistics and rendering algorithm without trusting new defaults
-            // or silently restretching with another black reference.
-            const auto bounds = [&] {
-                const auto source = readLinearScienceImage(r.source);
-                auto small = resized(source.image);
-                const auto limits = range(small);
-                preview(std::move(small), limits.first, limits.second, {1, 1, 1}, output);
-                if (fileSHA256(output) != r.products.at("before.tiff"))
-                    throw std::runtime_error("Saved spectral display differs; create a fresh review");
-                return limits;
-            }();
-            auto calibrated = readLinearScienceImage(path.parent_path() / "calibrated.fits");
-            preview(std::move(calibrated.image), bounds.first, bounds.second, r.gains, output);
-        }
-        verifySource(r);
-        verify(path.parent_path(), r.dependencies);
-        verify(path.parent_path(), r.products);
-    } catch (...) {
-        if (copied) {
-            std::error_code ec;
-            fs::remove(output, ec);
-        }
-        throw;
     }
+    verifySource(r);
+    verify(path.parent_path(), r.dependencies);
+    verify(path.parent_path(), r.products);
+    publication.publish();
     std::cout << "{\"type\":\"complete\",\"command\":" << channelJSON(args[0]) << ",\"output\":"
               << channelJSON(fs::absolute(output).string()) << "}\n";
     return 0;

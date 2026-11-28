@@ -1,4 +1,5 @@
 #include "LinearMatchCommand.hpp"
+#include "OutputPath.hpp"
 #include "ChannelRecipe.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/LinearMatch.hpp"
@@ -101,15 +102,20 @@ int runLinearMatch(const std::vector<std::string>& args){
         else if(key=="--recipe"&&!fresh)recipe=value;
         else if((key=="--reference"||key=="--input")&&fresh){
             const auto split=value.find('=');if(split==std::string::npos)throw std::invalid_argument("Use symbol=/path/master.fits");
-            auto& s=key=="--reference"?r.reference:r.target;s={value.substr(0,split),fs::canonical(value.substr(split+1)),{}};s.sha=fileSHA256(s.path);
+            auto& s=key=="--reference"?r.reference:r.target;s={value.substr(0,split),fs::canonical(value.substr(split+1)),{}};
         }else if((key=="--low"||key=="--high")&&fresh){
             std::size_t used=0;const double v=std::stod(value,&used);if(used!=value.size())throw std::invalid_argument("Invalid quantile");
             (key=="--low"?r.options.lowQuantile:r.options.highQuantile)=v;
         }else throw std::invalid_argument("Unknown intensity option: "+key);
     }
+    if (!inspect) photonstack::cli::requireNewOutputPath(directory);
     if(!fresh){if(recipe.empty())throw std::invalid_argument("Specify --recipe");r=read(recipe,inspect);if(inspect){print(r,recipe.parent_path());return 0;}}
-    else{if(!aligned)throw std::invalid_argument("Confirm registered masters with --aligned");validate(r,false);}
-    if(directory.empty()||fs::exists(directory))throw std::invalid_argument("Choose a new output directory");
+    else {
+        if (!aligned) throw std::invalid_argument("Confirm registered masters with --aligned");
+        r.reference.sha = fileSHA256(r.reference.path);
+        r.target.sha = fileSHA256(r.target.path);
+        validate(r, false);
+    }
     const auto reference=readLinearMonoMaster(r.reference.path),target=readLinearMonoMaster(r.target.path);checkGrid(reference,target);
     auto output=matchLinearMaster(reference.image,target.image,r.options,fresh?nullptr:&r.measurement.coefficients);
     if(!fresh)output.measurement.downweighted=r.measurement.downweighted; // saved fit diagnostic; no new fit during replay

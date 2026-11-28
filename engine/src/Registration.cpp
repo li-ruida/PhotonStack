@@ -204,22 +204,42 @@ class SpatialPointIndex {
   public:
     SpatialPointIndex(float width, float height, float radius, std::vector<IndexedPoint> points)
         : cellSize_(std::max(1.0F, radius)), points_(std::move(points)) {
+        // Bound empty grid cells independently of sensor size and matching tolerance.
+        cellSize_ = std::max({cellSize_, width / 512.F, height / 512.F});
         columns_ = std::max(1, static_cast<int>(std::ceil(width / cellSize_)) + 2);
         rows_ = std::max(1, static_cast<int>(std::ceil(height / cellSize_)) + 2);
         cells_.resize(static_cast<std::size_t>(columns_ * rows_));
         for (std::size_t pointIndex = 0; pointIndex < points_.size(); ++pointIndex) {
-            const int cellX = clampCellX(static_cast<int>(std::floor(points_[pointIndex].x / cellSize_)));
-            const int cellY = clampCellY(static_cast<int>(std::floor(points_[pointIndex].y / cellSize_)));
+            const auto& point = points_[pointIndex];
+            if (!std::isfinite(point.x) || !std::isfinite(point.y)) continue;
+            const int cellX = cellCoordinate(point.x, columns_);
+            const int cellY = cellCoordinate(point.y, rows_);
             cells_[cellIndex(cellX, cellY)].push_back(pointIndex);
         }
     }
 
-    NearestPoint nearest(float x, float y, float radius) const {
+    NearestPoint nearest(float x, float y, float radius, bool firstIndexOnTie = false) const {
         NearestPoint nearestPoint;
         const float radiusSquared = radius * radius;
-        const int centerX = clampCellX(static_cast<int>(std::floor(x / cellSize_)));
-        const int centerY = clampCellY(static_cast<int>(std::floor(y / cellSize_)));
-        const int cellRadius = std::max(1, static_cast<int>(std::ceil(radius / cellSize_)));
+        visit(x, y, radius, [&](const IndexedPoint& point) {
+            const float dx = point.x - x;
+            const float dy = point.y - y;
+            const float distance = dx * dx + dy * dy;
+            if (distance <= radiusSquared && (distance < nearestPoint.distanceSquared ||
+                (firstIndexOnTie && distance == nearestPoint.distanceSquared && point.index < nearestPoint.index))) {
+                nearestPoint = {.found = true, .index = point.index, .distanceSquared = distance};
+            }
+        });
+        return nearestPoint;
+    }
+
+    template<class Visitor>
+    void visit(float x, float y, float radius, Visitor visitor) const {
+        if (!std::isfinite(x) || !std::isfinite(y) || !(radius >= 0)) return;
+        const int centerX = cellCoordinate(x, columns_);
+        const int centerY = cellCoordinate(y, rows_);
+        const int cellRadius = static_cast<int>(std::clamp(std::ceil(radius / cellSize_), 1.F,
+                                                           static_cast<float>(std::max(columns_, rows_))));
         const int minX = std::max(0, centerX - cellRadius);
         const int maxX = std::min(columns_ - 1, centerX + cellRadius);
         const int minY = std::max(0, centerY - cellRadius);
@@ -228,18 +248,10 @@ class SpatialPointIndex {
         for (int cellY = minY; cellY <= maxY; ++cellY) {
             for (int cellX = minX; cellX <= maxX; ++cellX) {
                 for (const auto pointIndex : cells_[cellIndex(cellX, cellY)]) {
-                    const auto& point = points_[pointIndex];
-                    const float dx = point.x - x;
-                    const float dy = point.y - y;
-                    const float distance = dx * dx + dy * dy;
-                    if (distance <= radiusSquared && distance < nearestPoint.distanceSquared) {
-                        nearestPoint = {.found = true, .index = point.index, .distanceSquared = distance};
-                    }
+                    visitor(points_[pointIndex]);
                 }
             }
         }
-
-        return nearestPoint;
     }
 
   private:
@@ -247,12 +259,9 @@ class SpatialPointIndex {
         return static_cast<std::size_t>(y * columns_ + x);
     }
 
-    int clampCellX(int x) const {
-        return std::clamp(x + 1, 0, columns_ - 1);
-    }
-
-    int clampCellY(int y) const {
-        return std::clamp(y + 1, 0, rows_ - 1);
+    int cellCoordinate(float coordinate, int count) const {
+        const float cell = std::floor(coordinate / cellSize_) + 1.F;
+        return static_cast<int>(std::clamp(cell, 0.F, static_cast<float>(count - 1)));
     }
 
     float cellSize_ = 1.0F;
@@ -306,7 +315,7 @@ bool solveLinearSystem(std::vector<std::vector<double>>& matrix, std::vector<dou
         return false;
     }
     for (const auto& row : matrix) {
-        if (row.size() != size + 1) {
+        if (row.size() != size + 1 || !std::all_of(row.begin(), row.end(), [](double v) { return std::isfinite(v); })) {
             return false;
         }
     }
@@ -318,7 +327,7 @@ bool solveLinearSystem(std::vector<std::vector<double>>& matrix, std::vector<dou
                 pivot = row;
             }
         }
-        if (std::fabs(matrix[pivot][column]) < 1.0e-12) {
+        if (!std::isfinite(matrix[pivot][column]) || std::fabs(matrix[pivot][column]) < 1.0e-12) {
             return false;
         }
         if (pivot != column) {
@@ -343,6 +352,7 @@ bool solveLinearSystem(std::vector<std::vector<double>>& matrix, std::vector<dou
     out.assign(size, 0.0);
     for (std::size_t row = 0; row < size; ++row) {
         out[row] = matrix[row][size];
+        if (!std::isfinite(out[row])) return false;
     }
     return true;
 }
@@ -450,8 +460,8 @@ std::pair<float, float> inverseProjectivePoint(float x, float y, ProjectiveTrans
     const double c21 = h01 * h20 - h00 * h21;
     const double c22 = h00 * h11 - h01 * h10;
     const double determinant = h00 * c00 + h01 * c10 + h02 * c20;
-    if (std::fabs(determinant) < 1.0e-12) {
-        return {x, y};
+    if (!std::isfinite(determinant) || std::fabs(determinant) < 1.0e-12) {
+        return {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::quiet_NaN()};
     }
 
     const double inv00 = c00 / determinant;
@@ -464,8 +474,8 @@ std::pair<float, float> inverseProjectivePoint(float x, float y, ProjectiveTrans
     const double inv21 = c21 / determinant;
     const double inv22 = c22 / determinant;
     const double denominator = inv20 * x + inv21 * y + inv22;
-    if (std::fabs(denominator) < 1.0e-9) {
-        return {x, y};
+    if (!std::isfinite(denominator) || std::fabs(denominator) < 1.0e-9) {
+        return {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::quiet_NaN()};
     }
     return {
         static_cast<float>((inv00 * x + inv01 * y + inv02) / denominator),
@@ -932,11 +942,15 @@ PolynomialCorrectionFit fitPolynomialCorrection(const std::vector<MatchedStarPai
                                        : inverseSimilarityPoint(pair.reference.x, pair.reference.y, transform.global);
     };
 
+    std::vector<std::size_t> validIndices;
     for (const auto index : indices) {
         const auto& pair = pairs[index];
         const auto [baseSourceX, baseSourceY] = baseSource(pair);
-        const double targetDx = static_cast<double>(pair.moving.x - baseSourceX);
-        const double targetDy = static_cast<double>(pair.moving.y - baseSourceY);
+        if (!std::isfinite(baseSourceX) || !std::isfinite(baseSourceY) ||
+            !std::isfinite(pair.moving.x) || !std::isfinite(pair.moving.y)) continue;
+        validIndices.push_back(index);
+        const double targetDx = static_cast<double>(pair.moving.x) - baseSourceX;
+        const double targetDy = static_cast<double>(pair.moving.y) - baseSourceY;
         const auto terms = polynomialTerms(pair.reference.x, pair.reference.y, width, height);
         for (std::size_t row = 0; row < kPolynomialFitTermCount; ++row) {
             matrixX[row][kPolynomialFitTermCount] += terms[row] * targetDx;
@@ -948,7 +962,8 @@ PolynomialCorrectionFit fitPolynomialCorrection(const std::vector<MatchedStarPai
         }
     }
 
-    const double regularization = std::max(1.0e-8, static_cast<double>(indices.size()) * 1.0e-7);
+    if (validIndices.size() < kPolynomialFitTermCount) return {};
+    const double regularization = std::max(1.0e-8, static_cast<double>(validIndices.size()) * 1.0e-7);
     for (std::size_t diagonal = 0; diagonal < kPolynomialFitTermCount; ++diagonal) {
         const double scale = diagonal == 0 ? regularization * 0.01 : regularization;
         matrixX[diagonal][diagonal] += scale;
@@ -967,10 +982,11 @@ PolynomialCorrectionFit fitPolynomialCorrection(const std::vector<MatchedStarPai
     for (std::size_t index = 0; index < kPolynomialFitTermCount; ++index) {
         fit.dx[index] = static_cast<float>(solutionX[index]);
         fit.dy[index] = static_cast<float>(solutionY[index]);
+        if (!std::isfinite(fit.dx[index]) || !std::isfinite(fit.dy[index])) return {};
     }
 
     double residualSum = 0.0;
-    for (const auto index : indices) {
+    for (const auto index : validIndices) {
         const auto& pair = pairs[index];
         const auto [baseSourceX, baseSourceY] = baseSource(pair);
         const auto [correctionX, correctionY] =
@@ -979,7 +995,8 @@ PolynomialCorrectionFit fitPolynomialCorrection(const std::vector<MatchedStarPai
         const double residualY = static_cast<double>(baseSourceY + correctionY - pair.moving.y);
         residualSum += residualX * residualX + residualY * residualY;
     }
-    fit.rms = static_cast<float>(std::sqrt(residualSum / static_cast<double>(indices.size())));
+    fit.rms = static_cast<float>(std::sqrt(residualSum / static_cast<double>(validIndices.size())));
+    if (!std::isfinite(fit.rms)) return {};
     return fit;
 }
 
@@ -990,9 +1007,14 @@ PolynomialCorrectionFit fitPolynomialCorrectionRobust(const std::vector<MatchedS
                                                       std::size_t requiredMatches,
                                                       float matchTolerance,
                                                       std::vector<std::size_t>& inliers) {
-    inliers.resize(pairs.size());
-    for (std::size_t index = 0; index < inliers.size(); ++index) {
-        inliers[index] = index;
+    inliers.clear();
+    for (std::size_t index = 0; index < pairs.size(); ++index) {
+        const auto& pair = pairs[index];
+        const auto [x, y] = transform.useProjective
+            ? inverseProjectivePoint(pair.reference.x, pair.reference.y, transform.projective)
+            : inverseSimilarityPoint(pair.reference.x, pair.reference.y, transform.global);
+        if (std::isfinite(x) && std::isfinite(y) && std::isfinite(pair.moving.x) && std::isfinite(pair.moving.y))
+            inliers.push_back(index);
     }
     if (inliers.size() < requiredMatches) {
         return {};
@@ -1013,6 +1035,8 @@ PolynomialCorrectionFit fitPolynomialCorrectionRobust(const std::vector<MatchedS
             const auto [baseSourceX, baseSourceY] =
                 transform.useProjective ? inverseProjectivePoint(pair.reference.x, pair.reference.y, transform.projective)
                                         : inverseSimilarityPoint(pair.reference.x, pair.reference.y, transform.global);
+            if (!std::isfinite(baseSourceX) || !std::isfinite(baseSourceY) ||
+                !std::isfinite(pair.moving.x) || !std::isfinite(pair.moving.y)) continue;
             const auto [correctionX, correctionY] =
                 evaluatePolynomialCorrection(pair.reference.x, pair.reference.y, width, height, fit.dx, fit.dy);
             const float residualX = baseSourceX + correctionX - pair.moving.x;
@@ -1048,14 +1072,20 @@ void populateSimilaritySummary(RegistrationResult& result, const AffineTransform
 }
 
 // Matching hypotheses share detections from the same pixels and detection options.
-// Distortion's denser local fit builds its own catalogs when it raises the star limit.
+// A coarse fit can borrow a brightness-ranked prefix of the dense distortion catalogs.
 struct RegistrationCatalogs {
     const ImageBuffer& reference;
     const ImageBuffer& moving;
     std::vector<Star> ownedReferenceStars;
     std::span<const Star> referenceStars;
-    std::vector<Star> movingStars;
+    std::vector<Star> ownedMovingStars;
+    std::span<const Star> movingStars;
     RegistrationResult status;
+
+    RegistrationCatalogs(const RegistrationCatalogs& dense, std::size_t limit)
+        : reference(dense.reference), moving(dense.moving),
+          referenceStars(dense.referenceStars.first(std::min(limit, dense.referenceStars.size()))),
+          movingStars(dense.movingStars.first(std::min(limit, dense.movingStars.size()))), status(dense.status) {}
 
     RegistrationCatalogs(const ImageBuffer& ref, const ImageBuffer& target, const RegistrationOptions& options,
                          const StarDetectionResult* prepared = nullptr)
@@ -1091,123 +1121,35 @@ struct RegistrationCatalogs {
             status = registrationError(second.errorCode, second.message);
             return;
         }
-        movingStars = std::move(second.stars);
+        ownedMovingStars = std::move(second.stars);
+        movingStars = ownedMovingStars;
         status.ok = true;
     }
 };
 
-RegistrationResult detectMatchedPairs(const RegistrationCatalogs& catalogs,
-                                      const RegistrationOptions& options, Translation prealign,
-                                      std::vector<MatchedStarPair>& pairs) {
-    const detail::StageScope timer(detail::Stage::Matching);
-    const auto& referenceStars = catalogs.referenceStars;
-    const auto& movingStars = catalogs.movingStars;
-    if (referenceStars.empty() || movingStars.empty()) {
-        return registrationError("RegistrationInsufficientStars", "Both images need at least one detected star");
-    }
-
-    pairs.clear();
-    std::vector<int> referenceAssignments(referenceStars.size(), -1);
-    for (std::size_t movingIndex = 0; movingIndex < movingStars.size(); ++movingIndex) {
-        const auto& movingStar = movingStars[movingIndex];
-        std::size_t bestReferenceIndex = 0;
-        float bestDistance = std::numeric_limits<float>::max();
-        const Star projectedMoving = {
-            .x = movingStar.x + prealign.dx,
-            .y = movingStar.y + prealign.dy,
-        };
-        for (std::size_t referenceIndex = 0; referenceIndex < referenceStars.size(); ++referenceIndex) {
-            const auto& referenceStar = referenceStars[referenceIndex];
-            const float candidateDistance = distanceSquared(referenceStar, projectedMoving);
-            if (candidateDistance < bestDistance) {
-                bestDistance = candidateDistance;
-                bestReferenceIndex = referenceIndex;
-            }
-        }
-
-        if (bestDistance > options.matchTolerance * options.matchTolerance) {
-            continue;
-        }
-
-        const auto& bestReference = referenceStars[bestReferenceIndex];
-        std::size_t reciprocalMovingIndex = 0;
-        float reciprocalDistance = std::numeric_limits<float>::max();
-        for (std::size_t candidateMovingIndex = 0; candidateMovingIndex < movingStars.size(); ++candidateMovingIndex) {
-            const auto& candidateMoving = movingStars[candidateMovingIndex];
-            const Star projectedCandidate = {
-                .x = candidateMoving.x + prealign.dx,
-                .y = candidateMoving.y + prealign.dy,
-            };
-            const float candidateDistance = distanceSquared(bestReference, projectedCandidate);
-            if (candidateDistance < reciprocalDistance) {
-                reciprocalDistance = candidateDistance;
-                reciprocalMovingIndex = candidateMovingIndex;
-            }
-        }
-        if (reciprocalMovingIndex != movingIndex) {
-            continue;
-        }
-
-        const int currentAssignment = referenceAssignments[bestReferenceIndex];
-        if (currentAssignment < 0) {
-            referenceAssignments[bestReferenceIndex] = static_cast<int>(pairs.size());
-            pairs.push_back({
-                .reference = bestReference,
-                .moving = movingStar,
-            });
-            continue;
-        }
-
-        const float assignedDistance = distanceSquared(
-            pairs[static_cast<std::size_t>(currentAssignment)].reference,
-            {
-                .x = pairs[static_cast<std::size_t>(currentAssignment)].moving.x + prealign.dx,
-                .y = pairs[static_cast<std::size_t>(currentAssignment)].moving.y + prealign.dy,
-            });
-        if (bestDistance < assignedDistance) {
-            pairs[static_cast<std::size_t>(currentAssignment)] = {
-                .reference = bestReference,
-                .moving = movingStar,
-            };
-        }
-    }
-
-    if (pairs.empty()) {
-        return registrationError("RegistrationNoMatches", "No matching stars were found");
-    }
-
-    RegistrationResult result;
-    result.ok = true;
-    result.matches = pairs.size();
-    result.detectedReferenceStars = referenceStars.size();
-    result.detectedMovingStars = movingStars.size();
-    const auto denominator = std::max<std::size_t>(1, std::min(referenceStars.size(), movingStars.size()));
-    result.inlierRatio = static_cast<float>(pairs.size()) / static_cast<float>(denominator);
-    return result;
-}
-
 std::vector<StarDescriptor> buildStarDescriptors(std::span<const Star> stars, std::size_t neighborCount) {
     std::vector<StarDescriptor> descriptors;
+    if (neighborCount == 0 || stars.size() <= neighborCount) return descriptors;
     descriptors.reserve(stars.size());
+    std::vector<float> distances;
+    distances.reserve(stars.size() - 1);
     for (std::size_t index = 0; index < stars.size(); ++index) {
-        std::vector<float> distances;
-        distances.reserve(stars.size() > 0 ? stars.size() - 1 : 0);
+        distances.clear();
         for (std::size_t other = 0; other < stars.size(); ++other) {
             if (other == index) {
                 continue;
             }
-            distances.push_back(std::sqrt(distanceSquared(stars[index], stars[other])));
+            distances.push_back(distanceSquared(stars[index], stars[other]));
         }
-        if (distances.size() < neighborCount) {
-            continue;
-        }
-        std::sort(distances.begin(), distances.end());
-        distances.resize(neighborCount);
-        const float normalizer = std::max(1.0e-6F, distances.back());
-        for (auto& distance : distances) {
+        const auto end = distances.begin() + static_cast<std::ptrdiff_t>(neighborCount);
+        std::partial_sort(distances.begin(), end, distances.end());
+        std::vector<float> neighbors(distances.begin(), end);
+        for (auto& distance : neighbors) distance = std::sqrt(distance);
+        const float normalizer = std::max(1.0e-6F, neighbors.back());
+        for (auto& distance : neighbors) {
             distance /= normalizer;
         }
-        descriptors.push_back({.index = index, .distances = std::move(distances)});
+        descriptors.push_back({.index = index, .distances = std::move(neighbors)});
     }
     return descriptors;
 }
@@ -1293,7 +1235,7 @@ RegistrationResult detectDescriptorMatchedPairs(const RegistrationCatalogs& cata
 
 RegistrationResult detectSimilarityProjectedPairs(const RegistrationCatalogs& catalogs,
                                                   const RegistrationOptions& options, SimilarityTransform transform,
-                                                  std::vector<MatchedStarPair>& pairs) {
+                                                  std::vector<MatchedStarPair>& pairs, bool firstIndexOnTie = false) {
     const detail::StageScope timer(detail::Stage::Matching);
     const auto& referenceStars = catalogs.referenceStars;
     const auto& movingStars = catalogs.movingStars;
@@ -1328,7 +1270,7 @@ RegistrationResult detectSimilarityProjectedPairs(const RegistrationCatalogs& ca
     for (std::size_t movingIndex = 0; movingIndex < movingStars.size(); ++movingIndex) {
         const auto& movingStar = movingStars[movingIndex];
         const auto projectedMoving = applySimilarityToStar(movingStar, transform);
-        const auto bestReference = referencePointIndex.nearest(projectedMoving.x, projectedMoving.y, options.matchTolerance);
+        const auto bestReference = referencePointIndex.nearest(projectedMoving.x, projectedMoving.y, options.matchTolerance, firstIndexOnTie);
         const std::size_t bestReferenceIndex = bestReference.index;
         const float bestDistance = bestReference.distanceSquared;
         if (!bestReference.found || bestDistance > toleranceSquared) {
@@ -1336,7 +1278,7 @@ RegistrationResult detectSimilarityProjectedPairs(const RegistrationCatalogs& ca
         }
 
         const auto reciprocalMoving = movingPointIndex.nearest(
-            referenceStars[bestReferenceIndex].x, referenceStars[bestReferenceIndex].y, options.matchTolerance);
+            referenceStars[bestReferenceIndex].x, referenceStars[bestReferenceIndex].y, options.matchTolerance, firstIndexOnTie);
         if (!reciprocalMoving.found || reciprocalMoving.index != movingIndex) {
             continue;
         }
@@ -1370,6 +1312,12 @@ RegistrationResult detectSimilarityProjectedPairs(const RegistrationCatalogs& ca
     const auto denominator = std::max<std::size_t>(1, std::min(referenceStars.size(), movingStars.size()));
     result.inlierRatio = static_cast<float>(pairs.size()) / static_cast<float>(denominator);
     return result;
+}
+
+RegistrationResult detectMatchedPairs(const RegistrationCatalogs& catalogs, const RegistrationOptions& options,
+                                      Translation prealign, std::vector<MatchedStarPair>& pairs) {
+    return detectSimilarityProjectedPairs(catalogs, options,
+        {.scale = 1, .rotationRadians = 0, .dx = prealign.dx, .dy = prealign.dy}, pairs, true);
 }
 
 bool refineSimilarityCentroids(const RegistrationCatalogs& catalogs,
@@ -1823,37 +1771,38 @@ RegistrationResult matchTranslation(const RegistrationCatalogs& catalogs, const 
     std::sort(dys.begin(), dys.end());
     const Translation medianOffset = {.dx = dxs[dxs.size() / 2], .dy = dys[dys.size() / 2]};
 
+    std::vector<IndexedPoint> referencePoints;
+    referencePoints.reserve(referenceStars.size());
+    float width = 1, height = 1;
+    for (std::size_t i = 0; i < referenceStars.size(); ++i) {
+        const auto& star = referenceStars[i];
+        referencePoints.push_back({.index = i, .x = star.x, .y = star.y});
+        width = std::max(width, star.x); height = std::max(height, star.y);
+    }
+    SpatialPointIndex index(width, height, tolerance, std::move(referencePoints));
     std::size_t inliers = 0;
-    for (const auto& movingStar : movingStars) {
-        const Star projected = {
-            .x = movingStar.x + medianOffset.dx,
-            .y = movingStar.y + medianOffset.dy,
-        };
-        const bool matched = std::any_of(referenceStars.begin(), referenceStars.end(), [&](const Star& referenceStar) {
-            return distanceSquared(referenceStar, projected) <= tolerance * tolerance;
-        });
-        if (matched) {
-            ++inliers;
-        }
-    }
-
-    if (inliers == 0) {
-        return registrationError("RegistrationNoMatches", "No RANSAC inliers were found");
-    }
-
     std::vector<std::array<float, 2>> alignedStars;
     std::vector<Translation> inlierOffsets;
     for (const auto& movingStar : movingStars) {
-        for (const auto& referenceStar : referenceStars) {
-            const Translation candidate = {.dx = referenceStar.x - movingStar.x, .dy = referenceStar.y - movingStar.y};
-            const float dx = candidate.dx - medianOffset.dx;
-            const float dy = candidate.dy - medianOffset.dy;
+        const Star projected{.x = movingStar.x + medianOffset.dx, .y = movingStar.y + medianOffset.dy};
+        bool matched = false;
+        // Collect both historical predicates. Reassociating the Float32
+        // subtraction can change inclusion at the boundary by one ULP.
+        const float roundoff = 4 * std::numeric_limits<float>::epsilon() * std::max(width, height);
+        index.visit(projected.x, projected.y, tolerance + roundoff, [&](const IndexedPoint& p) {
+            const auto& referenceStar = referenceStars[p.index];
+            matched |= distanceSquared(referenceStar, projected) <= tolerance * tolerance;
+            const Translation offset{referenceStar.x - movingStar.x, referenceStar.y - movingStar.y};
+            const float dx = offset.dx - medianOffset.dx, dy = offset.dy - medianOffset.dy;
             if (dx * dx + dy * dy <= tolerance * tolerance) {
-                inlierOffsets.push_back(candidate);
+                inlierOffsets.push_back(offset);
                 if (options.collectAlignmentStars) alignedStars.push_back({movingStar.x, movingStar.y});
             }
-        }
+        });
+        inliers += matched;
     }
+    if (!inliers || inlierOffsets.empty())
+        return registrationError("RegistrationNoMatches", "No RANSAC inliers were found");
     std::sort(inlierOffsets.begin(), inlierOffsets.end(), [](const Translation& left, const Translation& right) {
         return left.dx == right.dx ? left.dy < right.dy : left.dx < right.dx;
     });
@@ -2213,8 +2162,13 @@ RegistrationResult matchDistortion(const ImageBuffer& reference, const ImageBuff
     if (!validRegistrationOptions(options)) {
         return registrationError("ArgumentInvalid", "Registration options are outside valid ranges");
     }
-    const RegistrationCatalogs coarse(reference, moving, options, prepared);
-    if (!coarse.status.ok) return coarse.status;
+    RegistrationOptions localOptions = options;
+    localOptions.matchTolerance = std::max(options.matchTolerance * 12.0F, 36.0F);
+    localOptions.starDetection.maxStars = std::max(localOptions.starDetection.maxStars, distortionStarLimit);
+    const RegistrationCatalogs catalogs(reference, moving, localOptions,
+                                        preparedLimit >= localOptions.starDetection.maxStars ? prepared : nullptr);
+    if (!catalogs.status.ok) return catalogs.status;
+    const RegistrationCatalogs coarse(catalogs, options.starDetection.maxStars);
     const auto globalResult = matchSimilarity(coarse, options);
     if (!globalResult.ok) {
         return globalResult;
@@ -2242,12 +2196,6 @@ RegistrationResult matchDistortion(const ImageBuffer& reference, const ImageBuff
     transform.influenceRadius =
         std::clamp(static_cast<float>(std::max(reference.width, reference.height)) * 0.026F, 72.0F, 168.0F);
 
-    RegistrationOptions localOptions = options;
-    localOptions.matchTolerance = std::max(options.matchTolerance * 12.0F, 36.0F);
-    localOptions.starDetection.maxStars = std::max(localOptions.starDetection.maxStars, distortionStarLimit);
-    const RegistrationCatalogs catalogs(reference, moving, localOptions,
-                                        preparedLimit >= localOptions.starDetection.maxStars ? prepared : nullptr);
-    if (!catalogs.status.ok) return catalogs.status;
     std::vector<MatchedStarPair> pairs;
     auto matchResult = detectSimilarityProjectedPairs(catalogs, localOptions, transform.global, pairs);
     if (!matchResult.ok || pairs.size() < std::max<std::size_t>(options.minimumMatches, 8)) {
@@ -2302,16 +2250,20 @@ RegistrationResult matchDistortion(const ImageBuffer& reference, const ImageBuff
     }
 
     double sourceResidualSum = 0.0;
+    std::size_t sourceResidualCount = 0;
     for (const auto& pair : pairs) {
         const auto [baseSourceX, baseSourceY] =
             transform.useProjective ? inverseProjectivePoint(pair.reference.x, pair.reference.y, transform.projective)
                                     : inverseSimilarityPoint(pair.reference.x, pair.reference.y, transform.global);
-        const double residualX = static_cast<double>(baseSourceX - pair.moving.x);
-        const double residualY = static_cast<double>(baseSourceY - pair.moving.y);
+        if (!std::isfinite(baseSourceX) || !std::isfinite(baseSourceY) ||
+            !std::isfinite(pair.moving.x) || !std::isfinite(pair.moving.y)) continue;
+        const double residualX = static_cast<double>(baseSourceX) - pair.moving.x;
+        const double residualY = static_cast<double>(baseSourceY) - pair.moving.y;
         sourceResidualSum += residualX * residualX + residualY * residualY;
+        ++sourceResidualCount;
     }
     const float sourceRms =
-        static_cast<float>(std::sqrt(sourceResidualSum / static_cast<double>(std::max<std::size_t>(1, pairs.size()))));
+        static_cast<float>(std::sqrt(sourceResidualSum / static_cast<double>(std::max<std::size_t>(1, sourceResidualCount))));
     const std::size_t requiredPolynomialMatches =
         std::max<std::size_t>({options.minimumMatches, kPolynomialFitTermCount * 3, 30});
     std::vector<std::size_t> polynomialInliers;

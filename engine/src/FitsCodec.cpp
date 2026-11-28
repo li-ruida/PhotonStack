@@ -89,7 +89,7 @@ std::string parseCardValue(const std::string& card) {
     return trim(value);
 }
 
-FitsHeader parseHeader(std::ifstream& file, bool acquisition = false) {
+FitsHeader parseHeader(std::istream& file, bool acquisition = false) {
     FitsHeader header;
     file.clear();
     file.seekg(0, std::ios::beg);
@@ -503,11 +503,7 @@ LinearMonoMaster readLinearMonoMaster(const std::filesystem::path& path) {
     return result;
 }
 
-static SolvedPanel readPanelWcs(const std::filesystem::path& path, bool astrometryICRS) {
-    std::ifstream file(path, std::ios::binary);
-    const auto header = parseHeader(file);
-    if (!header.ok)
-        throw std::runtime_error(header.message);
+static SolvedPanel panelWcs(const FitsHeader& header, bool astrometryICRS) {
     const auto& h = header.values;
     auto value = [&](const std::string& key) { return h.contains(key) ? h.at(key) : std::string(); };
     auto number = [&](const std::string& key) {
@@ -579,6 +575,32 @@ static SolvedPanel readPanelWcs(const std::filesystem::path& path, bool astromet
     return panel;
 }
 
+static SolvedPanel readPanelWcs(const std::filesystem::path& path, bool astrometryICRS) {
+    std::ifstream file(path, std::ios::binary);
+    const auto header = parseHeader(file);
+    if (!header.ok)
+        throw std::runtime_error(header.message);
+    return panelWcs(header, astrometryICRS);
+}
+
+SolvedFitsField inspectSolvedRGBField(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    const auto header = parseHeader(stream);
+    if (!header.ok) throw std::invalid_argument(header.message);
+    const auto desc = imageDescription(header);
+    const auto profile = header.values.find("PSCOLOR");
+    if (!desc || (desc->channels != 3 && desc->channels != 4) || header.values.contains("BAYERPAT") ||
+        (profile != header.values.end() && profile->second != "Linear" && profile->second != "LINEAR-SRGB"))
+        throw std::invalid_argument("Choose a solved linear RGB FITS master");
+    std::size_t pixels, samples, bytes;
+    const auto size = std::filesystem::file_size(path);
+    if (!checkedMultiply(desc->width, desc->height, pixels) || !checkedMultiply(pixels, desc->channels, samples) ||
+        !checkedMultiply(samples, bytesPerSample(desc->bitpix), bytes) || header.dataOffset > size ||
+        bytes > size - header.dataOffset || !floatingValue(header, "BZERO", 0) || !floatingValue(header, "BSCALE", 1))
+        throw std::invalid_argument("Invalid FITS data dimensions or scaling");
+    return {desc->width, desc->height, panelWcs(header, false)};
+}
+
 SolvedPanel readSolvedPanel(const std::filesystem::path& path) { return readPanelWcs(path, false); }
 SolvedPanel readAstrometryICRSPanel(const std::filesystem::path& path) { return readPanelWcs(path, true); }
 
@@ -593,9 +615,7 @@ bool FitsSensorIdentity::sameAcquisition(const FitsSensorIdentity& b) const {
         bayer == b.bayer && xOffset == b.xOffset && yOffset == b.yOffset && exposure == b.exposure && gain == b.gain;
 }
 
-CalibrationAcquisition inspectCalibrationAcquisition(const std::filesystem::path& path) {
-    std::ifstream stream(path, std::ios::binary);
-    const auto header = parseHeader(stream, true);
+static CalibrationAcquisition acquisitionFromHeader(const FitsHeader& header, std::uintmax_t size) {
     if (!header.ok) throw std::invalid_argument(header.message);
     const auto desc = imageDescription(header);
     if (!desc || !header.values.contains("SIMPLE") || header.values.at("SIMPLE") != "T")
@@ -604,7 +624,6 @@ CalibrationAcquisition inspectCalibrationAcquisition(const std::filesystem::path
         if (header.rawCards.contains(key) && trim(header.rawCards.at(key).substr(10)).starts_with('\''))
             throw std::invalid_argument("Structural FITS values cannot be strings");
     std::size_t count = 0, samples = 0, bytes = 0;
-    const auto size = std::filesystem::file_size(path);
     if (!checkedMultiply(desc->width, desc->height, count) || !checkedMultiply(count, desc->channels, samples) ||
         !checkedMultiply(samples, bytesPerSample(desc->bitpix), bytes) || header.dataOffset > size ||
         size - header.dataOffset < bytes)
@@ -733,6 +752,18 @@ CalibrationAcquisition inspectCalibrationAcquisition(const std::filesystem::path
     return r;
 }
 
+CalibrationAcquisition inspectCalibrationAcquisition(const std::filesystem::path& path) {
+    std::ifstream stream(path, std::ios::binary);
+    return acquisitionFromHeader(parseHeader(stream, true), std::filesystem::file_size(path));
+}
+
+VerifiedAcquisition inspectVerifiedAcquisition(const std::filesystem::path& path) {
+    auto bytes = digestRegularFile(path, 1024 * 1024);
+    std::istringstream header(std::move(bytes.prefix));
+    return {acquisitionFromHeader(parseHeader(header, true), bytes.size), std::move(bytes.sha), bytes.size};
+}
+
+
 CfaSensorInfo inspectCfaSensor(const std::filesystem::path& path) {
     std::ifstream stream(path, std::ios::binary);
     const auto header = parseHeader(stream);
@@ -802,22 +833,31 @@ ImageBuffer readCfaSensor(const std::filesystem::path& path) {
 struct SensorFitsReader::Impl {
     CalibrationAcquisition acquisition;
     std::filesystem::path path;
-    std::ifstream stream;
+    std::unique_ptr<DigestingFileReader> verified;
     std::size_t offset = 0, count = 0, stride = 0;
     double scale = 1, zero = 0;
     std::optional<long long> blank;
     std::vector<unsigned char> bytes;
 };
-SensorFitsReader::SensorFitsReader(const std::filesystem::path& path): impl_(std::make_unique<Impl>()) {
+SensorFitsReader::SensorFitsReader(const std::filesystem::path& path, bool hashWhileReading): impl_(std::make_unique<Impl>()) {
     auto& r = *impl_;
-    r.acquisition = inspectCalibrationAcquisition(path);
+    FitsHeader h;
+    if (hashWhileReading) {
+        r.verified = std::make_unique<DigestingFileReader>(path);
+        std::string prefix(std::min<std::uint64_t>(r.verified->size(), 1024 * 1024), '\0');
+        r.verified->readAt(0, {reinterpret_cast<unsigned char*>(prefix.data()), prefix.size()});
+        std::istringstream stream(std::move(prefix));
+        h = parseHeader(stream, true);
+        r.acquisition = acquisitionFromHeader(h, r.verified->size());
+    } else {
+        std::ifstream stream(path, std::ios::binary);
+        h = parseHeader(stream, true);
+        r.acquisition = acquisitionFromHeader(h, std::filesystem::file_size(path));
+    }
     const auto& a = r.acquisition;
     if (a.channels != 1 || !a.issues.empty() || !a.text.contains("sampling") ||
         !a.text.contains("domain") || a.text.at("domain") != "linear")
         throw std::invalid_argument("Sensor frames require valid explicit linear single-plane acquisition metadata");
-    r.stream.open(path,std::ios::binary);
-    const auto h = parseHeader(r.stream,true);
-    if (!h.ok) throw std::runtime_error(h.message);
     r.offset = h.dataOffset; r.count = std::size_t(a.width)*a.height; r.stride = bytesPerSample(a.bitpix);
     r.scale = a.numeric.at("scale"); r.zero = a.numeric.at("zero");
     if (h.values.contains("BLANK")) {
@@ -828,21 +868,31 @@ SensorFitsReader::SensorFitsReader(const std::filesystem::path& path): impl_(std
             trim(h.rawCards.at("BLANK").substr(10)).starts_with('\''))
             throw std::invalid_argument("Invalid integer sensor BLANK keyword");
     }
-    r.path=path; r.stream.close(); r.bytes.resize(65536);
+    r.path = path; r.bytes.resize(65536);
 }
 SensorFitsReader::~SensorFitsReader() = default;
 SensorFitsReader::SensorFitsReader(SensorFitsReader&&) noexcept = default;
 SensorFitsReader& SensorFitsReader::operator=(SensorFitsReader&&) noexcept = default;
 const CalibrationAcquisition& SensorFitsReader::metadata() const { return impl_->acquisition; }
+std::string SensorFitsReader::sourceSHA256() {
+    return impl_->verified ? impl_->verified->finish() : fileSHA256(impl_->path);
+}
 void SensorFitsReader::read(std::size_t start, std::span<float> samples) {
     auto& r = *impl_;
     if (start > r.count || samples.size() > r.count-start) throw std::invalid_argument("Sensor read range exceeds image");
-    r.stream.close(); r.stream.clear(); r.stream.open(r.path,std::ios::binary);
-    r.stream.seekg(static_cast<std::streamoff>(r.offset + start*r.stride));
+    std::ifstream stream;
+    if (!r.verified) {
+        stream.open(r.path, std::ios::binary);
+        stream.seekg(static_cast<std::streamoff>(r.offset + start*r.stride));
+    }
     for (std::size_t i=0; i<samples.size();) {
         const auto n=std::min(samples.size()-i,r.bytes.size()/r.stride);
-        r.stream.read(reinterpret_cast<char*>(r.bytes.data()),std::streamsize(n*r.stride));
-        if (!r.stream) throw std::runtime_error("Sensor file changed or cannot be read");
+        if (r.verified) {
+            r.verified->readAt(r.offset + (start+i)*r.stride, std::span(r.bytes).first(n*r.stride));
+        } else {
+            stream.read(reinterpret_cast<char*>(r.bytes.data()), std::streamsize(n*r.stride));
+            if (!stream) throw std::runtime_error("Sensor file changed or cannot be read");
+        }
         for (std::size_t j=0;j<n;++j) {
             const auto* p=r.bytes.data()+j*r.stride;
             const double raw=r.acquisition.bitpix==8 ? p[0] : r.acquisition.bitpix==16 ? readSigned16(p) :
@@ -857,7 +907,6 @@ void SensorFitsReader::read(std::size_t start, std::span<float> samples) {
         }
         i+=n;
     }
-    r.stream.close();
 }
 
 DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCalibration* calibration, DualBandSampling sampling) {
@@ -1299,6 +1348,18 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
             detail::recordBackend("cpu", "Metal unavailable on this platform");
 #endif
         }
+        std::vector<float> directionalRGB;
+        if (options.demosaic == FitsDemosaic::Menon) {
+            try {
+                directionalRGB = detail::demosaicMenon(mosaic, int(result.image.width), int(result.image.height),
+                                                        colors, options.cfaInterpolationGains);
+            } catch (const std::bad_alloc&) {
+                return readError("ImageAllocationFailed", "Could not allocate directional Bayer reconstruction buffers");
+            }
+        }
+        const bool checkDirectionalCoverage = !directionalRGB.empty() && options.maskNonFinitePixels &&
+            (result.image.width < 2 || result.image.height < 2 ||
+             std::any_of(mosaic.begin(), mosaic.end(), [](float value) { return !std::isfinite(value); }));
         if (!reconstructedOnGPU)
         detail::parallelRanges(result.image.height, std::max<std::size_t>(1, 262144 / result.image.width),
             [&](std::size_t firstRow, std::size_t lastRow) noexcept {
@@ -1310,6 +1371,20 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
                             continue;
                         }
                         for (int channel = 0; channel < 3; ++channel) {
+                            if (!directionalRGB.empty() && std::isfinite(directionalRGB[pixel * 3 + channel])) {
+                                if (checkDirectionalCoverage && colorAt(x, y) != channel) {
+                                    bool supported = false;
+                                    for (int sy = std::max(0, y - 1); !supported && sy <= std::min(int(result.image.height) - 1, y + 1); ++sy)
+                                        for (int sx = std::max(0, x - 1); sx <= std::min(int(result.image.width) - 1, x + 1); ++sx)
+                                            if (colorAt(sx, sy) == channel && std::isfinite(mosaic[std::size_t(sy)*result.image.width + sx])) {
+                                                supported = true;
+                                                break;
+                                            }
+                                    if (!supported) result.image.pixels[pixel * 4 + 3] = std::numeric_limits<float>::quiet_NaN();
+                                }
+                                result.image.pixels[pixel * 4 + channel] = directionalRGB[pixel * 3 + channel];
+                                continue;
+                            }
                             if (colorAt(x, y) == channel) {
                                 result.image.pixels[pixel * 4 + channel] = mosaic[pixel];
                                 continue;
@@ -1391,19 +1466,6 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
                             result.image.pixels[p * 4 + c] = reconstructed[p * 3 + c];
             } catch (const std::bad_alloc&) {
                 return readError("ImageAllocationFailed", "Could not allocate ratio Bayer reconstruction buffers");
-            }
-        }
-        if (options.demosaic == FitsDemosaic::Menon) {
-            std::array<int, 4> colors{colorAt(0,0),colorAt(1,0),colorAt(0,1),colorAt(1,1)};
-            try {
-                const auto reconstructed = detail::demosaicMenon(mosaic,
-                    static_cast<int>(result.image.width), static_cast<int>(result.image.height),
-                    colors, options.cfaInterpolationGains);
-                for (std::size_t p=0;p<pixelCount;++p)
-                    for (int c=0;c<3;++c)
-                        if (std::isfinite(reconstructed[p*3+c])) result.image.pixels[p*4+c]=reconstructed[p*3+c];
-            } catch (const std::bad_alloc&) {
-                return readError("ImageAllocationFailed", "Could not allocate directional Bayer reconstruction buffers");
             }
         }
 

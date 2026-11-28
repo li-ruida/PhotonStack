@@ -1,4 +1,5 @@
 #include "ChannelCommand.hpp"
+#include "OutputPath.hpp"
 #include "ChannelRecipe.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include <cmath>
@@ -41,10 +42,13 @@ int runChannels(const std::vector<std::string>& args) {
         } else if ((option == "--red" || option == "--green" || option == "--blue") && !inspect)
             recipe.expressions[option == "--red" ? 0 : option == "--green" ? 1 : 2] = value;
         else if (option == "--workers" && !inspect) {
+            if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos)
+                throw std::invalid_argument("Workers must be 1..64");
             std::size_t used = 0; workers = std::stoul(value, &used);
             if (used != value.size() || workers < 1 || workers > 64) throw std::invalid_argument("Workers must be 1..64");
         } else throw std::invalid_argument("Unknown channel option: " + option);
     }
+    if (!inspect) photonstack::cli::requireNewOutputPath(directory);
     if (!fresh) {
         if (sourceRecipe.empty()) throw std::invalid_argument("Specify --recipe");
         const auto overrides = recipe.expressions;
@@ -53,7 +57,6 @@ int runChannels(const std::vector<std::string>& args) {
     } else for (auto& s : recipe.sources) s.sha = fileSHA256(s.path);
     verifyChannelSources(recipe);
     if (inspect) { printChannelRecipe(recipe, sourceRecipe.parent_path(), std::cout); return 0; }
-    if (directory.empty() || fs::exists(directory)) throw std::invalid_argument("Choose a new output directory");
     const auto programs = recipe.compile();
     std::vector<ImageBuffer> planes; std::optional<SolvedPanel> sky;
     bool allSolved = true;

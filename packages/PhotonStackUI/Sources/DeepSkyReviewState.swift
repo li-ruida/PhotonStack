@@ -187,8 +187,20 @@ enum DeepSkyReview {
         listing(frames, selection: DeepSkyReviewSelection(settings: settings), filter: filter, query: query, sort: sort)
     }
 
+    static func searchTerms(_ frame: DeepSkyReport.Frame) -> [String] {
+        let codes = evidenceCodes(frame)
+        var terms = [frame.input] + codes
+        for chinese in [true, false] {
+            for code in codes {
+                terms.append(DeepSkyReviewEvidence.title(for: code, chinese: chinese))
+                terms.append(reason(code, chinese: chinese))
+            }
+        }
+        return terms
+    }
+
     static func listing(_ frames: [DeepSkyReport.Frame], selection: DeepSkyReviewSelection,
-                        filter: DeepSkyReviewFilter, query: String, sort: DeepSkyReviewSort) -> Listing {
+                        filter: DeepSkyReviewFilter, query: String, sort: DeepSkyReviewSort, index: [String: [String]] = [:]) -> Listing {
         var counts: [DeepSkyReviewFilter: Int] = [.all: frames.count]
         var visible: [(frame: DeepSkyReport.Frame, rank: Int)] = []
         let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -217,16 +229,12 @@ enum DeepSkyReview {
             if let frameNumber {
                 guard frame.index + 1 == frameNumber else { continue }
             } else if !search.isEmpty {
-                let codes = evidenceCodes(frame)
-                var terms = [frame.input] + codes
-                for chinese in [true, false] {
-                    terms.append(DeepSkyReviewEvidence.decisionTitle(for: frame, selection: selection, chinese: chinese))
-                    for code in codes {
-                        terms.append(DeepSkyReviewEvidence.title(for: code, chinese: chinese))
-                        terms.append(reason(code, chinese: chinese))
-                    }
+                let terms = index[frame.input] ?? searchTerms(frame)
+                let decisionMatches = [true, false].contains { chinese in
+                    DeepSkyReviewEvidence.decisionTitle(for: frame, selection: selection, chinese: chinese)
+                        .localizedCaseInsensitiveContains(search)
                 }
-                guard terms.contains(where: { $0.localizedCaseInsensitiveContains(search) }) else { continue }
+                guard decisionMatches || terms.contains(where: { $0.localizedCaseInsensitiveContains(search) }) else { continue }
             }
             visible.append((frame, rank))
         }

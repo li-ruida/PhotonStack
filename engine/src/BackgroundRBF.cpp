@@ -1,5 +1,8 @@
 #include "BackgroundSurface.hpp"
 #include <array>
+#ifdef __APPLE__
+#include <Accelerate/Accelerate.h>
+#endif
 #include <numeric>
 #include <stdexcept>
 
@@ -191,6 +194,32 @@ BackgroundExtractionResult BackgroundExtractor::extractRBF(const ImageBuffer& im
             m.validationResidual[c] = m.used[c] ? fits[c].loo[n] : m.measured[c] - prediction[c];
         }
     }
+#ifdef __APPLE__
+    const auto block = [&](std::size_t start, std::size_t row, int count, auto& colors) noexcept {
+        std::array<double, 64> x, distance, logs;
+        const double y = row / scale;
+        for (int i = 0; i < count; ++i) {
+            x[i] = (start + i) / scale;
+            for (int c = 0; c < channels; ++c)
+                colors[i][c] = fits[c].plane[0] + x[i] * fits[c].plane[1] + y * fits[c].plane[2];
+        }
+        for (std::size_t n = 0; n < points.size(); ++n) {
+            const double dy = y - points[n].y;
+            for (int i = 0; i < count; ++i) {
+                const double dx = x[i] - points[n].x;
+                distance[i] = dx * dx + dy * dy;
+                logs[i] = distance[i] > 0 ? distance[i] : 1.;
+            }
+            vvlog(logs.data(), logs.data(), &count);
+            for (int i = 0; i < count; ++i) {
+                const double k = .5 * distance[i] * logs[i];
+                for (int c = 0; c < channels; ++c) colors[i][c] += k * fits[c].weights[n];
+            }
+        }
+    };
+    return detail::applyBackgroundSurface(im, sampling, std::move(result), evaluate, block);
+#else
     return detail::applyBackgroundSurface(im, sampling, std::move(result), evaluate);
+#endif
 }
 } // namespace photonstack

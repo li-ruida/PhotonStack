@@ -55,7 +55,7 @@ template <typename Callback> void parallelForPixels(const ImageBuffer& image, Ca
         8U
     );
     const std::size_t blockSize = (pixels + workerCount - 1) / workerCount;
-    std::vector<std::thread> workers;
+    std::vector<std::jthread> workers;
     workers.reserve(workerCount);
     for (unsigned int worker = 0; worker < workerCount; ++worker) {
         const std::size_t begin = std::min<std::size_t>(pixels, static_cast<std::size_t>(worker) * blockSize);

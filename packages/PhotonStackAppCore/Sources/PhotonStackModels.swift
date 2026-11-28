@@ -141,7 +141,15 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
             )
         }
 
+        let previousLights = lightAssetIDs
         assets.append(contentsOf: newAssets)
+        if role == .dark || role == .bias || role == .flat {
+            for asset in newAssets {
+                deepSkySettings?.updateAssetRole(url: asset.originalURL, newRole: role)
+            }
+        }
+        let currentLights = lightAssetIDs
+        deepSkySettings?.updateLightSequence(from: previousLights, to: currentLights)
         if role == .mosaic {
             mosaicPanelOrder.append(contentsOf: newAssets.map(\.id))
         }
@@ -150,6 +158,10 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
 
     public static func assetIdentityPath(for url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    private var lightAssetIDs: [UUID] {
+        assets.filter { $0.role == .light }.map(\.id)
     }
 
     public mutating func updateMetadata(for assetID: UUID, metadata: AssetMetadata) {
@@ -161,152 +173,105 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
     }
 
     public mutating func removeAsset(_ assetID: UUID) {
-        guard let removedAsset = assets.first(where: { $0.id == assetID }) else {
-            return
-        }
-        let assetIDText = assetID.uuidString
-        let removedPath = removedAsset.originalURL.path
+        removeAssets([assetID])
+    }
 
-        var removedOperationIDs: Set<EditOperation.ID> = []
-        var invalidatedPaths: Set<String> = [Self.assetIdentityPath(for: removedAsset.originalURL)]
-        var foundOperation = true
-        while foundOperation {
-            foundOperation = false
-            for operation in editGraph.operations where removedOperationIDs.contains(operation.id) == false {
-                let directlyReferencesAsset = Self.valuesReferenceAsset(
-                    operation.parameters,
-                    assetID: assetIDText,
-                    path: removedPath
-                )
-                let dependsOnRemovedOutput = operation.parameters.contains { key, value in
-                    key != "output" && key != "previewOutput" &&
-                        Self.pathSet(invalidatedPaths, containsStoredPath: value)
+    public mutating func removeAssets(_ assetIDs: Set<UUID>) {
+        let removed = assets.filter { assetIDs.contains($0.id) }
+        guard !removed.isEmpty else { return }
+        let idTexts = Set(removed.map { $0.id.uuidString })
+        // Resolve once per mutation so a later relink or changed alias is observed.
+        var identities: [String: String] = [:]
+        func identity(_ path: String) -> String? {
+            guard path.hasPrefix("/") else { return nil }
+            if let cached = identities[path] { return cached }
+            let resolved = Self.assetIdentityPath(for: URL(fileURLWithPath: path))
+            identities[path] = resolved
+            return resolved
+        }
+        let sourcePaths = Set(removed.compactMap { identity($0.originalURL.path) })
+        func referencesAsset(_ value: String) -> Bool {
+            if let path = identity(value), sourcePaths.contains(path) { return true }
+            if idTexts.contains(value) { return true }
+            return value.contains(",") && value.split(separator: ",").contains {
+                idTexts.contains($0.trimmingCharacters(in: .whitespacesAndNewlines))
+            } || idTexts.contains(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        func referencesFrame(_ frame: ProcessingArtifactFrame) -> Bool {
+            [frame.sourceURL, frame.outputURL].contains { $0.flatMap { identity($0.path) }.map(sourcePaths.contains) == true } ||
+                frame.metrics.values.contains(where: referencesAsset)
+        }
+        var invalidatedPaths = sourcePaths
+        var removedOperationIDs = Set<EditOperation.ID>()
+        var consumingOperations: [String: [Int]] = [:]
+        var operations: [Int] = []
+        for (index, operation) in editGraph.operations.enumerated() {
+            if operation.parameters.values.contains(where: referencesAsset) { operations.append(index) }
+            for (key, value) in operation.parameters where key != "output" && key != "previewOutput" {
+                if let path = identity(value) { consumingOperations[path, default: []].append(index) }
+            }
+        }
+        while let index = operations.popLast() {
+            let operation = editGraph.operations[index]
+            guard removedOperationIDs.insert(operation.id).inserted else { continue }
+            for key in ["output", "previewOutput"] {
+                if let path = operation.parameters[key].flatMap(identity), invalidatedPaths.insert(path).inserted {
+                    operations.append(contentsOf: consumingOperations[path] ?? [])
                 }
-                guard directlyReferencesAsset || dependsOnRemovedOutput else {
-                    continue
-                }
-                removedOperationIDs.insert(operation.id)
-                for key in ["output", "previewOutput"] {
-                    if let path = operation.parameters[key] {
-                        Self.insertStoredPath(path, into: &invalidatedPaths)
-                    }
-                }
-                foundOperation = true
             }
         }
 
-        var invalidatedArtifactIDs: Set<ProcessingArtifact.ID> = []
-        var removedArtifactIDs: Set<ProcessingArtifact.ID> = []
+        var removedArtifactIDs = Set<ProcessingArtifact.ID>()
+        var consumingArtifacts: [String: [Int]] = [:]
+        var children: [UUID: [Int]] = [:]
+        var changedSequences = Set<UUID>()
+        var pending: [Int] = []
         for index in artifacts.indices {
             if artifacts[index].kind == .rawSequence {
-                let previousFrameCount = artifacts[index].frames.count
-                let previousOutputCount = artifacts[index].outputURLs.count
-                artifacts[index].frames.removeAll { frame in
-                    Self.frameReferencesAsset(frame, assetID: assetIDText, url: removedAsset.originalURL)
-                }
-                artifacts[index].outputURLs.removeAll {
-                    Self.urlsReferenceSameFile($0, removedAsset.originalURL)
-                }
-                if artifacts[index].frames.count != previousFrameCount ||
-                    artifacts[index].outputURLs.count != previousOutputCount {
-                    invalidatedArtifactIDs.insert(artifacts[index].id)
+                let frames = artifacts[index].frames.count, outputs = artifacts[index].outputURLs.count
+                artifacts[index].frames.removeAll(where: referencesFrame)
+                artifacts[index].outputURLs.removeAll { identity($0.path).map(sourcePaths.contains) == true }
+                if frames != artifacts[index].frames.count || outputs != artifacts[index].outputURLs.count {
+                    changedSequences.insert(artifacts[index].id)
                     Self.refreshSourceSequenceSummary(&artifacts[index])
                     artifacts[index].updatedAt = Date()
                 }
-                if artifacts[index].frameCount == 0 {
-                    removedArtifactIDs.insert(artifacts[index].id)
-                }
-                continue
+                if artifacts[index].frameCount == 0 { pending.append(index) }
             }
-
-            let referencesAsset = Self.valuesReferenceAsset(
-                artifacts[index].parameters,
-                assetID: assetIDText,
-                path: removedPath
-            ) || Self.valuesReferenceAsset(
-                artifacts[index].metrics,
-                assetID: assetIDText,
-                path: removedPath
-            ) || artifacts[index].outputURLs.contains(where: {
-                Self.urlsReferenceSameFile($0, removedAsset.originalURL)
-            }) || artifacts[index].frames.contains {
-                Self.frameReferencesAsset($0, assetID: assetIDText, url: removedAsset.originalURL)
+            let artifact = artifacts[index]
+            let values = Array(artifact.parameters.values) + artifact.metrics.values
+            let inputs = Set(values.compactMap(identity) + artifact.frames.compactMap { $0.sourceURL.flatMap { identity($0.path) } })
+            if !inputs.isDisjoint(with: invalidatedPaths) || (artifact.kind != .rawSequence && (
+                values.contains(where: referencesAsset) || artifact.frames.contains(where: referencesFrame) ||
+                artifact.outputURLs.contains { identity($0.path).map(sourcePaths.contains) == true })) {
+                pending.append(index)
             }
-            let referencesRemovedOutput = artifacts[index].parameters.values.contains {
-                Self.pathSet(invalidatedPaths, containsStoredPath: $0)
-            } || artifacts[index].metrics.values.contains {
-                Self.pathSet(invalidatedPaths, containsStoredPath: $0)
-            } ||
-                artifacts[index].frames.contains { frame in
-                    frame.sourceURL.map { Self.pathSet(invalidatedPaths, contains: $0) } == true
-                }
-            if referencesAsset || referencesRemovedOutput {
-                removedArtifactIDs.insert(artifacts[index].id)
-            }
+            for path in inputs { consumingArtifacts[path, default: []].append(index) }
+            for parent in artifact.sourceArtifactIDs { children[parent, default: []].append(index) }
         }
-
-        for artifact in artifacts where removedArtifactIDs.contains(artifact.id) {
-            for url in artifact.outputURLs {
-                invalidatedPaths.insert(Self.assetIdentityPath(for: url))
-            }
-            for frame in artifact.frames {
-                if let outputURL = frame.outputURL {
-                    invalidatedPaths.insert(Self.assetIdentityPath(for: outputURL))
-                }
-            }
+        for id in changedSequences {
+            pending.append(contentsOf: (children[id] ?? []).filter { !Self.artifactRecordsSourceAssets(artifacts[$0]) })
         }
-
-        var foundArtifact = true
-        while foundArtifact {
-            foundArtifact = false
-            for artifact in artifacts where removedArtifactIDs.contains(artifact.id) == false {
-                let referencesRemovedSource = artifact.sourceArtifactIDs.contains(where: removedArtifactIDs.contains)
-                let referencesChangedSource = artifact.sourceArtifactIDs.contains(where: invalidatedArtifactIDs.contains)
-                let referencesInvalidSource = referencesRemovedSource ||
-                    (referencesChangedSource && Self.artifactRecordsSourceAssets(artifact) == false)
-                let referencesInvalidPath = artifact.parameters.values.contains {
-                    Self.pathSet(invalidatedPaths, containsStoredPath: $0)
-                } || artifact.metrics.values.contains {
-                    Self.pathSet(invalidatedPaths, containsStoredPath: $0)
-                } ||
-                    artifact.frames.contains { frame in
-                        frame.sourceURL.map { Self.pathSet(invalidatedPaths, contains: $0) } == true
-                    }
-                guard referencesInvalidSource || referencesInvalidPath else {
-                    continue
-                }
-                removedArtifactIDs.insert(artifact.id)
-                for url in artifact.outputURLs {
-                    invalidatedPaths.insert(Self.assetIdentityPath(for: url))
-                }
-                for frame in artifact.frames {
-                    if let outputURL = frame.outputURL {
-                        invalidatedPaths.insert(Self.assetIdentityPath(for: outputURL))
-                    }
-                }
-                foundArtifact = true
-            }
-        }
-        for artifact in artifacts where removedArtifactIDs.contains(artifact.id) {
-            for url in artifact.outputURLs {
-                invalidatedPaths.insert(Self.assetIdentityPath(for: url))
-            }
-            for frame in artifact.frames {
-                if let outputURL = frame.outputURL {
-                    invalidatedPaths.insert(Self.assetIdentityPath(for: outputURL))
+        while let index = pending.popLast() {
+            let artifact = artifacts[index]
+            guard removedArtifactIDs.insert(artifact.id).inserted else { continue }
+            pending.append(contentsOf: children[artifact.id] ?? [])
+            for url in artifact.outputURLs + artifact.frames.compactMap(\.outputURL) {
+                if let path = identity(url.path), invalidatedPaths.insert(path).inserted {
+                    pending.append(contentsOf: consumingArtifacts[path] ?? [])
                 }
             }
         }
 
         var removedLayerIDs = Set(layers.compactMap { layer -> ProcessingLayer.ID? in
-            let referencesAsset = layer.parameters["assetID"] == assetIDText ||
-                layer.inputURL.map { Self.urlsReferenceSameFile($0, removedAsset.originalURL) } == true
+            let referencesAsset = layer.parameters["assetID"].map(idTexts.contains) == true ||
+                layer.inputURL.flatMap { identity($0.path) }.map(sourcePaths.contains) == true
             let referencesRemovedOperation = layer.parameters["operationID"]
                 .flatMap(UUID.init(uuidString:))
                 .map(removedOperationIDs.contains) == true
             let referencesRemovedArtifact = layer.sourceArtifactID.map(removedArtifactIDs.contains) == true
             let referencesRemovedOutput = layer.inputURL.map {
-                Self.pathSet(invalidatedPaths, contains: $0)
+                identity($0.path).map(invalidatedPaths.contains) == true
             } == true
             return referencesAsset || referencesRemovedOperation || referencesRemovedArtifact || referencesRemovedOutput
                 ? layer.id
@@ -320,26 +285,30 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
                     .flatMap(UUID.init(uuidString:))
                     .map(removedLayerIDs.contains) == true
                 let referencesInvalidPath = layer.inputURL.map {
-                    Self.pathSet(invalidatedPaths, contains: $0)
+                    identity($0.path).map(invalidatedPaths.contains) == true
                 } == true
                 guard referencesRemovedLayer || referencesInvalidPath else {
                     continue
                 }
                 removedLayerIDs.insert(layer.id)
                 if let inputURL = layer.inputURL {
-                    invalidatedPaths.insert(Self.assetIdentityPath(for: inputURL))
+                    if let path = identity(inputURL.path) { invalidatedPaths.insert(path) }
                 }
                 foundLayer = true
             }
         }
         for layer in layers where removedLayerIDs.contains(layer.id) {
             if let inputURL = layer.inputURL {
-                invalidatedPaths.insert(Self.assetIdentityPath(for: inputURL))
+                if let path = identity(inputURL.path) { invalidatedPaths.insert(path) }
             }
         }
 
-        assets.removeAll { $0.id == assetID }
-        mosaicPanelOrder.removeAll { $0 == assetID }
+        let previousLights = lightAssetIDs
+        deepSkySettings?.updateAssetRoles(urls: removed.map(\.originalURL), newRole: nil)
+        assets.removeAll { assetIDs.contains($0.id) }
+        let currentLights = lightAssetIDs
+        deepSkySettings?.updateLightSequence(from: previousLights, to: currentLights)
+        mosaicPanelOrder.removeAll { assetIDs.contains($0) }
         editGraph.operations.removeAll { removedOperationIDs.contains($0.id) }
         artifacts.removeAll { removedArtifactIDs.contains($0.id) }
         layers.removeAll { removedLayerIDs.contains($0.id) }
@@ -347,11 +316,11 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
             layers[index].maskArtifactID = nil
         }
         batchQueue.removeAll { item in
-            Self.pathSet(invalidatedPaths, contains: item.inputURL) ||
-                item.outputURL.map { Self.pathSet(invalidatedPaths, contains: $0) } == true
+            identity(item.inputURL.path).map(invalidatedPaths.contains) == true ||
+                item.outputURL.map { identity($0.path).map(invalidatedPaths.contains) == true } == true
         }
 
-        if workspaceState?.selectedAssetID == assetID {
+        if workspaceState?.selectedAssetID.map(assetIDs.contains) == true {
             workspaceState?.selectedAssetID = assets.first?.id
         }
         if let activeLayerID = workspaceState?.activeLayerID,
@@ -359,7 +328,7 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
             workspaceState?.activeLayerID = nil
         }
         let invalidPreview = workspaceState?.previewURL.map {
-            Self.pathSet(invalidatedPaths, contains: $0)
+            identity($0.path).map(invalidatedPaths.contains) == true
         } == true
         let invalidPreviewOperation = workspaceState?.previewOperationID.map(removedOperationIDs.contains) == true
         if invalidPreview || invalidPreviewOperation {
@@ -750,16 +719,22 @@ public struct PhotonStackProject: Identifiable, Codable, Equatable, Sendable {
     }
 
     public mutating func updateRole(for assetID: UUID, role: CalibrationFrameRole) {
-        guard let index = assets.firstIndex(where: { $0.id == assetID }) else {
-            return
-        }
-        assets[index].role = role
+        updateRoles(for: [assetID], role: role)
+    }
+
+    public mutating func updateRoles(for assetIDs: Set<UUID>, role: CalibrationFrameRole) {
+        let changed = assets.indices.filter { assetIDs.contains(assets[$0].id) && assets[$0].role != role }
+        guard !changed.isEmpty else { return }
+        let previousLights = lightAssetIDs
+        deepSkySettings?.updateAssetRoles(urls: changed.map { assets[$0].originalURL }, newRole: role)
+        for index in changed { assets[index].role = role }
+        let currentLights = lightAssetIDs
+        deepSkySettings?.updateLightSequence(from: previousLights, to: currentLights)
         if role == .mosaic {
-            if mosaicPanelOrder.contains(assetID) == false {
-                mosaicPanelOrder.append(assetID)
-            }
+            let ordered = Set(mosaicPanelOrder)
+            mosaicPanelOrder.append(contentsOf: changed.map { assets[$0].id }.filter { !ordered.contains($0) })
         } else {
-            mosaicPanelOrder.removeAll { $0 == assetID }
+            mosaicPanelOrder.removeAll { assetIDs.contains($0) }
         }
         updatedAt = Date()
     }

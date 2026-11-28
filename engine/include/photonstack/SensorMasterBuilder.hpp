@@ -12,12 +12,13 @@ namespace photonstack {
 // nonfinite values become NaN; finite values outside Float32 range are errors.
 class SensorFitsReader {
   public:
-    explicit SensorFitsReader(const std::filesystem::path& path);
+    explicit SensorFitsReader(const std::filesystem::path& path, bool hashWhileReading = false);
     ~SensorFitsReader();
     SensorFitsReader(SensorFitsReader&&) noexcept;
     SensorFitsReader& operator=(SensorFitsReader&&) noexcept;
     const CalibrationAcquisition& metadata() const;
     void read(std::size_t start, std::span<float> samples);
+    std::string sourceSHA256();
 
   private:
     struct Impl;
@@ -43,6 +44,7 @@ struct SensorMasterResult {
     CalibrationAcquisition acquisition;
     std::string role, biasState, method;
     std::vector<SensorMasterSource> sources;
+    std::optional<SensorMasterSource> bias, darkFlat;
     std::vector<std::array<double, 4>> normalization;
     std::size_t invalidPixels = 0, missingSamples = 0, workingBytes = 0, tilePixels = 0;
     unsigned workers = 1;

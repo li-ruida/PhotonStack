@@ -75,7 +75,9 @@ final class PhotonStackMacAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let hasUnsavedDocument = sender.windows.contains(where: { $0.isDocumentEdited })
+        let hasUnsavedDocument = sender.windows.contains(where: {
+            $0.isDocumentEdited && ($0.isVisible || $0.isMiniaturized) && !($0 is NSPanel)
+        })
         let hasActiveProcessing = PhotonStackApplicationActivity.hasActiveProcessing
         if hasUnsavedDocument == false,
            hasActiveProcessing == false,

@@ -1,3 +1,4 @@
+#include "photonstack/ParallelRanges.hpp"
 #include "photonstack/CfaDrizzle.hpp"
 #include <algorithm>
 #include <cmath>
@@ -89,16 +90,19 @@ void CfaDrizzleAccumulator::add(const CfaDrizzleFrame& f) {
                 "CFA transform outside supported coordinate range");
     }
     // Restrict work to sensor centers whose transformed droplets can intersect the canvas.
-    double xmin = double(f.width), xmax = -1, ymin = double(f.height), ymax = -1;
-    for (double x : {0., double(o.width)}) for (double y : {0., double(o.height)}) {
-        double qx = x/o.scale + o.originX-.5-tx, qy = y/o.scale + o.originY-.5-ty;
-        double sx = (d*qx-b*qy)/det, sy = (-c*qx+a*qy)/det;
-        xmin=std::min(xmin,sx); xmax=std::max(xmax,sx); ymin=std::min(ymin,sy); ymax=std::max(ymax,sy);
-    }
     const double half = o.pixfrac * .5;
     auto bound = [](double v, unsigned size) { return int(std::clamp(v, 0., double(size))); };
-    const int x0=bound(std::floor(xmin-half),f.width), x1=bound(std::ceil(xmax+half)+1,f.width);
-    const int y0=bound(std::floor(ymin-half),f.height), y1=bound(std::ceil(ymax+half)+1,f.height);
+    const auto sourceBounds = [&](double first, double last) {
+        double xmin = double(f.width), xmax = -1, ymin = double(f.height), ymax = -1;
+        for (double x : {0., double(o.width)}) for (double y : {first, last}) {
+            double qx = x/o.scale + o.originX-.5-tx, qy = y/o.scale + o.originY-.5-ty;
+            double sx = (d*qx-b*qy)/det, sy = (-c*qx+a*qy)/det;
+            xmin=std::min(xmin,sx); xmax=std::max(xmax,sx); ymin=std::min(ymin,sy); ymax=std::max(ymax,sy);
+        }
+        return std::array<int, 4>{bound(std::floor(xmin-half),f.width), bound(std::ceil(xmax+half)+1,f.width),
+                                  bound(std::floor(ymin-half),f.height), bound(std::ceil(ymax+half)+1,f.height)};
+    };
+    const auto [x0, x1, y0, y1] = sourceBounds(0., o.height);
     const double area = std::abs(det)*o.scale*o.scale*o.pixfrac*o.pixfrac;
     // Reject calibration overflow before changing any sums. Scientific output is Float32.
     for (int y=y0; y<y1; ++y) for (int x=x0; x<x1; ++x) {
@@ -110,41 +114,48 @@ void CfaDrizzleAccumulator::add(const CfaDrizzleFrame& f) {
         require(finite(value) && std::abs(value)<=std::numeric_limits<float>::max(),
                 "Calibrated CFA sample exceeds Float32 scientific range");
     }
-    for (int y=y0; y<y1; ++y) for (int x=x0; x<x1; ++x) {
-        const auto src = std::size_t(y)*f.width+x;
-        const double valid = f.validity.empty() ? 1 : f.validity[src];
-        if (!finite(f.samples[src]) || !finite(valid) || valid <= 0 || valid > 1) continue;
-        const auto ch = colorAt(f.pattern, x, y, f.xOffset, f.yOffset);
-        const double value = (f.samples[src]-f.background[ch])*f.gain[ch];
-        if (!finite(value)) continue;
-        Polygon drop;
-        drop.size=4; drop.p[0]=map(x-half,y-half); drop.p[1]=map(x+half,y-half);
-        drop.p[2]=map(x+half,y+half); drop.p[3]=map(x-half,y+half);
-        double lx=drop.p[0].x, hx=lx, ly=drop.p[0].y, hy=ly;
-        for (int k=1;k<4;++k) { lx=std::min(lx,drop.p[k].x); hx=std::max(hx,drop.p[k].x);
-            ly=std::min(ly,drop.p[k].y); hy=std::max(hy,drop.p[k].y); }
-        const int ox0=bound(std::floor(lx+.5),o.width), ox1=bound(std::ceil(hx+.5),o.width);
-        const int oy0=bound(std::floor(ly+.5),o.height), oy1=bound(std::ceil(hy+.5),o.height);
-        for (int oy=oy0;oy<oy1;++oy) for (int ox=ox0;ox<ox1;++ox) {
-            const double w = overlap(drop,ox,oy)/area * f.weight * valid;
-            const auto dest = (std::size_t(oy)*o.width+ox)*3+ch;
-            sums_[dest] += w*value; weights_[dest] += w;
+    // A worker owns complete output rows. Source order within every sum stays unchanged.
+    detail::parallelRanges(o.height, std::max<std::size_t>(16, 65536 / o.width),
+                           [&](std::size_t first, std::size_t last) noexcept {
+        const auto [sx0, sx1, sy0, sy1] = sourceBounds(first, last);
+        for (int y=sy0; y<sy1; ++y) for (int x=sx0; x<sx1; ++x) {
+            const auto src = std::size_t(y)*f.width+x;
+            const double valid = f.validity.empty() ? 1 : f.validity[src];
+            if (!finite(f.samples[src]) || !finite(valid) || valid <= 0 || valid > 1) continue;
+            const auto ch = colorAt(f.pattern, x, y, f.xOffset, f.yOffset);
+            const double value = (f.samples[src]-f.background[ch])*f.gain[ch];
+            if (!finite(value)) continue;
+            Polygon drop;
+            drop.size=4; drop.p[0]=map(x-half,y-half); drop.p[1]=map(x+half,y-half);
+            drop.p[2]=map(x+half,y+half); drop.p[3]=map(x-half,y+half);
+            double lx=drop.p[0].x, hx=lx, ly=drop.p[0].y, hy=ly;
+            for (int k=1;k<4;++k) { lx=std::min(lx,drop.p[k].x); hx=std::max(hx,drop.p[k].x);
+                ly=std::min(ly,drop.p[k].y); hy=std::max(hy,drop.p[k].y); }
+            const int ox0=bound(std::floor(lx+.5),o.width), ox1=bound(std::ceil(hx+.5),o.width);
+            const int oy0=bound(std::floor(ly+.5),o.height), oy1=bound(std::ceil(hy+.5),o.height);
+            for (int oy=std::max(oy0, int(first));oy<std::min(oy1, int(last));++oy) for (int ox=ox0;ox<ox1;++ox) {
+                const double w = overlap(drop,ox,oy)/area * f.weight * valid;
+                const auto dest = (std::size_t(oy)*o.width+ox)*3+ch;
+                sums_[dest] += w*value; weights_[dest] += w;
+            }
         }
-    }
+    });
 }
 
 ImageBuffer CfaDrizzleAccumulator::image() const {
     ImageBuffer out; out.width=options_.width; out.height=options_.height;
     out.pixels.resize(out.sampleCount());
-    for (std::size_t i=0;i<out.pixelCount();++i) {
-        bool complete=true;
-        for (unsigned c=0;c<3;++c) {
-            const auto k=i*3+c;
-            if (weights_[k]>0) out.pixels[i*4+c]=static_cast<float>(sums_[k]/weights_[k]);
-            else { out.pixels[i*4+c]=std::numeric_limits<float>::quiet_NaN(); complete=false; }
+    detail::parallelRanges(out.pixelCount(), 32768, [&](std::size_t first, std::size_t last) noexcept {
+        for (std::size_t i=first;i<last;++i) {
+            bool complete=true;
+            for (unsigned c=0;c<3;++c) {
+                const auto k=i*3+c;
+                if (weights_[k]>0) out.pixels[i*4+c]=static_cast<float>(sums_[k]/weights_[k]);
+                else { out.pixels[i*4+c]=std::numeric_limits<float>::quiet_NaN(); complete=false; }
+            }
+            out.pixels[i*4+3]=complete?1.F:0.F;
         }
-        out.pixels[i*4+3]=complete?1.F:0.F;
-    }
+    });
     return out;
 }
 } // namespace photonstack

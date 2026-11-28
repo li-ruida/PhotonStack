@@ -20,6 +20,12 @@ struct CalibrationAcquisition {
     std::map<std::string, std::vector<std::string>> keys;
     std::vector<CalibrationMetadataIssue> issues;
 };
+struct VerifiedAcquisition {
+    CalibrationAcquisition metadata;
+    std::string sha;
+    std::uint64_t bytes;
+};
+VerifiedAcquisition inspectVerifiedAcquisition(const std::filesystem::path& path);
 CalibrationAcquisition inspectCalibrationAcquisition(const std::filesystem::path& path);
 std::string calibrationFrameType(const CalibrationAcquisition& acquisition);
 

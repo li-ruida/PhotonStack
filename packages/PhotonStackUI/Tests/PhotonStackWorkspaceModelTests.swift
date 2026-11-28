@@ -153,8 +153,8 @@ import Testing
     #expect(snapshot.calibrateCalls == 0)
     #expect(snapshot.convertCalls == 2)
     #expect(snapshot.stackInputs.map(\.lastPathComponent) == [
-        "photonstack-light-a.decoded.fits",
-        "photonstack-light-b.decoded.fits",
+        "\(project.assets[0].id)-photonstack-light-a.decoded.fits",
+        "\(project.assets[1].id)-photonstack-light-b.decoded.fits",
     ])
     #expect(snapshot.convertOptions.allSatisfy { $0.fitsValueMode == .scientific })
     #expect(snapshot.autoStretchInputs.first?.lastPathComponent == "stack-background.fits")
@@ -5218,7 +5218,7 @@ import Testing
     #expect(model.hasUnsavedChanges)
 }
 
-@Test @MainActor func layerAdjustmentSessionsOnlyCommitUndoHistoryAfterSuccessfulChanges() throws {
+@Test @MainActor func layerAdjustmentSessionsOnlyCommitUndoHistoryAfterSuccessfulChanges() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("PhotonStackLayerAdjustmentSession-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -5295,6 +5295,25 @@ import Testing
     workingModel.stepBackPreview()
     #expect(workingModel.layerMaskDensity(layer.id) == 1)
     #expect(workingModel.canStepBack == false)
+
+    // Drive the same asynchronous commits as the desktop sliders.
+    for control in [PhotonStackWorkspaceModel.LayerSliderValue.opacity(0.35), .maskDensity(0.6), .maskFeather(0.2)] {
+        workingModel.commitLayerSlider(control, to: layer.id)
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while workingModel.hasActiveProcessing && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(!workingModel.hasActiveProcessing && workingModel.errorMessage == nil)
+    }
+    #expect(workingModel.layerOpacity(layer.id) == 0.35)
+    #expect(workingModel.layerMaskDensity(layer.id) == 0.6)
+    #expect(abs(workingModel.layerMaskFeatherRadius(layer.id) - 0.2) < 0.000001)
+    let composite = try #require(workingModel.previewURL)
+    #expect(FileManager.default.fileExists(atPath: composite.path))
+    workingModel.stepBackPreview()
+    #expect(workingModel.layerMaskFeatherRadius(layer.id) == 0)
+    blockedModel.commitLayerSlider(.opacity(0.35), to: layer.id)
+    #expect(blockedModel.layerOpacity(layer.id) == 1 && !blockedModel.canStepBack)
 }
 
 @Test @MainActor func missingLayerMaskCanBeDetachedButNotAdjustedOrReshown() throws {
@@ -15100,4 +15119,25 @@ private actor RecordingProcessingService: ProcessingService {
                   "replay":replayed.path,"export":exported.path,"project":projectDirectory.path]
     let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted,.sortedKeys]
     try encoder.encode(report).write(to: directory.appendingPathComponent("result.json"))
+}
+
+
+@Test @MainActor func auditLegacyStackKeepsSameNamedFramesDistinct() async throws {
+    for calibrated in [false, true] {
+        let service = RecordingProcessingService()
+        var project = PhotonStackProject()
+        project.addAssets(from: [URL(fileURLWithPath: "/tmp/night-a/light.nef"), URL(fileURLWithPath: "/tmp/night-b/light.nef")])
+        if calibrated { project.addAssets(from: [URL(fileURLWithPath: "/tmp/dark.nef")], role: .dark) }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuditStack-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = PhotonStackWorkspaceModel(project: project,
+            parameters: ProcessingParameters(workflowStackMethod: .average, workflowAlignment: .none),
+            autosaveEnabled: false, processingService: service, previewDirectory: root)
+        await model.runStackWorkflow()
+        let snapshot = await service.snapshot()
+        #expect(model.latestJob?.status == .succeeded)
+        #expect(snapshot.stackInputs.count == 2)
+        #expect(Set(snapshot.stackInputs).count == 2)
+        #expect(snapshot.calibrateCalls == (calibrated ? 2 : 0))
+    }
 }

@@ -40,41 +40,61 @@ struct DeepSkyReviewView: View {
     @State private var notice: String?
     @State private var exclusionCode: String?
     @State private var prepared: (report: DeepSkyReport, evidence: DeepSkyReviewEvidence)?
+    private struct Request: Equatable {
+        let report: DeepSkyReport
+        let settings: DeepSkySettings
+        let current: Bool
+        let filter: DeepSkyReviewFilter
+        let query: String
+        let sort: DeepSkyReviewSort
+        let reason: String?
+    }
+    private struct Presentation {
+        let selection: DeepSkyReviewSelection
+        let listing: DeepSkyReview.Listing
+        let visible: [DeepSkyReport.Frame]
+        let paths: [String]
+    }
+    @State private var presentation: Presentation?
     private var chinese: Bool { model.language == .simplifiedChinese }
 
     var body: some View {
+        let request = Request(report: report, settings: settings, current: reportIsCurrent, filter: filter,
+                              query: query, sort: sort, reason: exclusionCode)
         Group {
-            if let prepared, prepared.report == report {
-                workbench(context: prepared.evidence)
+            if let prepared, prepared.report == report, let presentation {
+                workbench(context: prepared.evidence, presentation: presentation)
             } else {
                 ProgressView().accessibilityLabel(chinese ? "读取筛片结果" : "Loading frame review")
             }
         }
-        .onChange(of: report, initial: true) { _, value in
-            prepared = (value, DeepSkyReviewEvidence(report: value))
-            undo = []
-            notice = nil
-            exclusionCode = nil
-            focus = DeepSkyReviewFocus()
+        .onChange(of: request, initial: true) { old, new in
+            let changed = prepared?.report != report
+            if changed {
+                prepared = (report, DeepSkyReviewEvidence(report: report))
+                undo = []
+                notice = nil
+                exclusionCode = nil
+                focus = DeepSkyReviewFocus()
+            }
+            guard let evidence = prepared?.evidence else { return }
+            let selection = DeepSkyReviewSelection(report: report, settings: settings, isCurrent: reportIsCurrent)
+            let listing = DeepSkyReview.listing(report.frames, selection: selection, filter: filter, query: query,
+                                                sort: sort, index: evidence.searchTerms)
+            let visible: [DeepSkyReport.Frame]
+            if filter == .excluded, let exclusionCode {
+                visible = listing.frames.filter { DeepSkyReviewEvidence.exclusionCodes($0, selection: selection).contains(exclusionCode) }
+            } else { visible = listing.frames }
+            presentation = Presentation(selection: selection, listing: listing, visible: visible, paths: visible.map(\.input))
+            if changed || old.filter != new.filter || old.query != new.query || old.reason != new.reason {
+                focus.open(representative(in: visible, selection: selection))
+            } else { focus.reconcile(with: visible.map(\.input)) }
         }
     }
 
-    private struct Scope: Equatable {
-        var filter: DeepSkyReviewFilter
-        var query: String
-        var exclusionCode: String?
-    }
-
-    private func workbench(context: DeepSkyReviewEvidence) -> some View {
-        let selection = DeepSkyReviewSelection(report: report, settings: settings, isCurrent: reportIsCurrent)
-        let listing = DeepSkyReview.listing(report.frames, selection: selection, filter: filter, query: query, sort: sort)
-        let visible: [DeepSkyReport.Frame]
-        if filter == .excluded, let exclusionCode {
-            visible = listing.frames.filter { DeepSkyReviewEvidence.exclusionCodes($0, selection: selection).contains(exclusionCode) }
-        } else {
-            visible = listing.frames
-        }
-        let paths = visible.map(\.input)
+    private func workbench(context: DeepSkyReviewEvidence, presentation: Presentation) -> some View {
+        let selection = presentation.selection, listing = presentation.listing
+        let visible = presentation.visible, paths = presentation.paths
         let chosen = visible.filter { focus.selected.contains($0.input) }
         let focused = visible.first { $0.input == focus.focused }
         return VStack(alignment: .leading, spacing: 8) {
@@ -112,10 +132,7 @@ struct DeepSkyReviewView: View {
             }
             actions(chosen, selection: selection)
         }
-        .onChange(of: Scope(filter: filter, query: query, exclusionCode: exclusionCode), initial: true) { _, _ in
-            focus.open(representative(in: visible, selection: selection))
-        }
-        .onChange(of: paths) { _, updated in focus.reconcile(with: updated) }
+
     }
 
     private func representative(in frames: [DeepSkyReport.Frame], selection: DeepSkyReviewSelection) -> String? {

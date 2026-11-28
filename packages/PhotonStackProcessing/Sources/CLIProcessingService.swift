@@ -1,16 +1,18 @@
 import Foundation
 import ImageIO
+import os
 import PhotonStackAppCore
 
 #if os(macOS)
 import Darwin
 
-private struct AtomicOutputTransaction: Sendable {
+struct AtomicOutputTransaction: Sendable {
     let destinationURL: URL
     let temporaryURL: URL
     let processArguments: [String]
     let isDirectory: Bool
     let requiresNewDestination: Bool
+    private let mayCleanStaging = OSAllocatedUnfairLock(initialState: true)
 
     init?(arguments: [String], workingDirectory: URL, externalOutputIndex: Int? = nil) {
         // These workflows own their new directories and durable journals.
@@ -52,27 +54,48 @@ private struct AtomicOutputTransaction: Sendable {
         self.temporaryURL = temporaryURL
         self.processArguments = processArguments
         self.isDirectory = isDirectory
-        self.requiresNewDestination = externalOutputIndex != nil || arguments.first == "spcc" || arguments.first?.hasPrefix("spcc-") == true || arguments.first?.hasPrefix("sky-annotat") == true || arguments.first?.hasPrefix("plate-solve") == true || arguments.first?.hasPrefix("ghs-") == true || arguments.first?.hasPrefix("psf-") == true || arguments.first?.hasPrefix("channel-") == true || arguments.first?.hasPrefix("narrowband-") == true || arguments.first?.hasPrefix("sensor-master-") == true || arguments.first == "star-layers" || arguments.first == "background-review" || arguments.first == "frequency-stack" || arguments.first == "suppress-grid"
+        self.requiresNewDestination = externalOutputIndex != nil || Self.requiresNewOutput(arguments)
+    }
+
+    private static func requiresNewOutput(_ arguments: [String]) -> Bool {
+        guard let command = arguments.first else { return false }
+        if command == "develop" { return arguments.contains("--statistics-reference") }
+        if ["spcc", "star-layers", "background-review", "frequency-stack", "suppress-grid",
+            "review-preview", "denoise-nonlocal"].contains(command) { return true }
+        return ["spcc-", "sky-annotat", "plate-solve", "ghs-", "psf-", "channel-",
+                "narrowband-", "sensor-master-"].contains { command.hasPrefix($0) }
     }
 
     func commit() throws {
-        if isDirectory,
-           FileManager.default.fileExists(atPath: destinationURL.path) {
+        var prior = stat()
+        if isDirectory, lstat(destinationURL.path, &prior) == 0 {
+            guard prior.st_mode & S_IFMT == S_IFDIR else {
+                throw ProcessingServiceError.outputCommitFailed(path: destinationURL.path, reason: "Expected a directory")
+            }
             if requiresNewDestination {
                 throw ProcessingServiceError.outputCommitFailed(path: destinationURL.path, reason: "Output already exists")
             }
-            let result = temporaryURL.withUnsafeFileSystemRepresentation { temporaryPath in
-                destinationURL.withUnsafeFileSystemRepresentation { destinationPath in
-                    guard let temporaryPath, let destinationPath else {
-                        errno = EINVAL
-                        return Int32(-1)
-                    }
-                    return Darwin.renamex_np(temporaryPath, destinationPath, UInt32(RENAME_SWAP))
-                }
+            var staged = stat()
+            guard lstat(temporaryURL.path, &staged) == 0, staged.st_mode & S_IFMT == S_IFDIR else {
+                throw ProcessingServiceError.outputCommitFailed(path: temporaryURL.path, reason: "Expected a staged directory")
             }
-            guard result == 0 else {
-                let error = String(cString: strerror(errno))
-                throw ProcessingServiceError.outputCommitFailed(path: destinationURL.path, reason: error)
+            func swapped() -> Bool {
+                Darwin.renamex_np(temporaryURL.path, destinationURL.path, UInt32(RENAME_SWAP)) == 0
+            }
+            func matches(_ url: URL, _ expected: stat) -> Bool {
+                var actual = stat()
+                return lstat(url.path, &actual) == 0 && actual.st_dev == expected.st_dev &&
+                    actual.st_ino == expected.st_ino && actual.st_mode & S_IFMT == S_IFDIR
+            }
+            guard swapped() else {
+                throw ProcessingServiceError.outputCommitFailed(path: destinationURL.path, reason: String(cString: strerror(errno)))
+            }
+            guard matches(temporaryURL, prior) else {
+                // The object displaced by the swap changed after validation.
+                let restored = matches(destinationURL, staged) && swapped()
+                if !restored { mayCleanStaging.withLock { $0 = false } }
+                throw ProcessingServiceError.outputCommitFailed(path: destinationURL.path, reason: restored
+                    ? "Destination changed during publication" : "Destination changed. Displaced entry preserved at \(temporaryURL.path)")
             }
             try? FileManager.default.removeItem(at: temporaryURL)
             return
@@ -86,7 +109,7 @@ private struct AtomicOutputTransaction: Sendable {
                 }
                 // Preserve commands' explicit new-output contract after
                 // staging, including files created while the CLI was running.
-                if requiresNewDestination {
+                if requiresNewDestination || isDirectory {
                     return Darwin.renamex_np(temporaryPath, destinationPath, UInt32(RENAME_EXCL))
                 }
                 return Darwin.rename(temporaryPath, destinationPath)
@@ -99,6 +122,7 @@ private struct AtomicOutputTransaction: Sendable {
     }
 
     func cleanUp() {
+        guard mayCleanStaging.withLock({ $0 }) else { return }
         try? FileManager.default.removeItem(at: temporaryURL)
     }
 
@@ -516,6 +540,11 @@ public final class CLIProcessingService: ProcessingService {
     }
 
     public func curves(input: URL, output: URL, points: [(Double, Double)], channel: CurveChannel) async throws -> ProcessingCommandResult {
+        try await curves(input: input, output: output, points: points, channel: channel,
+                         rawOptions: RawProcessingOptions(linearOutput: false))
+    }
+
+    public func curves(input: URL, output: URL, points: [(Double, Double)], channel: CurveChannel, rawOptions: RawProcessingOptions) async throws -> ProcessingCommandResult {
         let encodedPoints = points
             .map { "\($0.0):\($0.1)" }
             .joined(separator: ",")
@@ -526,7 +555,7 @@ public final class CLIProcessingService: ProcessingService {
             "--output", output.path,
             "--points", encodedPoints,
             "--channel", channel.rawValue,
-        ])
+        ] + Self.rawArguments(for: rawOptions))
     }
 
     public func localContrast(input: URL, output: URL, amount: Double = 0.25, radius: Int = 8) async throws -> ProcessingCommandResult {
@@ -1000,7 +1029,7 @@ public final class CLIProcessingService: ProcessingService {
                         } else if process.terminationStatus == 0 {
                             if let expectedOutput = externalOutputIndex.map({ (path: processArguments[$0], isDirectory: false) }) ?? Self.expectedOutput(in: processArguments) {
                                 let outputPath = outputTransaction?.destinationURL.path ?? expectedOutput.path
-                                switch Self.validateOutput(expectedOutput, relativeTo: workingDirectory, command: arguments.first) {
+                                switch Self.validateOutput(expectedOutput, relativeTo: workingDirectory, command: arguments.first, external: externalOutputIndex != nil) {
                                 case .valid:
                                     break
                                 case .missing:
@@ -1018,6 +1047,7 @@ public final class CLIProcessingService: ProcessingService {
                                 }
                             }
                             do {
+                                if processBox.isCancelled() { throw CancellationError() }
                                 try outputTransaction?.commit()
                             } catch {
                                 outputTransaction?.cleanUp()
@@ -1083,7 +1113,7 @@ public final class CLIProcessingService: ProcessingService {
     private static func validateOutput(
         _ expectedOutput: (path: String, isDirectory: Bool),
         relativeTo workingDirectory: URL,
-        command: String? = nil
+        command: String?, external: Bool
     ) -> ExpectedOutputValidation {
         let url = URL(fileURLWithPath: expectedOutput.path, relativeTo: workingDirectory).standardizedFileURL
         var isDirectory = ObjCBool(false)
@@ -1117,6 +1147,22 @@ public final class CLIProcessingService: ProcessingService {
             }
             var foundRegularFile = false
             var foundReadableImage = false
+            var batch: [URL] = []
+            func validateBatch(_ urls: [URL]) -> Bool {
+                guard !urls.isEmpty else { return true }
+                let valid = OSAllocatedUnfairLock(initialState: true)
+                let workers = min(4, urls.count)
+                DispatchQueue.concurrentPerform(iterations: workers) { worker in
+                    for i in stride(from: worker, to: urls.count, by: workers) {
+                        guard valid.withLock({ $0 }) else { return }
+                        if !Self.isReadableImage(urls[i], external: external) {
+                            valid.withLock { $0 = false }
+                            return
+                        }
+                    }
+                }
+                return valid.withLock { $0 }
+            }
             for case let childURL as URL in enumerator {
                 guard let values = try? childURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey]) else {
                     return .invalid
@@ -1129,8 +1175,10 @@ public final class CLIProcessingService: ProcessingService {
                     return .invalid
                 }
                 if Self.isRecognizedImage(childURL) {
-                    guard Self.isReadableImage(childURL) else {
-                        return .invalid
+                    batch.append(childURL)
+                    if batch.count == 32 {
+                        guard validateBatch(batch) else { return .invalid }
+                        batch.removeAll(keepingCapacity: true)
                     }
                     foundReadableImage = true
                 }
@@ -1138,7 +1186,7 @@ public final class CLIProcessingService: ProcessingService {
             guard foundRegularFile else {
                 return .missing
             }
-            return foundReadableImage ? .valid : .invalid
+            return foundReadableImage && validateBatch(batch) ? .valid : .invalid
         }
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               let size = attributes[.size] as? NSNumber,
@@ -1150,7 +1198,7 @@ public final class CLIProcessingService: ProcessingService {
         guard Self.isRecognizedImage(url) else {
             return .valid
         }
-        return Self.isReadableImage(url) ? .valid : .invalid
+        return Self.isReadableImage(url, external: external) ? .valid : .invalid
     }
 
     private static func isRecognizedImage(_ url: URL) -> Bool {
@@ -1161,7 +1209,7 @@ public final class CLIProcessingService: ProcessingService {
         return imageExtensions.contains(url.pathExtension.lowercased())
     }
 
-    private static func isReadableImage(_ url: URL) -> Bool {
+    private static func isReadableImage(_ url: URL, external: Bool) -> Bool {
         if ["fit", "fits", "fts"].contains(url.pathExtension.lowercased()) {
             return isReadableFITS(url)
         }
@@ -1169,6 +1217,13 @@ public final class CLIProcessingService: ProcessingService {
               CGImageSourceGetCount(source) > 0
         else {
             return false
+        }
+        if !external, CGImageSourceGetStatus(source) == .statusComplete,
+           CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete,
+           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
+           let width = properties[kCGImagePropertyPixelWidth as String] as? NSNumber, width.intValue > 0,
+           let height = properties[kCGImagePropertyPixelHeight as String] as? NSNumber, height.intValue > 0 {
+            return true
         }
         let options = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,

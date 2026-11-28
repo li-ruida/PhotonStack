@@ -174,6 +174,7 @@ func constructionChangedProductsRejectReviewSaveExportAndMatching() async throws
     while fm.fileExists(atPath: draft.directory.path) && clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
     #expect(!fm.fileExists(atPath: draft.directory.path))
     model.build(); model.close()
+    while model.busy && clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
     while !(await library.drafts.isEmpty) && clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
     let retained = await library.drafts
     #expect(!model.busy && model.draft == nil && retained.isEmpty)

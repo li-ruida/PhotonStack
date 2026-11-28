@@ -15,16 +15,17 @@ inline constexpr std::size_t maximumAnalysisFrameWorkers = 8;
 
 inline std::size_t analysisFrameCapacity(std::uint64_t pixels, std::uint64_t referencePixels,
                                          std::size_t frames, std::uint32_t sampleSide,
-                                         std::uint64_t memoryBudget, std::size_t cpuLimit) {
+                                         std::uint64_t memoryBudget, std::size_t cpuLimit,
+                                         std::uint64_t pixelBytes = 64, std::uint64_t matchingBytes = 128ULL << 20) {
     constexpr std::uint64_t mib = 1024 * 1024;
-    if (!pixels || pixels > 32 * 1024 * 1024 || referencePixels > 32 * 1024 * 1024 ||
+    if (!pixels || pixels > (1ULL << 32) || referencePixels > (1ULL << 32) ||
         frames > 2000 || sampleSide > 512) return 1;
     // Keep room for all retained temporal grids and the shared float RGBA reference.
     // Per worker allow decoded pixels, Bayer/stellar scratch and matching bins.
     const auto shared = 64 * mib + referencePixels * 16 + frames * std::uint64_t(sampleSide) * sampleSide * 8;
     // Projected star matching builds indexes on the reference canvas, even
     // when an individual light has different dimensions.
-    const auto perFrame = 128 * mib + std::max(pixels, referencePixels) * 64;
+    const auto perFrame = matchingBytes + std::max(pixels, referencePixels) * pixelBytes;
     const auto byMemory = memoryBudget > shared ? (memoryBudget - shared) / perFrame : 0;
     return std::max<std::size_t>(1, std::min<std::size_t>({maximumAnalysisFrameWorkers, cpuLimit, byMemory}));
 }

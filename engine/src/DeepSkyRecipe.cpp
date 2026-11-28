@@ -128,7 +128,7 @@ std::vector<Binding> fields(DeepSkyWorkflowOptions& o) {
         {{"camera", RawWhiteBalanceMode::Camera}, {"auto", RawWhiteBalanceMode::Auto}, {"daylight", RawWhiteBalanceMode::Daylight}, {"manual", RawWhiteBalanceMode::Manual}});
     f.numeric("raw.temperature", "RAW temperature", "RAW 色温", "decode", o.stack.raw.manualWhiteBalanceTemperature, 2000, 50000);
     f.numeric("raw.tint", "RAW tint", "RAW 色调", "decode", o.stack.raw.manualWhiteBalanceTint, -150, 150);
-    f.numeric("raw.exposure", "RAW exposure", "RAW 曝光补偿", "decode", o.stack.raw.exposureBias, -10, 10);
+    f.numeric("raw.exposure", "RAW exposure", "RAW 曝光补偿", "decode", o.stack.raw.exposureBias, -5, 5);
     f.choice<RawBlackLevelMode>("raw.black-level", "RAW black level", "RAW 黑电平", "decode", o.stack.raw.blackLevelMode,
         {{"camera", RawBlackLevelMode::Camera}, {"auto", RawBlackLevelMode::Auto}, {"manual", RawBlackLevelMode::Manual}});
     f.numeric("raw.manual-black", "RAW manual black", "RAW 手动黑电平", "decode", o.stack.raw.manualBlackLevel, 0, 1);

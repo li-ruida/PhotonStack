@@ -1,4 +1,5 @@
 #include "PsfMeasurementCommand.hpp"
+#include "OutputPath.hpp"
 #include <iostream>
 #include "PsfMeasurementRecipe.hpp"
 #include "photonstack/FitsCodec.hpp"
@@ -17,7 +18,12 @@ void preview(const ImageBuffer& source,const PsfMeasurement& measurement,const f
     for(std::size_t i=0;i<image.pixelCount();++i)if(image.pixels[i*4+3]>.99F)for(unsigned c=0;c<3;++c)
         if(std::isfinite(image.pixels[i*4+c]))values.push_back(image.pixels[i*4+c]);
     if(values.empty())throw std::runtime_error("No fully covered preview pixels");
-    std::sort(values.begin(),values.end());const double low=values[std::size_t(.01*(values.size()-1))],high=values[std::size_t(.998*(values.size()-1))];
+    const auto lo = values.begin() + std::size_t(.01 * (values.size() - 1));
+    const auto hi = values.begin() + std::size_t(.998 * (values.size() - 1));
+    std::nth_element(values.begin(), hi, values.end());
+    const double high = *hi;
+    if (lo != hi) std::nth_element(values.begin(), lo, hi);
+    const double low = *lo;
     const double span=std::max(high-low,1e-12);
     for(std::size_t i=0;i<image.pixelCount();++i)for(unsigned c=0;c<3;++c){
         const double value=(image.pixels[i*4+c]-low)/span;
@@ -49,6 +55,8 @@ int runPsfMeasurement(const std::vector<std::string>& args){
     if(inspect){if(values.size()!=1||!values.contains("--recipe"))throw std::invalid_argument("Use psf-inspect --recipe recipe.txt");
         const fs::path path=values.at("--recipe");printPsfRecipe(readPsfRecipe(path),path.parent_path());return 0;}
     if(!values.contains("--input")||!values.contains("--output-dir")||values.contains("--recipe"))throw std::invalid_argument("Specify PSF --input and --output-dir");
+    const fs::path directory = values.at("--output-dir");
+    requireNewOutputPath(directory);
     PsfRecipe r;r.source=fs::canonical(values.at("--input"));r.sha=fileSHA256(r.source);
     if(values.contains("--expected-sha")&&values.at("--expected-sha")!=r.sha)throw std::runtime_error("PSF source changed");
     if(values.contains("--channel"))r.options.channel=values.at("--channel");
@@ -65,7 +73,6 @@ int runPsfMeasurement(const std::vector<std::string>& args){
             r.options.excluded.push_back(std::stoul(item));
         }
     }
-    const fs::path directory=values.at("--output-dir");if(directory.empty()||fs::exists(directory))throw std::invalid_argument("Choose a new output directory");
     const auto source=readLinearScienceImage(r.source);
     r.measurement=measurePsf(source.image,r.options);
     const auto kernel=gaussianPsfKernel(r.measurement.xx,r.measurement.yy,r.measurement.xy);

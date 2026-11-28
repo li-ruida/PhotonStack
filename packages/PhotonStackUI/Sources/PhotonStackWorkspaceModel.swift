@@ -3,6 +3,7 @@ import CoreImage
 import CoreText
 import ImageIO
 import OSLog
+import Observation
 import PhotonStackAppCore
 import PhotonStackProcessing
 import SwiftUI
@@ -403,9 +404,16 @@ private enum EditOperationParameterRule {
     }
 }
 
+@Observable @MainActor
+private final class ProcessingProgressState {
+    var fraction: Double?
+    var message: String?
+    var output = ""
+}
+
 @MainActor
 public final class PhotonStackWorkspaceModel: ObservableObject {
-    @Published public private(set) var project: PhotonStackProject
+    @Published public private(set) var project: PhotonStackProject { didSet { displayRecipe = nil } }
     @Published public private(set) var selectedAssetID: PhotonStackAsset.ID?
     @Published public private(set) var parameters: ProcessingParameters
     @Published public var language: AppLanguage
@@ -433,11 +441,21 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     @Published public private(set) var activeLayerID: ProcessingLayer.ID?
     @Published public private(set) var isBatchRunning = false
     @Published public private(set) var isBatchPaused = false
-    @Published public private(set) var commandOutput: String = ""
+    private let processingProgress = ProcessingProgressState()
+    public private(set) var commandOutput: String {
+        get { processingProgress.output }
+        set { processingProgress.output = newValue }
+    }
     @Published public private(set) var isProcessing = false
-    @Published public private(set) var progressFraction: Double?
+    public private(set) var progressFraction: Double? {
+        get { processingProgress.fraction }
+        set { processingProgress.fraction = newValue }
+    }
     @Published private(set) var stackingMosaicPanel: String?
-    @Published public private(set) var progressMessage: String?
+    public private(set) var progressMessage: String? {
+        get { processingProgress.message }
+        set { processingProgress.message = newValue }
+    }
     @Published public private(set) var errorMessage: String?
     @Published public private(set) var canCancel = false
     @Published public private(set) var canStepBack = false
@@ -471,6 +489,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     private var curvePreviewTask: Task<Void, Never>?
     private var histogramRefreshTask: Task<Void, Never>?
     private var metadataRefreshTask: Task<Void, Never>?
+    private var autosaveDelay: Task<Void, Never>?
     private var autosaveTask: Task<Void, Never>?
     private var settingsPersistenceTask: Task<Void, Never>?
     private var initialUserSettingsSnapshot: AppSettings?
@@ -2157,6 +2176,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         persistUserSettings()
         if isEnabled {
             scheduleAutosaveIfNeeded()
+        } else {
+            autosaveDelay?.cancel()
+            autosaveDelay = nil
         }
     }
 
@@ -2368,6 +2390,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     private func performPendingProjectTransitionWithoutSaving(_ transition: PendingProjectTransition) {
+        autosaveDelay?.cancel()
+        autosaveDelay = nil
         switch transition {
         case let .create(template, name, _):
             createProject(template: template, name: name)
@@ -2394,6 +2418,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         clearPendingAssetImports()
         // A new workspace may reference the same originals, but never inherits
         // asset identity, result provenance or a saved destination from its source.
+        flushScheduledAutosave()
         let initialAssets = reuseCurrentAssets ? project.assets.map { asset in
             PhotonStackAsset(originalURL: asset.originalURL, kind: asset.kind,
                 role: asset.role, metadata: asset.metadata)
@@ -2507,6 +2532,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
     public func exportCustomCurvePresets(to url: URL) {
         do {
+            try validateExportDestination(url, includesSidecar: false)
             let library = CustomCurvePresetLibrary(presets: customCurvePresets)
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -3063,15 +3089,21 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         var changed = false
         for group in groups {
             guard let first = group.frames.first else { continue }
-            let previous = project.assets.first { $0.mosaicFolder?.directory == group.directory }
-            let representative = previous.flatMap { group.frames.contains($0.originalURL) ? $0.originalURL : nil } ?? first
-            if let previous, previous.originalURL != representative {
+            let members = Set(group.frames.map(PhotonStackProject.assetIdentityPath(for:)))
+            let previous = project.assets.first {
+                $0.mosaicFolder.map { PhotonStackProject.assetIdentityPath(for: $0.directory) } == PhotonStackProject.assetIdentityPath(for: group.directory)
+            }
+            let representative = previous.flatMap {
+                members.contains(PhotonStackProject.assetIdentityPath(for: $0.originalURL)) ? $0.originalURL : nil
+            } ?? first
+            let representativePath = PhotonStackProject.assetIdentityPath(for: representative)
+            if let previous, PhotonStackProject.assetIdentityPath(for: previous.originalURL) != representativePath {
                 guard project.relinkAsset(previous.id, to: representative) else { continue }
             }
-            if !project.assets.contains(where: { $0.originalURL.standardizedFileURL == representative.standardizedFileURL }) {
+            if !project.assets.contains(where: { PhotonStackProject.assetIdentityPath(for: $0.originalURL) == representativePath }) {
                 _ = importReadableAssets(from: [representative])
             }
-            guard let index = project.assets.firstIndex(where: { $0.originalURL.standardizedFileURL == representative.standardizedFileURL }) else { continue }
+            guard let index = project.assets.firstIndex(where: { PhotonStackProject.assetIdentityPath(for: $0.originalURL) == representativePath }) else { continue }
             let asset = project.assets[index]
             if asset.role != .mosaic { setRole(.mosaic, for: asset) }
             if asset.mosaicFolder != group || asset.role != .mosaic {
@@ -3079,8 +3111,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 changed = true
             }
             // A folder may have previously been imported as individual panel images.
-            let members = Set(group.frames)
-            let duplicates = mosaicAssets.filter { $0.id != asset.id && members.contains($0.originalURL) }
+            let duplicates = mosaicAssets.filter { $0.id != asset.id && members.contains(PhotonStackProject.assetIdentityPath(for: $0.originalURL)) }
             for duplicate in duplicates {
                 if duplicate.role == .mosaic { setRole(.light, for: duplicate) }
                 project.mosaicPanelOrder.removeAll { $0 == duplicate.id }
@@ -3269,24 +3300,28 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public func removeAsset(_ asset: PhotonStackAsset) {
-        guard canModifyProcessingConfiguration,
-              project.assets.contains(where: { $0.id == asset.id })
-        else {
-            return
-        }
-        pendingAssetRemovalIDs.removeAll { $0 == asset.id }
+        removeAssets([asset])
+    }
+
+    private func removeAssets(_ requested: [PhotonStackAsset]) {
+        guard canModifyProcessingConfiguration else { return }
+        let existingIDs = Set(project.assets.map(\.id))
+        let assets = requested.filter { existingIDs.contains($0.id) }
+        guard !assets.isEmpty else { return }
+        let ids = Set(assets.map(\.id))
+        pendingAssetRemovalIDs.removeAll(where: ids.contains)
         cancelMetadataRefresh()
         cancelRawPreviewUpdate()
-        let preservedRawOptions = asset.kind == .raw
-            ? (persistedRawOptions(for: asset) ?? parameters.rawProcessingOptions)
-            : nil
-        let removedWasSelected = selectedAssetID == nil || selectedAssetID == asset.id
+        let preservedRawOptions = assets.last(where: { $0.kind == .raw }).map {
+            persistedRawOptions(for: $0) ?? parameters.rawProcessingOptions
+        }
+        let removedWasSelected = selectedAssetID.map(ids.contains) ?? true
         let previousLayerIDs = Set(project.layers.map(\.id))
         let previousLayers = project.layers
         let previousOperations = project.editGraph.operations
         let previousArtifacts = project.artifacts
 
-        project.removeAsset(asset.id)
+        project.removeAssets(ids)
 
         let remainingLayerIDs = Set(project.layers.map(\.id))
         let removedLayerIDs = previousLayerIDs.subtracting(remainingLayerIDs)
@@ -3294,9 +3329,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             .subtracting(project.editGraph.operations.map(\.id))
         let removedArtifactIDs = Set(previousArtifacts.map(\.id))
             .subtracting(project.artifacts.map(\.id))
-        var invalidatedPaths: Set<String> = [
-            PhotonStackProject.assetIdentityPath(for: asset.originalURL),
-        ]
+        var invalidatedPaths = Set(assets.map { PhotonStackProject.assetIdentityPath(for: $0.originalURL) })
         for layer in previousLayers where removedLayerIDs.contains(layer.id) {
             if let inputURL = layer.inputURL {
                 invalidatedPaths.insert(PhotonStackProject.assetIdentityPath(for: inputURL))
@@ -3319,9 +3352,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 PhotonStackProject.assetIdentityPath(for: $0)
             })
         }
-        let removedWasPreviewed = previewURL.map {
-            invalidatedPaths.contains(PhotonStackProject.assetIdentityPath(for: $0)) ||
-                (removedWasSelected && asset.mosaicFolder?.frames.contains($0) == true)
+        let removedWasPreviewed = previewURL.map { preview in
+            invalidatedPaths.contains(PhotonStackProject.assetIdentityPath(for: preview)) ||
+                assets.contains { $0.id == selectedAssetID && $0.mosaicFolder?.frames.contains(preview) == true }
         } == true
             || activeLayerID.map(removedLayerIDs.contains) == true
             || previewOperationID.map(removedOperationIDs.contains) == true
@@ -3333,8 +3366,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 } == true
         }
         syncProjectBatchQueue()
-        batchRegistrationSelection.remove(asset.id)
-        batchRegistrationCandidateIDs.remove(asset.id)
+        batchRegistrationSelection.subtract(ids)
+        batchRegistrationCandidateIDs.subtract(ids)
         if let currentActiveLayerID = activeLayerID, removedLayerIDs.contains(currentActiveLayerID) {
             activeLayerID = nil
         }
@@ -3385,9 +3418,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public var assetsPendingRemoval: [PhotonStackAsset] {
-        pendingAssetRemovalIDs.compactMap { pendingID in
-            project.assets.first { $0.id == pendingID }
-        }
+        let byID = Dictionary(project.assets.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return pendingAssetRemovalIDs.compactMap { byID[$0] }
     }
 
     public func requestAssetRemoval(_ asset: PhotonStackAsset) {
@@ -3399,11 +3431,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             return
         }
         let existingIDs = Set(project.assets.map(\.id))
-        pendingAssetRemovalIDs = assets.reduce(into: []) { ids, asset in
-            guard existingIDs.contains(asset.id), ids.contains(asset.id) == false else {
-                return
-            }
-            ids.append(asset.id)
+        var seen = Set<UUID>()
+        pendingAssetRemovalIDs = assets.compactMap { asset in
+            existingIDs.contains(asset.id) && seen.insert(asset.id).inserted ? asset.id : nil
         }
     }
 
@@ -3417,11 +3447,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
         let assets = requestedAssets ?? assetsPendingRemoval
         pendingAssetRemovalIDs.removeAll()
-        for asset in assets {
-            if project.assets.contains(where: { $0.id == asset.id }) {
-                removeAsset(asset)
-            }
-        }
+        removeAssets(assets)
     }
 
     public var artifactPendingRemoval: ProcessingArtifact? {
@@ -4019,7 +4045,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         launch { await self.astroDevelopPreview(settings: settings) }
     }
 
-    @Published public private(set) var deepSkySchema: DeepSkySchema?
+    @Published public private(set) var deepSkySchema: DeepSkySchema? { didSet { displayRecipe = nil } }
+    private var displayRecipe: String?
 
     public var deepSkyWorkingDirectory: URL {
         currentProjectDirectory?.appendingPathComponent("processing", isDirectory: true) ?? previewDirectory
@@ -4154,6 +4181,12 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         triggerAutosave()
     }
 
+    func displayedDeepSkyRecipe() -> String? {
+        if let displayRecipe { return displayRecipe }
+        displayRecipe = try? deepSkyRecipeText()
+        return displayRecipe
+    }
+
     public func deepSkyRecipeText() throws -> String {
         guard let schema = deepSkySchema else { throw DeepSkyRecipeError.unsupportedVersion }
         return try deepSkySettings.recipe(schema: schema, inputs: lightAssets.map(\.originalURL))
@@ -4161,14 +4194,28 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
     public func exportDeepSkyRecipe(to url: URL) {
         guard !isProcessing else { return }
-        do { try deepSkyRecipeText().write(to: url, atomically: true, encoding: .utf8) }
+        do {
+            try validateExportDestination(url, includesSidecar: false)
+            try deepSkyRecipeText().write(to: url, atomically: true, encoding: .utf8)
+        }
         catch { errorMessage = processingErrorMessage(error) }
+    }
+
+    private var deepSkyRecipeImportGeneration = 0
+
+    public func startImportDeepSkyRecipe(from url: URL) {
+        launch { await self.importDeepSkyRecipe(from: url) }
     }
 
     public func importDeepSkyRecipe(from url: URL) async {
         guard !isProcessing else { return }
+        let projectID = project.id
+        deepSkyRecipeImportGeneration += 1
+        let generation = deepSkyRecipeImportGeneration
         do {
             let parsed = try await processingService.inspectDeepSkyRecipe(url)
+            try Task.checkCancellation()
+            guard project.id == projectID, deepSkyRecipeImportGeneration == generation else { return }
             guard parsed.version == 1 else { throw DeepSkyRecipeError.unsupportedVersion }
             var settings = DeepSkySettings()
             settings.values = parsed.values
@@ -4193,7 +4240,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             project.deepSkySettings = settings
             project.updatedAt = Date()
             triggerAutosave()
-        } catch { errorMessage = processingErrorMessage(error) }
+        } catch is CancellationError {
+        } catch {
+            guard project.id == projectID, deepSkyRecipeImportGeneration == generation, !Task.isCancelled else { return }
+            errorMessage = processingErrorMessage(error)
+        }
     }
 
     public var latestDeepSkyResultURL: URL? {
@@ -5515,7 +5566,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
-    private func validateExportDestination(_ output: URL, additionalSource: URL? = nil) throws {
+    func validateExportDestination(_ output: URL, additionalSource: URL? = nil, includesSidecar: Bool = true) throws {
         var paths = previewCacheProtectedPaths()
         if let currentProjectDirectory {
             paths.insert(currentProjectDirectory.appendingPathComponent(ProjectRepository.projectFileName).path)
@@ -5543,11 +5594,12 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         if let additionalSource { paths.insert(additionalSource.path) }
         let sources = paths.map { URL(fileURLWithPath: $0) }
         try WorkspaceExportProtection.validate(output, sources: sources)
-        try WorkspaceExportProtection.validate(exportSidecarURL(for: output), sources: sources)
+        if includesSidecar { try WorkspaceExportProtection.validate(exportSidecarURL(for: output), sources: sources) }
     }
 
     public func exportProductManifest(to output: URL) async {
         await runLocalJob(title: "Export Product Manifest", kind: .export) {
+            try self.validateExportDestination(output, includesSidecar: false)
             let markdown = self.productManifestMarkdown()
             let directory = output.deletingLastPathComponent()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -5568,7 +5620,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             }
 
             let output = self.makePreviewOutput(prefix: "layer-stack", extension: "png")
-            try self.renderLayerStackPreview(layers: visibleLayers, output: output)
+            let masks = self.previewMasks(visibleLayers)
+            try await Task.detached(priority: .userInitiated) {
+                try Self.renderLayerStack(layers: visibleLayers, output: output, format: .RGBA8, maskInputURLs: masks)
+            }.value
+            try Task.checkCancellation()
             try await self.commitPreviewAfterHistogramRefresh(output, canvasMode: .layerComposite)
             return "Layer stack preview: \(output.path)"
         }
@@ -5617,7 +5673,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
         do {
             if visibleLayers.isEmpty {
-                try renderEmptyLayerStack(sourceURL: firstURL, output: output, format: .RGBA8)
+                try Self.renderEmptyLayerStack(sourceURL: firstURL, output: output, format: .RGBA8)
             } else {
                 try renderLayerStackPreview(layers: visibleLayers, output: output)
             }
@@ -5702,22 +5758,19 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             return
         }
 
+        let rawOptions = parameters.rawProcessingOptions
         let operationParameters = curveOperationParameters(
             points: parameters.curveEditorPoints,
             channel: parameters.curveChannel
-        )
+        ).merging(rawDecodeParameters(from: rawOptions), uniquingKeysWith: { _, new in new })
         let curvePoints = parameters.curveEditorPoints
         let curvePointPairs = parameters.curvePointPairs
         let curveChannel = parameters.curveChannel
-        let rawOptions = parameters.rawProcessingOptions
         let inputWidth = resolvedPixelWidthForCurveProcessing(at: input)
         let previewWidth = interactiveCurvePreviewWidth(for: parameters.previewWidth)
         let commitsProxy = processingService is CLIProcessingService &&
             inputWidth.map { $0 > previewWidth } == true
-        var cacheParameters = operationParameters.merging(
-            rawDecodeParameters(from: rawOptions),
-            uniquingKeysWith: { _, new in new }
-        )
+        var cacheParameters = operationParameters
         if commitsProxy {
             cacheParameters["previewWidth"] = String(previewWidth)
             cacheParameters["previewOnly"] = "true"
@@ -5780,7 +5833,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                     input: input,
                     output: output,
                     points: curvePointPairs,
-                    channel: curveChannel
+                    channel: curveChannel, rawOptions: rawOptions
                 )
             }
             try Task.checkCancellation()
@@ -6106,7 +6159,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 for light in lights {
                     try Task.checkCancellation()
                     let output = calibratedDirectory
-                        .appendingPathComponent(light.originalURL.deletingPathExtension().lastPathComponent)
+                        .appendingPathComponent(light.id.uuidString + "-" + light.originalURL.deletingPathExtension().lastPathComponent)
                         .appendingPathExtension("calibrated.fits")
                     let calibrated = try await self.processingService.calibrate(
                         light: light.originalURL,
@@ -6141,7 +6194,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                             createdRawDecodeDirectory = true
                         }
                         let decodedOutput = rawDecodeDirectory
-                            .appendingPathComponent(light.originalURL.deletingPathExtension().lastPathComponent)
+                            .appendingPathComponent(light.id.uuidString + "-" + light.originalURL.deletingPathExtension().lastPathComponent)
                             .appendingPathExtension("decoded.fits")
                         let decoded = try await self.processingService.convert(
                             input: light.originalURL,
@@ -6878,10 +6931,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 let output = try await operation(self.processingService)
                 try Task.checkCancellation()
                 self.project.addAssets(from: [output], role: .other)
-                if let asset = self.project.assets.first(where: { $0.originalURL == output }) {
+                if let asset = self.project.assets.first(where: { Self.urlsReferenceSameFile($0.originalURL, output) }) {
                     self.selectSource(output, owner: asset)
                 }
-                try await self.commitPreviewAfterHistogramRefresh(output)
+                try await self.commitPreviewAfterHistogramRefresh(output, trackHistory: false)
                 return output.path
             }
         }
@@ -6889,15 +6942,18 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
     func showDerivedImage(_ url: URL) {
         guard !hasActiveProcessing else { return }
+        let projectID = project.id
         launch {
-            do {
+            await self.runJob(title: "Open result", kind: .inspect) {
+                try Task.checkCancellation()
+                guard self.project.id == projectID else { throw CancellationError() }
                 self.project.addAssets(from: [url], role: .other)
-                if let asset = self.project.assets.first(where: { $0.originalURL == url }) {
+                if let asset = self.project.assets.first(where: { Self.urlsReferenceSameFile($0.originalURL, url) }) {
                     self.selectSource(url, owner: asset)
                 }
-                try await self.commitPreviewAfterHistogramRefresh(url)
+                try await self.commitPreviewAfterHistogramRefresh(url, trackHistory: false)
+                return url.path
             }
-            catch { self.errorMessage = self.processingErrorMessage(error) }
         }
     }
 
@@ -6915,10 +6971,10 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 let output = try await operation(self.processingService)
                 try Task.checkCancellation()
                 self.project.addAssets(from: [output], role: .other)
-                if let asset = self.project.assets.first(where: { $0.originalURL == output }) {
+                if let asset = self.project.assets.first(where: { Self.urlsReferenceSameFile($0.originalURL, output) }) {
                     self.selectSource(output, owner: asset)
                 }
-                try await self.commitPreviewAfterHistogramRefresh(output)
+                try await self.commitPreviewAfterHistogramRefresh(output, trackHistory: false)
                 return output.path
             }
         }
@@ -7163,6 +7219,67 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
     public func layerOpacity(_ layerID: ProcessingLayer.ID) -> Double {
         project.layers.first { $0.id == layerID }?.opacity ?? 1.0
+    }
+
+    enum LayerSliderValue {
+        case opacity(Double), maskDensity(Double), maskFeather(Double)
+    }
+
+    func commitLayerSlider(_ value: LayerSliderValue, to id: ProcessingLayer.ID) {
+        guard canModifyWorkspaceProducts, let index = project.layers.firstIndex(where: { $0.id == id }) else { return }
+        let previous = project.layers
+        var adjusted = previous[index]
+        guard adjusted.kind != .mask, isLayerInputAvailable(adjusted), isLayerMaskInputAvailable(adjusted) else { return }
+        switch value {
+        case let .opacity(value):
+            guard value.isFinite else { return }
+            adjusted.opacity = min(max(0, value), 1)
+        case let .maskDensity(value):
+            guard value.isFinite, adjusted.maskArtifactID != nil else { return }
+            let density = min(max(0, value), 1)
+            guard density != layerMaskDensity(id) else { return }
+            adjusted.parameters["maskDensity"] = String(density)
+        case let .maskFeather(value):
+            guard value.isFinite, let size = layerMaskPixelSize(id) else { return }
+            let dimension = max(1, min(size.width, size.height))
+            let fraction = min(max(0, value / dimension), 0.1)
+            guard fraction != (adjusted.parameters["maskFeatherFraction"].flatMap(Double.init) ?? 0) else { return }
+            adjusted.parameters["maskFeatherFraction"] = String(fraction)
+        }
+        guard adjusted != previous[index] else { return }
+        let visible = visiblePreviewLayers.map { $0.id == id ? adjusted : $0 }
+        guard let source = visible.first?.inputURL ?? emptyLayerStackSourceLayer?.inputURL else { return }
+        if let missing = visible.first(where: { !isLayerInputAvailable($0) || !isLayerMaskInputAvailable($0) }) {
+            errorMessage = "\(localized(.missingWorkspaceSourceError)): \(missing.name)"
+            return
+        }
+        let projectID = project.id
+        let masks = previewMasks(visible)
+        let history = currentPreviewHistoryState()
+        let output = makePreviewOutput(prefix: "layer-stack-live", extension: "png")
+        launch {
+            await self.runLocalJob(title: "Preview Layer Stack", kind: .preview) {
+                var committed = false
+                defer { if !committed { try? FileManager.default.removeItem(at: output) } }
+                try await Task.detached(priority: .userInitiated) {
+                    if visible.isEmpty {
+                        try Self.renderEmptyLayerStack(sourceURL: source, output: output, format: .RGBA8)
+                    } else {
+                        try Self.renderLayerStack(layers: visible, output: output, format: .RGBA8, maskInputURLs: masks)
+                    }
+                }.value
+                try Task.checkCancellation()
+                guard self.project.id == projectID, self.project.layers == previous, self.previewMasks(visible) == masks
+                else { throw CancellationError() }
+                self.appendPreviewHistoryState(history)
+                self.project.layers[index] = adjusted
+                self.project.updatedAt = Date()
+                self.setPreview(output, trackHistory: false, canvasMode: .layerComposite)
+                self.triggerAutosave()
+                committed = true
+                return "\(self.localized(.previewLayerStack)): \(visible.count)"
+            }
+        }
     }
 
     public func layerBlendMode(_ layerID: ProcessingLayer.ID) -> ProcessingLayerBlendMode {
@@ -9587,11 +9704,14 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             if let points = curvePointsParameter(in: operation) {
                 curveParameters.curvePoints = points
             }
+            // Historical curves without stored decode controls used the CLI's display RAW domain.
+            let rawOptions = operation.parameters["rawLinear"] == nil
+                ? RawProcessingOptions(linearOutput: false) : rawOptionsParameter(in: operation)
             if let bridged = try await runEngineCurveApplyIfAvailable(
                 input: input,
                 output: output,
                 points: curveParameters.curvePointPairs,
-                channel: curveParameters.curveChannel
+                channel: curveParameters.curveChannel, rawOptions: rawOptions
             ) {
                 _ = bridged
             } else {
@@ -9599,7 +9719,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                     input: input,
                     output: output,
                     points: curveParameters.curvePointPairs,
-                    channel: curveParameters.curveChannel
+                    channel: curveParameters.curveChannel, rawOptions: rawOptions
                 )
             }
             return output
@@ -10842,7 +10962,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         return makePreviewOutput(prefix: prefix, extension: outputExtension)
     }
 
-    private static func normalizedFinite(
+    nonisolated private static func normalizedFinite(
         _ value: Double,
         in range: ClosedRange<Double>,
         fallback: Double
@@ -11742,8 +11862,15 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         )
     }
 
+    private func previewMasks(_ layers: [ProcessingLayer]) -> [UUID: URL] {
+        var masks: [UUID: URL] = [:]
+        for layer in layers {
+            if let id = layer.maskArtifactID { masks[layer.id] = project.artifacts.first { $0.id == id }?.previewURL }
+        }
+        return masks
+    }
     private func renderLayerStackPreview(layers: [ProcessingLayer], output: URL) throws {
-        try renderLayerStack(layers: layers, output: output, format: .RGBA8)
+        try Self.renderLayerStack(layers: layers, output: output, format: .RGBA8, maskInputURLs: previewMasks(layers))
     }
 
     private func exportInputURL() async throws -> URL? {
@@ -11761,7 +11888,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                     context: replayContext
                 )
                 let output = makePreviewOutput(prefix: "export-layer-stack-empty", extension: "png")
-                try renderEmptyLayerStack(sourceURL: compositingURL, output: output, format: .RGBA16)
+                try await Task.detached(priority: .userInitiated) {
+                    try Self.renderEmptyLayerStack(sourceURL: compositingURL, output: output, format: .RGBA16)
+                }.value
                 return output
             }
             return selectedAsset?.originalURL ?? currentInputURL
@@ -11807,13 +11936,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
 
         let output = makePreviewOutput(prefix: "export-layer-stack", extension: "png")
-        try renderLayerStack(
-            layers: visibleLayers,
-            output: output,
-            format: .RGBA16,
-            layerInputURLs: layerInputURLs,
-            maskInputURLs: maskInputURLs
-        )
+        try await Task.detached(priority: .userInitiated) { [layerInputURLs, maskInputURLs] in
+            try Self.renderLayerStack(layers: visibleLayers, output: output, format: .RGBA16,
+                                      layerInputURLs: layerInputURLs, maskInputURLs: maskInputURLs)
+        }.value
+        try Task.checkCancellation()
         return output
     }
 
@@ -12369,7 +12496,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         )
     }
 
-    private func renderLayerStack(
+    nonisolated private static let layerContext = CIContext(options: [.workingColorSpace: NSNull()])
+
+    nonisolated private static func renderLayerStack(
         layers: [ProcessingLayer],
         output: URL,
         format: CIFormat,
@@ -12412,7 +12541,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 .cropped(to: extent)
         }
 
-        let context = CIContext(options: [.workingColorSpace: NSNull()])
+        let context = layerContext
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
             throw LayerStackPreviewError.cannotRender
         }
@@ -12429,12 +12558,12 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
-    private func renderEmptyLayerStack(sourceURL: URL, output: URL, format: CIFormat) throws {
+    nonisolated private static func renderEmptyLayerStack(sourceURL: URL, output: URL, format: CIFormat) throws {
         guard let source = CIImage(contentsOf: sourceURL, options: [.applyOrientationProperty: true]) else {
             throw LayerStackPreviewError.cannotReadLayer(sourceURL.lastPathComponent)
         }
         let transparent = CIImage(color: .clear).cropped(to: source.extent)
-        let context = CIContext(options: [.workingColorSpace: NSNull()])
+        let context = layerContext
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
             throw LayerStackPreviewError.cannotRender
         }
@@ -12451,7 +12580,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
-    private func preparedLayerImage(
+    nonisolated private static func preparedLayerImage(
         _ inputImage: CIImage,
         layer: ProcessingLayer,
         extent: CGRect,
@@ -12459,9 +12588,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     ) throws -> CIImage {
         let layerExtent = inputImage.extent
         var prepared = inputImage.cropped(to: extent)
-        if let maskArtifactID = layer.maskArtifactID {
-            guard let maskArtifact = project.artifacts.first(where: { $0.id == maskArtifactID }),
-                  let maskURL = maskInputURLs[layer.id] ?? maskArtifact.previewURL,
+        if layer.maskArtifactID != nil {
+            guard let maskURL = maskInputURLs[layer.id],
                   let maskImage = CIImage(contentsOf: maskURL, options: [.applyOrientationProperty: true])
             else {
                 throw LayerStackPreviewError.cannotReadMask(layer.name)
@@ -12631,7 +12759,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
-    private func image(_ inputImage: CIImage, fittedTo extent: CGRect) -> CIImage {
+    nonisolated private static func image(_ inputImage: CIImage, fittedTo extent: CGRect) -> CIImage {
         let sourceExtent = inputImage.extent
         guard sourceExtent.width > 0, sourceExtent.height > 0 else {
             return inputImage.cropped(to: extent)
@@ -12646,7 +12774,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             .cropped(to: extent)
     }
 
-    private func image(_ image: CIImage, applyingOpacity opacity: Double) -> CIImage {
+    nonisolated private static func image(_ image: CIImage, applyingOpacity opacity: Double) -> CIImage {
         image.applyingFilter(
             "CIColorMatrix",
             parameters: [
@@ -12655,7 +12783,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         )
     }
 
-    private func blend(foreground: CIImage, over background: CIImage, mode: ProcessingLayerBlendMode) -> CIImage {
+    nonisolated private static func blend(foreground: CIImage, over background: CIImage, mode: ProcessingLayerBlendMode) -> CIImage {
         let filterName: String
         switch mode {
         case .normal:
@@ -12888,6 +13016,21 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     private func scheduleAutosaveIfNeeded() {
+        autosaveDelay?.cancel()
+        guard hasUnsavedChanges, autosaveEnabled, currentProjectDirectory != nil else {
+            autosaveDelay = nil
+            return
+        }
+        autosaveDelay = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            self?.flushScheduledAutosave()
+        }
+    }
+
+    private func flushScheduledAutosave() {
+        guard autosaveDelay != nil else { return }
+        autosaveDelay?.cancel()
+        autosaveDelay = nil
         guard hasUnsavedChanges, autosaveEnabled, let currentProjectDirectory else {
             return
         }
@@ -12901,7 +13044,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         let repository = projectRepository
         autosaveGeneration += 1
         let generation = autosaveGeneration
-        previousTask?.cancel()
+        // Serialize durable snapshots, including a project being closed or replaced.
 
         autosaveTask = Task { @MainActor [weak self] in
             await previousTask?.value
@@ -12912,7 +13055,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             }
             do {
                 try Task.checkCancellation()
-                try await repository.save(projectSnapshot, to: directorySnapshot)
+                try await repository.autosave(projectSnapshot, to: directorySnapshot)
                 try Task.checkCancellation()
                 guard let self,
                       self.autosaveGeneration == generation,
@@ -12938,6 +13081,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     private func waitForPendingAutosave() async {
+        flushScheduledAutosave()
         await autosaveTask?.value
     }
 
@@ -13515,7 +13659,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         return result
     }
 
-    private static func isUsableCachedOutput(_ output: URL) -> Bool {
+    nonisolated private static func isUsableCachedOutput(_ output: URL) -> Bool {
         var isDirectory = ObjCBool(false)
         guard FileManager.default.fileExists(atPath: output.path, isDirectory: &isDirectory),
               isDirectory.boolValue == false,
@@ -13552,7 +13696,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         return thumbnail.width > 0 && thumbnail.height > 0
     }
 
-    private static func isReadableFITS(_ url: URL) -> Bool {
+    nonisolated private static func isReadableFITS(_ url: URL) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: url) else {
             return false
         }
@@ -14622,13 +14766,13 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         guard markerItems.isEmpty == false else {
             return nil
         }
-        guard let source = CGImageSourceCreateWithURL(input as CFURL, nil),
-              let image = markedPreviewImage(from: source),
-              reportDimensionsMatch(width: image.width, height: image.height, reportWidth: report.imageWidth, reportHeight: report.imageHeight)
+        guard let base = markedPreviewImage(input),
+              reportDimensionsMatch(width: base.width, height: base.height, reportWidth: report.imageWidth, reportHeight: report.imageHeight)
         else {
             throw MarkedPreviewRenderingError.cannotDecodeInput
         }
 
+        let image = base.image
         try FileManager.default.createDirectory(at: previewDirectory, withIntermediateDirectories: true)
         let output = previewDirectory.appendingPathComponent(
             "artifact-marked-\(artifactMarkerRendererRevision)-\(UUID().uuidString).jpg"
@@ -14647,8 +14791,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             throw MarkedPreviewRenderingError.cannotCreateContext
         }
 
-        let width = CGFloat(image.width)
-        let height = CGFloat(image.height)
+        let width = CGFloat(base.width)
+        let height = CGFloat(base.height)
+        context.scaleBy(x: CGFloat(image.width) / width, y: CGFloat(image.height) / height)
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         let labelLayout = artifactMarkerLabelLayout(
             for: markerItems,
@@ -14701,13 +14846,13 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         guard report.items.isEmpty == false else {
             return nil
         }
-        guard let source = CGImageSourceCreateWithURL(input as CFURL, nil),
-              let image = markedPreviewImage(from: source),
-              reportDimensionsMatch(width: image.width, height: image.height, reportWidth: report.imageWidth, reportHeight: report.imageHeight)
+        guard let base = markedPreviewImage(input),
+              reportDimensionsMatch(width: base.width, height: base.height, reportWidth: report.imageWidth, reportHeight: report.imageHeight)
         else {
             throw MarkedPreviewRenderingError.cannotDecodeInput
         }
 
+        let image = base.image
         try FileManager.default.createDirectory(at: previewDirectory, withIntermediateDirectories: true)
         let output = previewDirectory.appendingPathComponent(
             "cloud-marked-\(cloudMarkerRendererRevision)-\(UUID().uuidString).jpg"
@@ -14726,8 +14871,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             throw MarkedPreviewRenderingError.cannotCreateContext
         }
 
-        let width = CGFloat(image.width)
-        let height = CGFloat(image.height)
+        let width = CGFloat(base.width)
+        let height = CGFloat(base.height)
+        context.scaleBy(x: CGFloat(image.width) / width, y: CGFloat(image.height) / height)
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         let markerItems = report.topItems
         let labelLayout = cloudMarkerLabelLayout(
@@ -14773,35 +14919,34 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         return output
     }
 
-    private func markedPreviewImage(from source: CGImageSource) -> CGImage? {
-        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
-        let orientation = (properties?[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1
-        guard (1...8).contains(orientation) else {
-            return CGImageSourceCreateImageAtIndex(source, 0, [
-                kCGImageSourceShouldCache: true,
-                kCGImageSourceShouldCacheImmediately: true,
-            ] as CFDictionary)
-        }
-        guard orientation != 1 else {
-            return CGImageSourceCreateImageAtIndex(source, 0, [
-                kCGImageSourceShouldCache: true,
-                kCGImageSourceShouldCacheImmediately: true,
-            ] as CFDictionary)
-        }
-        guard let width = (properties?[kCGImagePropertyPixelWidth] as? NSNumber)?.int64Value,
-              let height = (properties?[kCGImagePropertyPixelHeight] as? NSNumber)?.int64Value,
-              width > 0,
-              height > 0,
-              max(width, height) <= Int64(Int.max)
-        else {
-            return nil
-        }
-        return CGImageSourceCreateThumbnailAtIndex(source, 0, [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: Int(max(width, height)),
-        ] as CFDictionary)
+    private struct MarkedBase {
+        let url: URL, modified: Date
+        let size: Int64, inode: UInt64
+        let width: Int, height: Int
+        let image: CGImage
+    }
+    private var markedBase: MarkedBase?
+
+    private func markedPreviewImage(_ url: URL) -> MarkedBase? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.resolvingSymlinksInPath().path),
+              let date = attrs[.modificationDate] as? Date, let size = attrs[.size] as? NSNumber,
+              let inode = attrs[.systemFileNumber] as? NSNumber else { return nil }
+        if let cached = markedBase, cached.url == url, cached.modified == date,
+           cached.size == size.int64Value, cached.inode == inode.uint64Value { return cached }
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue,
+              width > 0, height > 0,
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceShouldCacheImmediately: true, kCGImageSourceThumbnailMaxPixelSize: min(2048, max(width, height))
+              ] as CFDictionary) else { return nil }
+        let rotated = (5...8).contains((properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1)
+        let base = MarkedBase(url: url, modified: date, size: size.int64Value, inode: inode.uint64Value,
+                              width: rotated ? height : width, height: rotated ? width : height, image: image)
+        markedBase = base
+        return base
     }
 
     private func reportDimensionsMatch(

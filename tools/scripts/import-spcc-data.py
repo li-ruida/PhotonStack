@@ -13,8 +13,6 @@ from pathlib import Path
 import shutil
 
 import numpy as np
-from astropy.io import fits
-from astropy.time import Time
 
 
 def sha(path):
@@ -54,10 +52,14 @@ def propagate(ra, dec, pmra, pmdec, dt):
     east = np.array([-math.sin(ra), math.cos(ra), 0.])
     north = np.array([-math.sin(dec)*math.cos(ra), -math.sin(dec)*math.sin(ra), math.cos(dec)])
     p += dt*math.radians(1/3.6e6)*(pmra*east+pmdec*north)
-    return math.degrees(math.atan2(p[1], p[0])) % 360, math.degrees(math.atan2(p[2], math.hypot(p[0], p[1])))
+    # A tiny negative angle can round to 360.0 after the first modulo.
+    return (math.degrees(math.atan2(p[1], p[0])) % 360) % 360, math.degrees(math.atan2(p[2], math.hypot(p[0], p[1])))
 
 
 def main():
+    from astropy.io import fits
+    from astropy.time import Time
+
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ['sensor', 'response-license-file', 'white-calspec', 'gaia-catalog', 'xp-dir', 'output-dir']:
         parser.add_argument('--'+key, type=Path, required=True)

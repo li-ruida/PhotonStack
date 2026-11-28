@@ -12,7 +12,7 @@ std::vector<AstrometricStar> astrometricSources(const ImageBuffer& image){
     if(image.empty()||image.channels!=4||image.pixels.size()!=image.sampleCount())throw std::invalid_argument("Plate solve requires decoded RGBA master");
     ImageBuffer gray;gray.width=image.width;gray.height=image.height;gray.channels=1;gray.format=PixelFormat::Float32Gray;gray.pixels.resize(image.pixelCount());
     std::vector<float> coverage(image.pixelCount());
-    for(std::size_t p=0;p<image.pixelCount();++p){const auto* c=&image.pixels[p*4];if(c[3]<.999999||!std::isfinite(c[0])||!std::isfinite(c[1])||!std::isfinite(c[2]))continue;
+    for(std::size_t p=0;p<image.pixelCount();++p){const auto* c=&image.pixels[p*4];if(!std::isfinite(c[3])||c[3]<.999999||!std::isfinite(c[0])||!std::isfinite(c[1])||!std::isfinite(c[2]))continue;
         gray.pixels[p]=float(.2126*double(c[0])+.7152*double(c[1])+.0722*double(c[2]));coverage[p]=1;}
     StarDetectionOptions options;options.robustStatistics=true;options.sigmaThreshold=5;options.minPeak=std::numeric_limits<float>::lowest();options.maxStars=2000;
     const auto detected=StarDetector().detectLuminanceWithCoverage(image.width,image.height,gray.pixels,coverage,options);

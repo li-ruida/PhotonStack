@@ -23,9 +23,9 @@ inline double backgroundMedian(std::vector<double> values) {
     return *middle;
 }
 // Evaluator uses zero-based pixel centers, returns all channels without allocation.
-template <typename Evaluator>
+template <typename Evaluator, typename BlockEvaluator = std::nullptr_t>
 BackgroundExtractionResult applyBackgroundSurface(const ImageBuffer& im, const BackgroundPolynomialOptions& opt,
-                                                  BackgroundExtractionResult result, Evaluator evaluate) {
+                                                  BackgroundExtractionResult result, Evaluator evaluate, BlockEvaluator block = nullptr) {
     const int channels = std::min<int>(3, im.channels);
     std::array<std::vector<double>, 3> fitted;
     std::array<std::size_t, 3> used{};
@@ -66,38 +66,48 @@ BackgroundExtractionResult applyBackgroundSurface(const ImageBuffer& im, const B
     }
     std::atomic<bool> invalid{false};
     parallelRanges(im.height, 16, [&](std::size_t begin, std::size_t end) noexcept {
-        for (auto y = begin; y < end; ++y)
-            for (std::uint32_t x = 0; x < im.width; ++x) {
-                const auto p = y * im.width + x;
-                if (!pixelHasValidColor(im, p)) {
-                    clearMaskedPixel(result.image, p);
-                    if (opt.diagnostics) {
-                        clearMaskedPixel(result.modelImage, p);
-                        clearMaskedPixel(result.differenceImage, p);
-                    }
-                    continue;
-                }
-                const auto model = evaluate(x, y);
-                for (int c = 0; c < channels; ++c) {
-                    const auto o = p * im.channels + c;
-                    const double value =
-                        im.pixels[o] -
-                        opt.extraction.strength * (model[c] - (opt.extraction.preserveBrightness ? pedestal[c] : 0));
-                    const float out = float(opt.extraction.clampOutput ? std::clamp(value, 0.0, 1.0) : value);
-                    const double difference = double(im.pixels[o]) - out;
-                    if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max() ||
-                        !std::isfinite(model[c]) || std::abs(model[c]) > std::numeric_limits<float>::max() ||
-                        !std::isfinite(difference) || std::abs(difference) > std::numeric_limits<float>::max()) {
-                        invalid.store(true, std::memory_order_relaxed);
+        constexpr std::uint32_t blockSize = 64;
+        std::array<std::array<double, 3>, blockSize> colors;
+        for (auto y = begin; y < end; ++y) {
+            for (std::size_t start = 0; start < im.width; start += blockSize) {
+                const auto count = std::min<std::size_t>(blockSize, im.width - start);
+                if constexpr (!std::is_same_v<BlockEvaluator, std::nullptr_t>) block(start, y, int(count), colors);
+                for (auto x = start; x < start + count; ++x) {
+                    const auto p = y * im.width + x;
+                    if (!pixelHasValidColor(im, p)) {
+                        clearMaskedPixel(result.image, p);
+                        if (opt.diagnostics) {
+                            clearMaskedPixel(result.modelImage, p);
+                            clearMaskedPixel(result.differenceImage, p);
+                        }
                         continue;
                     }
-                    result.image.pixels[o] = out;
-                    if (opt.diagnostics) {
-                        result.modelImage.pixels[o] = float(model[c]);
-                        result.differenceImage.pixels[o] = float(difference);
+                    const auto model = [&] {
+                        if constexpr (std::is_same_v<BlockEvaluator, std::nullptr_t>) return evaluate(x, y);
+                        else return colors[x - start];
+                    }();
+                    for (int c = 0; c < channels; ++c) {
+                        const auto o = p * im.channels + c;
+                        const double value =
+                            im.pixels[o] -
+                            opt.extraction.strength * (model[c] - (opt.extraction.preserveBrightness ? pedestal[c] : 0));
+                        const float out = float(opt.extraction.clampOutput ? std::clamp(value, 0.0, 1.0) : value);
+                        const double difference = double(im.pixels[o]) - out;
+                        if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max() ||
+                            !std::isfinite(model[c]) || std::abs(model[c]) > std::numeric_limits<float>::max() ||
+                            !std::isfinite(difference) || std::abs(difference) > std::numeric_limits<float>::max()) {
+                            invalid.store(true, std::memory_order_relaxed);
+                            continue;
+                        }
+                        result.image.pixels[o] = out;
+                        if (opt.diagnostics) {
+                            result.modelImage.pixels[o] = float(model[c]);
+                            result.differenceImage.pixels[o] = float(difference);
+                        }
                     }
                 }
             }
+        }
     });
     if (invalid.load())
         return backgroundSurfaceError("ImageValueInvalid", "Background correction exceeds Float32 range");

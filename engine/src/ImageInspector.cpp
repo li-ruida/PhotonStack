@@ -252,10 +252,10 @@ InspectResult inspectTiff(std::ifstream& file, std::uintmax_t fileSize, const st
         const std::uint32_t valueOrOffset = read32(entry.data() + 8, littleEndian);
 
         auto readShortOrLongValue = [&]() -> std::uint32_t {
-            if (type == 3 && count == 1) {
-                return littleEndian ? (valueOrOffset & 0xFFFFU) : (valueOrOffset >> 16U);
+            if (type == 3 && (count == 1 || count == 2)) {
+                return read16(entry.data() + 8, littleEndian);
             }
-            if (type == 3 && count > 1) {
+            if (type == 3 && count > 2) {
                 std::array<unsigned char, 2> valueBytes{};
                 if (readAt(file, fileSize, valueOrOffset, valueBytes.data(), valueBytes.size())) {
                     return read16(valueBytes.data(), littleEndian);

@@ -18,7 +18,8 @@ for file in sorted((src/'outlines/objects').glob('*.txt')):
     if '_lv' in file.stem and not file.stem.endswith('_lv2'):continue
     record(file);name=file.stem.split('_lv')[0];shape=[]
     for row in csv.DictReader(file.open(),delimiter='\t'):
-        point=(float(row['RAJ2000'])%360,float(row['DEJ2000']))
+        # Keep the half-open domain even when a tiny negative RA rounds to 360.
+        point=((float(row['RAJ2000'])%360)%360,float(row['DEJ2000']))
         if not shape or point!=shape[-1]:shape.append(point)
         if row['Cont_Flag']=='*':
             if len(shape)>=3:objects.append((name,shape))
@@ -30,7 +31,7 @@ with (dst/'outlines.txt').open('w') as f:
         # A repeated final vertex carries closure explicitly. Do not close open
         # contours by inventing a segment not present in the source.
         f.write(f'{name} {len(points)}\n')
-        for ra,dec in points:f.write(f'{ra:.15g} {dec:.15g}\n')
+        for ra,dec in points:f.write(f'{ra:.17g} {dec:.17g}\n')
 (dst/'REVISION').write_text(revision+'\n')
 manifest['generatedOutlineSHA256']=hashlib.sha256((dst/'outlines.txt').read_bytes()).hexdigest()
 (dst/'provenance.json').write_text(json.dumps(manifest,indent=2,ensure_ascii=False)+'\n')

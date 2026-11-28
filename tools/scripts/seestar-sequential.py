@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 
 SOURCE = Path('/Volumes/ll/seestar')
@@ -58,12 +59,19 @@ def inventory():
     print(json.dumps({'count': len(targets), 'targets': names, 'excluded': excluded}, ensure_ascii=False))
 
 
+def append_copy_receipt(journal, record):
+    journal.write(json.dumps({'relative': record['relative'], 'sha256': record['sha256']},
+                             ensure_ascii=False) + '\n')
+    journal.flush()
+    os.fsync(journal.fileno())
+
+
 def copy_next():
     queue = json.loads((ROOT / 'queue.json').read_text())
     active = [t for t in queue['targets'] if t['status'] not in ('pending', 'complete', 'skipped')]
-    if active:
+    if active and (len(active) != 1 or active[0]['status'] != 'copying'):
         raise RuntimeError('Finish current target first: ' + repr(active))
-    target = next((t for t in queue['targets'] if t['status'] == 'pending'), None)
+    target = active[0] if active else next((t for t in queue['targets'] if t['status'] == 'pending'), None)
     if target is None:
         print('All targets finished')
         return
@@ -81,44 +89,112 @@ def copy_next():
                 files.append({'relative': str(p.relative_to(SOURCE)), 'size': stat.st_size,
                               'mtime_ns': stat.st_mtime_ns})
     total = sum(f['size'] for f in files)
-    # Conservative space reserve for decoded RGB registered images plus stack.
-    needed = total * 10 + 20 * 1024**3
+    work = ROOT / '工作区' / name
+    if work.is_symlink() or work.resolve().parent != (ROOT / '工作区').resolve():
+        raise RuntimeError('Unsafe copy work directory')
+    if not active and work.exists():
+        raise FileExistsError(work)
+    # Previously published inputs already occupy their share of the planned peak.
+    present = 0
+    if active:
+        for f in files:
+            item = work / 'inputs' / f['relative']
+            if not item.is_symlink() and item.is_file() and item.resolve().is_relative_to(work.resolve()):
+                present += min(f['size'], item.stat().st_size)
+    needed = total * 10 + 20 * 1024**3 - present
     if shutil.disk_usage(ROOT).free < needed:
         raise RuntimeError(f'Insufficient free SSD space for {name}: need {needed / 1024**3:.1f} GiB')
-    work = ROOT / '工作区' / name
-    work.mkdir()
     target.update(status='copying', bytes=total, file_count=len(files))
     save(ROOT / 'queue.json', queue)
+    work.mkdir(exist_ok=bool(active))
     manifest = {'target': name, 'source': str(SOURCE), 'files': files}
-    save(work / 'copy-manifest.json', manifest)
-    started = time.monotonic()
-    for index, f in enumerate(files):
-        src = SOURCE / f['relative']
-        dst = work / 'inputs' / f['relative']
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        h = hashlib.sha256()
-        partial = dst.with_suffix(dst.suffix + '.partial')
-        with src.open('rb') as inp, partial.open('xb') as out:
+    journal_path = work / 'copy-manifest.jsonl'
+    manifest_path = work / 'copy-manifest.json'
+    completed = {}
+    if journal_path.is_symlink() or manifest_path.is_symlink():
+        raise RuntimeError('Unsafe copy manifest')
+    if active and journal_path.exists():
+        with journal_path.open('r+b') as journal:
+            if json.loads(journal.readline()) != manifest:
+                raise RuntimeError('Copy inventory changed; review the interrupted target')
             while True:
-                block = inp.read(4 * 1024 * 1024)
-                if not block:
+                start = journal.tell()
+                line = journal.readline()
+                if not line:
                     break
-                out.write(block)
-                h.update(block)
-            out.flush()
-            os.fsync(out.fileno())
-        stat = src.stat()
-        if (stat.st_size, stat.st_mtime_ns) != (f['size'], f['mtime_ns']):
-            raise RuntimeError('Source changed during copy: ' + str(src))
-        if partial.stat().st_size != f['size'] or digest(partial) != h.hexdigest():
-            raise RuntimeError('Copy verification failed: ' + str(src))
-        partial.rename(dst)
-        os.utime(dst, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-        f['sha256'] = h.hexdigest()
-        save(work / 'copy-manifest.json', manifest)
-        print(json.dumps({'target': name, 'copied': index+1, 'total': len(files),
-                          'file': src.name, 'seconds': round(time.monotonic()-started, 1)}, ensure_ascii=False), flush=True)
-        time.sleep(0.05)
+                if not line.endswith(b'\n'):
+                    journal.truncate(start)
+                    break
+                entry = json.loads(line)
+                relative, sha = entry['relative'], entry['sha256']
+                if relative in completed or not isinstance(sha, str) or not re.fullmatch(r'[0-9a-f]{64}', sha):
+                    raise RuntimeError('Invalid copy receipt')
+                completed[relative] = sha
+    else:
+        if active and manifest_path.exists():
+            legacy = json.loads(manifest_path.read_text())
+            for record in legacy['files']:
+                if 'sha256' in record:
+                    completed[record['relative']] = record.pop('sha256')
+            if legacy != manifest:
+                raise RuntimeError('Copy inventory changed; review the interrupted target')
+        with tempfile.NamedTemporaryFile(mode='w', dir=work, prefix='.manifest-', encoding='utf-8', delete=False) as journal:
+            save_journal = Path(journal.name)
+            journal.write(json.dumps(manifest, ensure_ascii=False) + '\n')
+            for relative, sha in completed.items():
+                journal.write(json.dumps({'relative': relative, 'sha256': sha}, ensure_ascii=False) + '\n')
+            journal.flush()
+            os.fsync(journal.fileno())
+        save_journal.replace(journal_path)
+    started = time.monotonic()
+    with journal_path.open('a', encoding='utf-8') as journal:
+        for index, f in enumerate(files):
+            src = SOURCE / f['relative']
+            dst = work / 'inputs' / f['relative']
+            if dst.is_symlink() or not dst.resolve().is_relative_to(work.resolve()):
+                raise RuntimeError('Unsafe copy destination: ' + str(dst))
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            if active and dst.exists():
+                sha = digest(src)
+                if not dst.is_file() or digest(dst) != sha or completed.get(f['relative'], sha) != sha:
+                    raise RuntimeError('Copy verification failed: ' + str(src))
+                f['sha256'] = sha
+                if f['relative'] not in completed:
+                    append_copy_receipt(journal, f)
+                continue
+            h = hashlib.sha256()
+            partial = dst.with_suffix(dst.suffix + '.partial')
+            if partial.is_symlink() or dst.exists():
+                raise RuntimeError('Unsafe copy destination: ' + str(dst))
+            resume = active and partial.is_file()
+            with src.open('rb') as inp, partial.open('r+b' if resume else 'xb') as out:
+                if resume:
+                    while prefix := out.read(4 * 1024 * 1024):
+                        if prefix != inp.read(len(prefix)):
+                            raise RuntimeError('Partial copy differs from source: ' + str(partial))
+                        h.update(prefix)
+                while True:
+                    block = inp.read(4 * 1024 * 1024)
+                    if not block:
+                        break
+                    out.write(block)
+                    h.update(block)
+                out.flush()
+                os.fsync(out.fileno())
+            stat = src.stat()
+            if (stat.st_size, stat.st_mtime_ns) != (f['size'], f['mtime_ns']):
+                raise RuntimeError('Source changed during copy: ' + str(src))
+            if partial.stat().st_size != f['size'] or digest(partial) != h.hexdigest():
+                raise RuntimeError('Copy verification failed: ' + str(src))
+            if dst.exists() or dst.is_symlink():
+                raise RuntimeError('Unsafe copy destination: ' + str(dst))
+            partial.rename(dst)
+            os.utime(dst, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            f['sha256'] = h.hexdigest()
+            append_copy_receipt(journal, f)
+            print(json.dumps({'target': name, 'copied': index+1, 'total': len(files),
+                              'file': src.name, 'seconds': round(time.monotonic()-started, 1)}, ensure_ascii=False), flush=True)
+    save(manifest_path, manifest)
     target['status'] = 'copied'
     save(ROOT / 'queue.json', queue)
 

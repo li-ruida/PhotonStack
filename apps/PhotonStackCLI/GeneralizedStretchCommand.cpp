@@ -1,4 +1,5 @@
 #include "GeneralizedStretchCommand.hpp"
+#include "OutputPath.hpp"
 #include "ChannelRecipe.hpp"
 #include "photonstack/GeneralizedStretch.hpp"
 #include "photonstack/FitsCodec.hpp"
@@ -98,6 +99,7 @@ int runGeneralizedStretch(const std::vector<std::string>& args) {
             else{if(v<0||v>2048||v!=std::floor(v))throw std::invalid_argument("GHS preview width must be 0...2048");r.previewWidth=unsigned(v);}
         }else throw std::invalid_argument("Unknown GHS option: "+key);
     }
+    if (!inspect) photonstack::cli::requireNewOutputPath(output);
     if(!fresh){
         if(recipe.empty())throw std::invalid_argument("Specify --recipe");r=readRecipe(recipe,inspect);
         if(inspect){std::ifstream in(recipe.parent_path()/"report.json");std::cout<<in.rdbuf();return 0;}
@@ -106,7 +108,6 @@ int runGeneralizedStretch(const std::vector<std::string>& args) {
         if(blackSet!=whiteSet)throw std::invalid_argument("Specify both --black and --white, or neither for automatic input range");
         r.sha=fileSHA256(r.source);if(!expectedSHA.empty()&&expectedSHA!=r.sha)throw std::runtime_error("GHS source changed");
     }
-    if(output.empty()||fs::exists(output))throw std::invalid_argument("Choose a new GHS output directory");
     DevelopableFitsImage input;
     if(isFitsPath(r.source))input=readDevelopableFits(r.source);
     else{

@@ -50,6 +50,9 @@ StarDetectionResult detectLuminanceBuffer(
     if (std::any_of(coverage.begin(), coverage.end(), [](float value) { return !std::isfinite(value); })) {
         return detectionError("ImageBufferInvalid", "Input coverage must be finite");
     }
+    if (options.border == 0) {
+        return detectionError("ArgumentInvalid", "Star detection border must be at least one pixel");
+    }
     const auto requiredSize = static_cast<std::uint64_t>(options.border) * 2U + 1U;
     if (width < requiredSize || height < requiredSize) {
         return detectionError("ImageTooSmall", "Input image is too small for star detection");
@@ -312,6 +315,9 @@ StarDetectionResult StarDetector::detect(const ImageBuffer& image, const StarDet
     const detail::StageScope timer(detail::Stage::Stars);
     if (image.empty() || image.channels == 0 || image.pixels.size() != image.sampleCount()) {
         return detectionError("ImageBufferInvalid", "Input image must be a non-empty float buffer");
+    }
+    if (options.border == 0) {
+        return detectionError("ArgumentInvalid", "Star detection border must be at least one pixel");
     }
     const auto requiredSize = static_cast<std::uint64_t>(options.border) * 2U + 1U;
     if (image.width < requiredSize || image.height < requiredSize) {

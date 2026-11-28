@@ -20,6 +20,7 @@ struct GeneralizedStretchView: View {
     @StateObject private var session: GeneralizedStretchSession
     @Environment(\.dismiss) private var dismiss
     @State private var saving = false
+    @State private var operation: Task<Void, Never>?
     private var zh: Bool { model.language == .simplifiedChinese }
     init(model: PhotonStackWorkspaceModel, source: URL) {
         self.model = model; _session = StateObject(wrappedValue: GeneralizedStretchSession(source: source))
@@ -104,13 +105,13 @@ struct GeneralizedStretchView: View {
             if let error = session.error { Text(error).foregroundStyle(.red).font(.caption).textSelection(.enabled).lineLimit(4) }
             HStack {
                 if session.busy { ProgressView().controlSize(.small); Text(zh ? "正在处理全尺寸图像…" : "Processing full-resolution image…").font(.caption) }
-                if session.busy && !saving { Button(zh ? "取消" : "Cancel") { session.cancel() } }
+                if session.busy && !saving { Button(zh ? "取消" : "Cancel") { operation?.cancel(); session.cancel() } }
                 Spacer()
                 Button(zh ? "另存并使用成片…" : "Save & use result…") { save() }
                     .disabled(!session.isCurrent || session.busy || saving).accessibilityIdentifier("ghs.save")
             }
         }.padding(18).frame(minWidth: 940, idealWidth: 1100, minHeight: 700, idealHeight: 780)
-            .interactiveDismissDisabled(saving).task { session.begin() }.onDisappear { session.close() }
+            .interactiveDismissDisabled(saving).task { session.begin() }.onDisappear { operation?.cancel(); session.close(after: operation) }
     }
     private func control(_ title: String, _ key: WritableKeyPath<GeneralizedStretchSettings, Double>, _ range: ClosedRange<Double>, _ id: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -136,16 +137,24 @@ struct GeneralizedStretchView: View {
     }
     private func openResult() {
         guard let folder = folder() else { return }
-        Task { do { try await session.open(folder); session.error = nil } catch { session.error = error.localizedDescription } }
+        operation = Task {
+            defer { operation = nil }
+            do { try await session.open(folder); session.error = nil }
+            catch is CancellationError { }
+            catch { if !Task.isCancelled { session.error = error.localizedDescription } }
+        }
     }
     private func save() {
         guard let folder = folder() else { return }; saving = true
-        Task {
-            defer { saving = false }
+        let projectID = model.project.id
+        operation = Task {
+            defer { saving = false; operation = nil }
             do {
                 let image = try await session.saveResult(to: folder.appendingPathComponent("GHS-"+UUID().uuidString.prefix(8)))
+                try Task.checkCancellation()
+                guard model.project.id == projectID else { return }
                 model.showDerivedImage(image); dismiss()
-            } catch { session.error = error.localizedDescription }
+            } catch is CancellationError { } catch { if !Task.isCancelled { session.error = error.localizedDescription } }
         }
     }
 }

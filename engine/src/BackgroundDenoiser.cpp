@@ -1,3 +1,4 @@
+#include "photonstack/ParallelRanges.hpp"
 #include "photonstack/BackgroundDenoiser.hpp"
 #include <algorithm>
 #include <cmath>
@@ -14,16 +15,22 @@ void smooth(std::vector<float>& values, unsigned w, unsigned h) {
     std::vector<float> temp(values.size());
     constexpr double kernel[]{1./16,4./16,6./16,4./16,1./16};
     for(int step: {1,2,4,8}) {
-        for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x) {
-            double sum=0;
-            for(int k=-2;k<=2;++k)sum+=kernel[k+2]*values[std::size_t(y)*w+reflect(int(x)+k*step,w)];
-            temp[std::size_t(y)*w+x]=float(sum);
-        }
-        for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x) {
-            double sum=0;
-            for(int k=-2;k<=2;++k)sum+=kernel[k+2]*temp[std::size_t(reflect(int(y)+k*step,h))*w+x];
-            values[std::size_t(y)*w+x]=float(sum);
-        }
+        detail::parallelRows(w, h, [&](int y) noexcept {
+            for (unsigned x = 0; x < w; ++x) {
+                double sum = 0;
+                for (int k = -2; k <= 2; ++k)
+                    sum += kernel[k + 2] * values[std::size_t(y) * w + reflect(int(x) + k * step, w)];
+                temp[std::size_t(y) * w + x] = float(sum);
+            }
+        });
+        detail::parallelRows(w, h, [&](int y) noexcept {
+            for (unsigned x = 0; x < w; ++x) {
+                double sum = 0;
+                for (int k = -2; k <= 2; ++k)
+                    sum += kernel[k + 2] * temp[std::size_t(reflect(y + k * step, h)) * w + x];
+                values[std::size_t(y) * w + x] = float(sum);
+            }
+        });
     }
 }
 double median(std::vector<float>& a) {
@@ -119,16 +126,23 @@ NonlocalDenoiseResult BackgroundDenoiser::apply(const ImageBuffer& image, const 
         const auto center=median(samples);
         for(auto& v:samples)v=float(std::abs(v-center));
         const auto sigma=1.4826*median(samples);
-        if(sigma<=1.e-12) {
-            for(std::size_t p=0;p<n;++p)if(std::abs(value(p))>1.e-10)keep[p]=1;
-        } else for(std::size_t p=0;p<n;++p)
-            keep[p]=std::max(keep[p],float(std::clamp((std::abs(value(p))-2*sigma)/(2*sigma),0.,1.)));
+        detail::parallelRanges(n, 32768, [&](std::size_t first, std::size_t last) noexcept {
+            if (sigma <= 1.e-12) {
+                for (auto p = first; p < last; ++p)
+                    if (std::abs(value(p)) > 1.e-10) keep[p] = 1;
+            } else {
+                for (auto p = first; p < last; ++p)
+                    keep[p] = std::max(keep[p], float(std::clamp((std::abs(value(p)) - 2*sigma) / (2*sigma), 0., 1.)));
+            }
+        });
     }
-    for(std::size_t p=0;p<n;++p) {
-        if(mask[p]==0 || weights[p]<=.05F)continue;
-        const auto amount=strength*mask[p]*(1-keep[p]);
-        for(unsigned c=0;c<3;++c)out.image.pixels[p*image.channels+c]-=float(amount*residual[p*3+c]);
-    }
+    detail::parallelRanges(n, 32768, [&](std::size_t first, std::size_t last) noexcept {
+        for(auto p=first;p<last;++p) {
+            if(mask[p]==0 || weights[p]<=.05F)continue;
+            const auto amount=strength*mask[p]*(1-keep[p]);
+            for(unsigned c=0;c<3;++c)out.image.pixels[p*image.channels+c]-=float(amount*residual[p*3+c]);
+        }
+    });
     for(float v:out.image.pixels)if(!std::isfinite(v))return fail("Output exceeds finite Float32 range");
     return out;
 }

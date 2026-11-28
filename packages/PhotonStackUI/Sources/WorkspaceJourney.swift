@@ -48,13 +48,13 @@ struct WorkspaceJourneyState {
 
 extension PhotonStackWorkspaceModel {
     var journeyAnalysisIsCurrent: Bool {
-        DeepSkyReview.analysisIsCurrent(project.deepSkySettings?.lastReport, recipe: try? deepSkyRecipeText())
+        DeepSkyReview.analysisIsCurrent(project.deepSkySettings?.lastReport, recipe: displayedDeepSkyRecipe())
     }
 
     var journeyResultIsCurrent: Bool {
         guard let report = project.deepSkySettings?.lastReport,
               report.success, !report.analysisOnly, latestDeepSkyResultURL != nil else { return false }
-        return DeepSkyReview.sameResultRecipe(try? deepSkyRecipeText(), report.recipe)
+        return DeepSkyReview.sameResultRecipe(displayedDeepSkyRecipe(), report.recipe)
     }
 
     var journeyKeptCount: Int {

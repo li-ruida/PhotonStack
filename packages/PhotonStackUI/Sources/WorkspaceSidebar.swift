@@ -8,6 +8,28 @@ import os
 import SwiftUI
 import UniformTypeIdentifiers
 
+struct AssetAvailability: ViewModifier {
+    let url: URL
+    @Binding var missing: Bool
+    @Environment(\.scenePhase) private var phase
+
+    private struct Request: Equatable {
+        let url: URL
+        let phase: ScenePhase
+    }
+
+    func body(content: Content) -> some View {
+        content.task(id: Request(url: url, phase: phase)) {
+            let path = url.path
+            let result = await Task.detached(priority: .utility) {
+                var directory: ObjCBool = false
+                return !FileManager.default.fileExists(atPath: path, isDirectory: &directory) || directory.boolValue
+            }.value
+            if !Task.isCancelled { missing = result }
+        }
+    }
+}
+
 struct AssetSidebar: View {
     @ObservedObject var model: PhotonStackWorkspaceModel
     let onImportFiles: () -> Void
@@ -194,9 +216,9 @@ struct AssetSidebar: View {
     private var assetGroups: [SidebarAssetGroup] {
         let panels = model.usesMosaicWorkflow ? model.mosaicAssets : []
         let panelIDs = Set(panels.map(\.id))
-        let groupedSources = Set(panels.flatMap { $0.mosaicFolder?.frames ?? [] })
+        let groupedSources = Set(panels.flatMap { $0.mosaicFolder?.frames ?? [] }.map(PhotonStackProject.assetIdentityPath(for:)))
         let visible = model.project.assets.filter {
-            panelIDs.contains($0.id) || $0.role != .light || !groupedSources.contains($0.originalURL)
+            panelIDs.contains($0.id) || $0.role != .light || !groupedSources.contains(PhotonStackProject.assetIdentityPath(for: $0.originalURL))
         }
         return CalibrationFrameRole.allCases.compactMap { role in
             let assets = visible.filter { (panelIDs.contains($0.id) ? .mosaic : $0.role) == role }
@@ -277,11 +299,13 @@ private struct SidebarAssetRow: View {
     let isSelected: Bool
     let showsRemoveButton: Bool
 
+    @State private var missing = false
+
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: iconName)
                 .foregroundStyle(
-                    model.isAssetMissing(asset)
+                    missing
                         ? Color.orange
                         : (isSelected ? Color.accentColor : Color.secondary)
                 )
@@ -312,10 +336,11 @@ private struct SidebarAssetRow: View {
             .accessibilityHidden(showsRemoveButton == false)
         }
         .padding(.vertical, 4)
+        .modifier(AssetAvailability(url: asset.originalURL, missing: $missing))
     }
 
     private var subtitle: String {
-        if model.isAssetMissing(asset) {
+        if missing {
             return model.localized(.missingAssetStatus)
         }
         if let group = asset.mosaicFolder {
@@ -335,7 +360,7 @@ private struct SidebarAssetRow: View {
     }
 
     private var iconName: String {
-        if model.isAssetMissing(asset) {
+        if missing {
             return "exclamationmark.triangle.fill"
         }
         switch asset.kind {

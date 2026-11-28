@@ -65,7 +65,7 @@ struct DeepSkyWorkflowOverview: View {
         }
         if let report = model.project.deepSkySettings?.lastReport,
            report.success, !report.analysisOnly, model.latestDeepSkyResultURL != nil,
-           DeepSkyReview.sameResultRecipe(try? model.deepSkyRecipeText(), report.recipe) {
+           DeepSkyReview.sameResultRecipe(model.displayedDeepSkyRecipe(), report.recipe) {
             return chinese ? "\(report.selectedCount) 张亮场的处理结果已生成，尚需画质复查。先检查全图和 100% 细节，再决定修整或导出。" : "Result available from \(report.selectedCount) lights; visual review is still needed. Inspect the full image and 100% detail before finishing or exporting."
         }
         let current = reportIsCurrent

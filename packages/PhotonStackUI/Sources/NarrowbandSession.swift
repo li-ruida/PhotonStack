@@ -27,7 +27,7 @@ enum NarrowbandSampling: String, CaseIterable {
     func title(chinese: Bool) -> String {
         switch self {
         case .redGrid: chinese ? "同位置采样" : "Common red-site grid"
-        case .cellAverage: chinese ? "像素格均值（旧配方）" : "Cell average (legacy)"
+        case .cellAverage: chinese ? "像素格均值（旧版）" : "Cell average (legacy)"
         }
     }
 }

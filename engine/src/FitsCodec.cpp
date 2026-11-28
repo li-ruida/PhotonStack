@@ -7,6 +7,7 @@
 #include "photonstack/CalibrationMetadata.hpp"
 #include "photonstack/SensorMasterBuilder.hpp"
 #include "photonstack/SensorCalibration.hpp"
+#include "photonstack/SensorQuality.hpp"
 #include "photonstack/FileDigest.hpp"
 #include "DemosaicMenon.hpp"
 #include "DemosaicRatio.hpp"
@@ -308,7 +309,7 @@ double readFloat64(const unsigned char* data) {
     return value;
 }
 
-float readPhysicalSample(const unsigned char* data, int bitpix, double bscale, double bzero) {
+float readPhysicalSample(const unsigned char* data, int bitpix, double bscale, double bzero, std::optional<long long> blank = {}) {
     double raw = 0.0;
     switch (bitpix) {
     case 8:
@@ -329,6 +330,7 @@ float readPhysicalSample(const unsigned char* data, int bitpix, double bscale, d
     default:
         break;
     }
+    if (bitpix > 0 && blank && raw == double(*blank)) return std::numeric_limits<float>::quiet_NaN();
     return static_cast<float>(raw * bscale + bzero);
 }
 
@@ -341,7 +343,7 @@ enum class SampleStreamResult {
 template <typename Consumer>
 SampleStreamResult forEachPhysicalSample(std::ifstream& file, std::size_t dataOffset, std::size_t sampleCount,
                                          std::size_t sampleBytes, int bitpix, double bscale, double bzero,
-                                         Consumer&& consume) {
+                                         Consumer&& consume, std::optional<long long> blank = {}) {
     if (dataOffset > static_cast<std::size_t>(std::numeric_limits<std::streamoff>::max())) {
         return SampleStreamResult::ReadFailed;
     }
@@ -372,7 +374,7 @@ SampleStreamResult forEachPhysicalSample(std::ifstream& file, std::size_t dataOf
         }
         for (std::size_t localSample = 0; localSample < samplesThisChunk; ++localSample) {
             const auto* bytes = buffer.data() + localSample * sampleBytes;
-            consume(sample + localSample, readPhysicalSample(bytes, bitpix, bscale, bzero));
+            consume(sample + localSample, readPhysicalSample(bytes, bitpix, bscale, bzero, blank));
         }
         sample += samplesThisChunk;
     }
@@ -448,6 +450,17 @@ float normalizeForDisplay(float value, const SampleRange& range) {
 
 } // namespace
 
+std::optional<SolvedPanel> readOptionalFitsWcs(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    const auto header = parseHeader(file);
+    if (!header.ok) throw std::runtime_error(header.message);
+    for (const auto* key : {"CTYPE1", "CTYPE2", "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2",
+                           "CD1_1", "CD1_2", "CD2_1", "CD2_2", "CDELT1", "CDELT2",
+                           "PC1_1", "PC1_2", "PC2_1", "PC2_2", "A_ORDER", "B_ORDER", "WCSAXES"})
+        if (header.values.contains(key)) return readSolvedPanel(path);
+    return std::nullopt;
+}
+
 DevelopableFitsImage readDevelopableFits(const std::filesystem::path& path, bool readWcs) {
     std::ifstream file(path, std::ios::binary);
     const auto header = parseHeader(file);
@@ -459,6 +472,11 @@ DevelopableFitsImage readDevelopableFits(const std::filesystem::path& path, bool
     if (profile != header.values.end() && profile->second != "Linear" && profile->second != "LINEAR-SRGB" && profile->second != "SRGB-DISPLAY")
         throw std::invalid_argument("Unsupported FITS master color encoding; expected linear or SRGB-DISPLAY");
     DevelopableFitsImage result;
+    if (const auto unit = header.values.find("BUNIT"); unit != header.values.end()) {
+        result.unit = unit->second;
+        for (auto i = result.unit.find("''"); i != std::string::npos; i = result.unit.find("''", i + 1))
+            result.unit.erase(i, 1);
+    }
     for (const auto* key : {"CTYPE1", "CTYPE2", "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2",
                             "CD1_1", "CD1_2", "CD2_1", "CD2_2", "CDELT1", "CDELT2",
                             "PC1_1", "PC1_2", "PC2_1", "PC2_2", "A_ORDER", "B_ORDER", "WCSAXES"})
@@ -605,6 +623,13 @@ SolvedPanel readSolvedPanel(const std::filesystem::path& path) { return readPane
 SolvedPanel readAstrometryICRSPanel(const std::filesystem::path& path) { return readPanelWcs(path, true); }
 
 
+std::map<std::string,std::string> readFitsPrimaryValues(const std::filesystem::path& path) {
+    std::ifstream stream(path,std::ios::binary);
+    const auto header=parseHeader(stream,true);
+    if(!header.ok || !header.duplicateKeys.empty()) throw std::invalid_argument("Invalid or ambiguous FITS primary metadata");
+    return header.values;
+}
+
 bool isFitsPath(const std::filesystem::path& path) {
     const auto extension = lowercaseExtension(path);
     return extension == ".fits" || extension == ".fit" || extension == ".fts";
@@ -689,6 +714,9 @@ static CalibrationAcquisition acquisitionFromHeader(const FitsHeader& header, st
     text("units", "BUNIT"); text("domain", "PSCOLOR"); text("declaredLayout", "PSLAYOUT");
     text("bayer", "BAYERPAT"); text("temperatureUnit", "TEMPUNIT");
     text("biasState", "PSBIAS"); text("normalization", "PSNORM"); text("calibration", "PSCALIB");
+    text("acquisitionDeclaration", "PSDECL");
+    text("badPixelMap", "PSBPM");
+    text("badPixelSourceRole", "PSBPROLE");
     if (r.text.contains("biasState") && !std::set<std::string>{"included","removed"}.contains(r.text.at("biasState")))
         issue("biasState", "invalid", "PSBIAS must be included or removed");
     number("exposure", {"EXPTIME", "EXPOSURE"}, 0, 1e8);
@@ -839,7 +867,8 @@ struct SensorFitsReader::Impl {
     std::optional<long long> blank;
     std::vector<unsigned char> bytes;
 };
-SensorFitsReader::SensorFitsReader(const std::filesystem::path& path, bool hashWhileReading): impl_(std::make_unique<Impl>()) {
+SensorFitsReader::SensorFitsReader(const std::filesystem::path& path, bool hashWhileReading, Domain domain)
+    : impl_(std::make_unique<Impl>()) {
     auto& r = *impl_;
     FitsHeader h;
     if (hashWhileReading) {
@@ -856,7 +885,8 @@ SensorFitsReader::SensorFitsReader(const std::filesystem::path& path, bool hashW
     }
     const auto& a = r.acquisition;
     if (a.channels != 1 || !a.issues.empty() || !a.text.contains("sampling") ||
-        !a.text.contains("domain") || a.text.at("domain") != "linear")
+        (!a.text.contains("domain") && (domain == Domain::DeclaredLinear || !a.text.at("sampling").starts_with("CFA:"))) ||
+        (a.text.contains("domain") && a.text.at("domain") != "linear"))
         throw std::invalid_argument("Sensor frames require valid explicit linear single-plane acquisition metadata");
     r.offset = h.dataOffset; r.count = std::size_t(a.width)*a.height; r.stride = bytesPerSample(a.bitpix);
     r.scale = a.numeric.at("scale"); r.zero = a.numeric.at("zero");
@@ -1124,7 +1154,7 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
     if (!file) {
         return readError("InputReadFailed", "Input file could not be read or is empty");
     }
-    const auto header = parseHeader(file);
+    const auto header = parseHeader(file, true);
     if (!header.ok) {
         return readError(header.errorCode, header.message);
     }
@@ -1160,6 +1190,15 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
         return readError("ImageHeaderInvalid", "FITS scaling values must be finite numbers");
     }
 
+    std::optional<long long> blank;
+    if (description->bitpix > 0 && header.values.contains("BLANK")) {
+        blank = integerValue(header,"BLANK");
+        const auto low = description->bitpix == 8 ? 0LL : description->bitpix == 16 ? -32768LL : -2147483648LL;
+        const auto high = description->bitpix == 8 ? 255LL : description->bitpix == 16 ? 32767LL : 2147483647LL;
+        if (!blank || *blank < low || *blank > high || header.duplicateKeys.contains("BLANK") ||
+            trim(header.rawCards.at("BLANK").substr(10)).starts_with('\''))
+            return readError("ImageHeaderInvalid", "Invalid integer FITS BLANK keyword");
+    }
     SampleRange colorRange;
     SampleRange alphaRange;
     const auto colorChannels = static_cast<std::size_t>(std::min<std::uint16_t>(description->channels, 3));
@@ -1173,8 +1212,7 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
                 } else if (channel == 3) {
                     includeInRange(alphaRange, value);
                 }
-            }
-        );
+            }, blank);
         if (rangeStatus == SampleStreamResult::AllocationFailed) {
             return readError("ImageAllocationFailed", "Could not allocate the FITS decode buffer");
         }
@@ -1241,8 +1279,7 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
             if (options.maskNonFinitePixels && invalidSource) {
                 result.image.pixels[outputOffset + 3] = std::numeric_limits<float>::quiet_NaN();
             }
-        }
-    );
+        }, blank);
     if (decodeStatus == SampleStreamResult::AllocationFailed) {
         return readError("ImageAllocationFailed", "Could not allocate the FITS decode buffer");
     }
@@ -1551,6 +1588,67 @@ void appendWcsCards(std::vector<unsigned char>& header, const TanGrid* sky, cons
 }
 } // namespace
 
+void copyFitsWithAcquisition(const std::filesystem::path& source, const std::filesystem::path& output,
+                             const std::map<std::string, std::string>& declarations) {
+    const std::set<std::string> strings{"INSTRUME", "CAM-SER", "OBJECT", "DATE-OBS", "TIMESYS", "FILTER", "READMODE", "PSOPTICS", "IMAGETYP"};
+    const std::set<std::string> numbers{"EXPTIME", "GAIN", "ISOSPEED", "OFFSET", "CCD-TEMP", "SET-TEMP", "XBINNING", "YBINNING", "XORGSUBF", "YORGSUBF", "FOCALLEN", "EGAIN"};
+    if (declarations.empty() || std::filesystem::exists(output) || std::filesystem::is_symlink(output))
+        throw std::invalid_argument("Declare acquisition fields and choose a new output file");
+    std::map<std::string, std::string> cards;
+    std::set<std::string> replaced{"CHECKSUM", "DATASUM", "PSDECL"};
+    for (const auto& [key, value] : declarations) {
+        if (value.empty() || value.size() > 60 || std::any_of(value.begin(), value.end(), [](unsigned char c) { return c < 32 || c > 126; }))
+            throw std::invalid_argument("FITS declarations require printable ASCII of at most 60 characters");
+        if (strings.contains(key)) {
+            std::string quoted = "'";
+            for (char c : value) { quoted += c; if (c == '\'') quoted += c; }
+            quoted += '\'';
+            if (quoted.size() > 68) throw std::invalid_argument("Declared FITS string is too long");
+            cards[key] = quoted;
+        } else if (numbers.contains(key)) {
+            std::size_t used = 0; const double n = std::stod(value, &used);
+            if (used != value.size() || !std::isfinite(n)) throw std::invalid_argument("Invalid declared number");
+            std::ostringstream out; out << std::setprecision(17) << n; cards[key] = out.str();
+        } else throw std::invalid_argument("Storage, WCS, sampling and calibration flags cannot be redeclared");
+        replaced.insert(key);
+        if (key == "EXPTIME") replaced.insert("EXPOSURE");
+        if (key == "IMAGETYP") replaced.insert("FRAME");
+    }
+    std::ifstream in(source, std::ios::binary); const auto parsed = parseHeader(in);
+    if (!parsed.ok || parsed.dataOffset > 1024 * 1024) throw std::invalid_argument("Invalid or oversized FITS header");
+    const auto desc = imageDescription(parsed);
+    if (!desc || desc->channels != 1 || parsed.values.contains("PSCALIB"))
+        throw std::invalid_argument("Declare acquisition metadata on an uncalibrated sensor frame");
+    const auto size = std::filesystem::file_size(source);
+    const auto count = std::uint64_t(desc->width) * desc->height;
+    if (size < parsed.dataOffset || count > (size - parsed.dataOffset) / unsigned(std::abs(desc->bitpix) / 8))
+        throw std::invalid_argument("Truncated FITS image payload");
+    in.clear(); in.seekg(0); std::vector<unsigned char> header;
+    for (std::size_t offset = 0; offset < parsed.dataOffset; offset += 80) {
+        std::string card(80, ' '); in.read(card.data(), 80);
+        if (!in) throw std::runtime_error("Cannot read acquisition header");
+        const auto key = trim(card.substr(0, 8)); if (key == "END") break;
+        if (!replaced.contains(key)) appendCard(header, card);
+    }
+    for (const auto& [key, value] : cards) appendCard(header, makeCard(key, value));
+    appendCard(header, makeCard("PSDECL", "'manual-v1'")); appendCard(header, makeEndCard());
+    header.resize((header.size() + 2879) / 2880 * 2880, ' ');
+    in.clear(); in.seekg(static_cast<std::streamoff>(parsed.dataOffset));
+    auto* out = std::fopen(output.c_str(), "wbx");
+    if (!out) throw std::runtime_error("Cannot create acquisition copy");
+    try {
+        if (std::fwrite(header.data(), 1, header.size(), out) != header.size()) throw std::runtime_error("Cannot write declared header");
+        std::array<char, 65536> buffer{};
+        while (in) {
+            in.read(buffer.data(), buffer.size()); const auto n = std::size_t(in.gcount());
+            if (n && std::fwrite(buffer.data(), 1, n, out) != n) throw std::runtime_error("Cannot copy sensor payload");
+        }
+        if (!in.eof() || std::fflush(out)) throw std::runtime_error("Cannot save acquisition copy");
+        const auto status = std::fclose(out); out = nullptr; if (status) throw std::runtime_error("Cannot close acquisition copy");
+        if (!inspectCalibrationAcquisition(output).issues.empty()) throw std::invalid_argument("Declared metadata contains conflicts or invalid fields");
+    } catch (...) { if (out) std::fclose(out); std::error_code ec; std::filesystem::remove(output, ec); throw; }
+}
+
 void copyFitsWithWcs(const std::filesystem::path& source, const std::filesystem::path& output, const SolvedPanel& sky) {
     if (std::filesystem::exists(output) || std::filesystem::is_symlink(output))
         throw std::invalid_argument("WCS output must be a new file");
@@ -1604,7 +1702,8 @@ void copyFitsWithWcs(const std::filesystem::path& source, const std::filesystem:
 }
 
 static ImageWriteResult writeFitsProduct(const ImageBuffer& image, const std::filesystem::path& path,
-                                  const TanGrid* sky, const std::vector<SipTerm>* distortion, FitsOutputDomain domain, const SensorMasterResult* sensor) {
+                                  const TanGrid* sky, const std::vector<SipTerm>* distortion, FitsOutputDomain domain,
+                                  const SensorMasterResult* sensor, const std::string& unit = {}) {
     if (image.empty() || image.channels == 0 || image.channels > 4 || image.pixels.size() != image.sampleCount()) {
         return writeError("ImageBufferInvalid", "Image buffer must be non-empty Float32 data with 1 to 4 channels");
     }
@@ -1628,17 +1727,19 @@ static ImageWriteResult writeFitsProduct(const ImageBuffer& image, const std::fi
         appendCard(header, makeCard("BSCALE", "1.0"));
         appendCard(header, makeCard("BZERO", "0.0"));
         appendCard(header, makeCard("PSCOLOR", sensor ? "'Linear'" : display ? "'SRGB-DISPLAY'" : "'LINEAR-SRGB'"));
+        const auto str = [&](const std::string& key, const std::string& value) {
+            std::string quoted = "'";
+            for (unsigned char c : value) {
+                if (c < 32 || c > 126) throw std::invalid_argument("Metadata requires printable FITS ASCII");
+                quoted += char(c);
+                if (c == '\'') quoted += '\'';
+            }
+            quoted += "'";
+            if (quoted.size() > 68) throw std::invalid_argument("Metadata exceeds one FITS card");
+            appendCard(header, makeCard(key, quoted));
+        };
+        if (!unit.empty()) str("BUNIT", unit);
         if (sensor) {
-            auto str = [&](const std::string& key, const std::string& value) {
-                std::string quoted = "'";
-                for (unsigned char c : value) {
-                    if (c < 32 || c > 126) throw std::invalid_argument("Sensor metadata requires printable FITS ASCII");
-                    quoted += char(c); if (c == '\'') quoted += '\'';
-                }
-                quoted += "'";
-                if (quoted.size() > 68) throw std::invalid_argument("Sensor metadata exceeds one FITS card");
-                appendCard(header, makeCard(key, quoted));
-            };
             auto num = [&](const std::string& key, double value) {
                 if (!std::isfinite(value)) throw std::invalid_argument("Invalid sensor metadata number");
                 std::ostringstream out; out << std::setprecision(17) << value;
@@ -1659,7 +1760,9 @@ static ImageWriteResult writeFitsProduct(const ImageBuffer& image, const std::fi
             if (sampling == "mono") str("PSLAYOUT","MONO");
             else { str("PSLAYOUT","CFA"); str("BAYERPAT",sampling.substr(4)); num("XBAYROFF",0); num("YBAYROFF",0); }
             str("IMAGETYP", "Master " + sensor->role);
-            str("PSBIAS",sensor->biasState); str("PSMETHOD",sensor->method);
+            if (sensor->role == "bad-pixel-map") { str("PSBPM", "defect-v1"); str("PSBPROLE", a.text.at("badPixelSourceRole")); }
+            else str("PSBIAS",sensor->biasState);
+            str("PSMETHOD",sensor->method);
             num("STACKCNT",sensor->sources.size());
             str("PSNORM",sensor->role == "flat" ? "phase-mean" : "none");
         }
@@ -1725,9 +1828,21 @@ static ImageWriteResult writeFitsProduct(const ImageBuffer& image, const std::fi
 }
 
 ImageWriteResult FitsCodec::write(const ImageBuffer& image, const std::filesystem::path& path,
-                                  const TanGrid* sky, const std::vector<SipTerm>* distortion, FitsOutputDomain domain) const {
-    return writeFitsProduct(image, path, sky, distortion, domain, nullptr);
+                                  const TanGrid* sky, const std::vector<SipTerm>* distortion,
+                                  FitsOutputDomain domain, const std::string& unit) const {
+    return writeFitsProduct(image, path, sky, distortion, domain, nullptr, unit);
 }
+void writeSensorDefectMap(const SensorQualityResult& result, const std::filesystem::path& path) {
+    if (fileSHA256(result.source.path) != result.source.sha) throw std::invalid_argument("Defect map source changed");
+    SensorMasterResult product;
+    product.master = result.badPixels; product.acquisition = result.acquisition;
+    product.acquisition.text["units"] = "dimensionless";
+    product.acquisition.text["badPixelSourceRole"] = result.role;
+    product.role = "bad-pixel-map"; product.method = "phase-threshold"; product.sources = {result.source};
+    const auto output = writeFitsProduct(product.master, path, nullptr, nullptr, FitsOutputDomain::LinearScience, &product);
+    if (!output.ok) throw std::runtime_error(output.message);
+}
+
 void writeSensorMaster(const SensorMasterResult& result, const std::filesystem::path& path) {
     if (result.master.channels != 1 || result.master.colorEncoding != ColorEncoding::Linear ||
         result.master.width != result.acquisition.width || result.master.height != result.acquisition.height ||

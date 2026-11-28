@@ -226,6 +226,7 @@ void render(const Arguments& args) {
 int runStarLayers(const std::vector<std::string>& args) {
     if (args.size() < 2)
         throw std::invalid_argument("Expected star-layers split or render");
+    if (args[1].starts_with("linear-")) return runLinearStarLayers(args);
     Arguments values;
     for (std::size_t i = 2; i < args.size(); i += 2) {
         if (i + 1 >= args.size() || !values.emplace(args[i], args[i + 1]).second)

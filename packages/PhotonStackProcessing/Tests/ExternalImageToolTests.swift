@@ -75,3 +75,25 @@ private let tinyPNG = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAA
     #expect(!FileManager.default.fileExists(atPath: output.path))
     #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).allSatisfy { !$0.contains("photonstack-output-") })
 }
+
+@Test func externalLinearToolRequiresCurrentLicenseAcceptance() throws {
+    let (root, executable) = try externalFixture("exit 0\n")
+    defer { try? FileManager.default.removeItem(at: root) }
+    var tool = ExternalImageTool(name: "StarNet linear", executable: executable,
+                                 arguments: ["{input}", "{output}"], linearFITS: true)
+    #expect(throws: (any Error).self) { try tool.validate() }
+    let license = root.appendingPathComponent("LICENSE.txt")
+    try "Fixture terms, not a real product license.".write(to: license, atomically: true, encoding: .utf8)
+    tool.licenseFile = license
+    #expect(throws: (any Error).self) { try tool.validate() }
+    tool.acceptedLicenseSHA256 = try ExternalImageTool.license(at: license).sha256
+    try tool.validate()
+    let encoded = try JSONEncoder().encode(tool)
+    let restored = try JSONDecoder().decode(ExternalImageTool.self, from: encoded)
+    #expect(restored == tool)
+    try "Changed fixture terms.".write(to: license, atomically: true, encoding: .utf8)
+    #expect(throws: (any Error).self) { try restored.validate() }
+    let oldJSON = "{\"version\":1,\"name\":\"copy\",\"executable\":\"/bin/cp\",\"arguments\":[\"{input}\",\"{output}\"]}"
+    let old = try JSONDecoder().decode(ExternalImageTool.self, from: Data(oldJSON.utf8))
+    #expect(old.linearFITS == nil && old.licenseFile == nil)
+}

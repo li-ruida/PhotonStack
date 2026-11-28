@@ -24,7 +24,7 @@ struct GaiaCatalogDownloadView: View {
                 Text(t("获取 Gaia 光谱星表", "Get Gaia spectral catalog")).font(.headline)
                 Spacer()
                 Button(t("打开已保存数据…", "Open saved data…")) { reopen() }.disabled(operation != nil || field == nil).accessibilityIdentifier("gaia.reopen")
-                Button(t("关闭", "Close")) { dismiss() }.keyboardShortcut(.cancelAction)
+                ToolSheetCloseButton(chinese: chinese, busy: operation != nil) { dismiss() }
             }
             Text(source.lastPathComponent).font(.caption).foregroundStyle(.secondary)
             if let field {
@@ -33,7 +33,7 @@ struct GaiaCatalogDownloadView: View {
             Form {
                 TextField(t("拍摄时间（UTC）", "Observation time (UTC)"), text: $query.observationUTC, prompt: Text("YYYY-MM-DDTHH:mm:ss"))
                     .textFieldStyle(.roundedBorder).accessibilityIdentifier("gaia.date")
-                Text(t("填写代表这张母片的拍摄时间；仅填日期按 UTC 零时处理。日期用于将 J2016.0 星位传播到拍摄历元，不会从文件名或当前日期猜测。", "Enter a representative observation time for this master. A date alone means midnight UTC. It propagates J2016.0 positions to the observation epoch; dates are not inferred from filenames or today's date.")).font(.caption).foregroundStyle(.secondary)
+                Text(t("填写拍摄时间（UTC），用于修正星位。只填日期时按当天 00:00 计算。", "Enter a representative observation time for this master. A date alone means midnight UTC. It propagates J2016.0 positions to the observation epoch; dates are not inferred from filenames or today's date.")).font(.caption).foregroundStyle(.secondary)
                 HStack {
                     TextField(t("最亮 G 星等", "Brightest G magnitude"), value: $query.minimumMagnitude, format: .number).frame(width: 190).accessibilityIdentifier("gaia.minimum")
                     TextField(t("最暗 G 星等", "Faintest G magnitude"), value: $query.maximumMagnitude, format: .number).frame(width: 190).accessibilityIdentifier("gaia.maximum")
@@ -42,7 +42,7 @@ struct GaiaCatalogDownloadView: View {
                     .accessibilityIdentifier("gaia.limit")
                 Toggle(t("重新联网获取（不复用缓存）", "Download fresh data (bypass cache)"), isOn: $refresh).accessibilityIdentifier("gaia.refresh")
             }.formStyle(.grouped).disabled(operation != nil)
-            Text(t("向 ESA Gaia 服务发送视场坐标、星等范围及恒星 ID。照片保留在本机。下载的原始星表、光谱、查询参数和摘要一起保存，可离线重开。", "Queries send field coordinates, magnitude limits and source IDs to ESA Gaia. Photos remain local. Original tables, spectra, query parameters and digests are saved together for offline reuse.")).font(.caption).foregroundStyle(.secondary)
+            Text(t("向 Gaia 查询星表和光谱，照片不上传。下载后可离线使用。", "Queries send field coordinates, magnitude limits and source IDs to ESA Gaia. Photos remain local. Original tables, spectra, query parameters and digests are saved together for offline reuse.")).font(.caption).foregroundStyle(.secondary)
             if let result {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(t("已保存 \(result.manifest.count) 颗光谱星 · 跳过 \(result.manifest.skipped.count) 颗", "Saved \(result.manifest.count) spectral stars · Skipped \(result.manifest.skipped.count)")).font(.subheadline.bold())
@@ -58,8 +58,8 @@ struct GaiaCatalogDownloadView: View {
                 }
             }
             Spacer(minLength: 0)
-            if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled).lineLimit(3) }
-            HStack {
+            if let error { ProcessingErrorNotice(message:error,chinese:chinese) }
+            ToolActionBar {
                 if operation != nil {
                     ProgressView().controlSize(.small)
                     if let progress {
@@ -68,16 +68,17 @@ struct GaiaCatalogDownloadView: View {
                             Text(t("已接收 \(progress.receivedBytes / 1024) KB · 重试 \(progress.retries)", "Received \(progress.receivedBytes / 1024) KB · Retries \(progress.retries)"))
                         }.font(.caption).monospacedDigit()
                     }
-                    Button(t("取消", "Cancel")) { operation?.cancel() }.accessibilityIdentifier("gaia.cancel")
+                    Button(t("取消任务", "Cancel task")) { operation?.cancel() }.keyboardShortcut(".", modifiers: .command).accessibilityIdentifier("gaia.cancel")
                 }
                 Spacer()
                 Button(t("查询并保存…", "Query & save…")) { download() }.disabled(operation != nil || field == nil || !query.valid).accessibilityIdentifier("gaia.download")
                 Button(t("使用此星表", "Use catalog")) {
                     guard let result, let field else { return }
                     perform { let checked = try await downloader.reopen(result.directory, source: source, field: field); use(checked.directory.appendingPathComponent("catalog.txt")); dismiss() }
-                }.buttonStyle(.borderedProminent).disabled(operation != nil || !current).accessibilityIdentifier("gaia.use")
+                }.toolPrimaryAction().disabled(operation != nil || !current).accessibilityIdentifier("gaia.use")
             }
         }.padding(18).frame(width: 760, height: 680)
+            .interactiveDismissDisabled(operation != nil)
             .task { perform { field = try await GaiaSpectralField.read(source, service: service) } }
             .onDisappear { operation?.cancel() }
     }

@@ -25,7 +25,7 @@ struct CalibrationMasterBuildView: View {
             HStack(spacing: 18) {
                 step("1", t("选择原片", "Choose frames"), complete: !model.frames.isEmpty)
                 Image(systemName: "chevron.right").foregroundStyle(.tertiary)
-                step("2", t("制作审查", "Build and review"), complete: model.currentDraft != nil)
+                step("2", t("制作与检查", "Build and review"), complete: model.currentDraft != nil)
                 Image(systemName: "chevron.right").foregroundStyle(.tertiary)
                 step("3", t("保存入库", "Save to library"), complete: false)
             }.font(.callout)
@@ -50,15 +50,15 @@ struct CalibrationMasterBuildView: View {
                                 }
                             }
                         }
-                        if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+                        if let error = model.error { ProcessingErrorNotice(message:error,chinese:chinese) }
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 14).padding(.trailing, 6)
                 }
             }
             HStack {
-                Text(t("原片只读。审查后保存母片、有效样本图和完整制作记录。", "Sources stay unchanged. Save the master, sample-count map and full construction record after review."))
+                Text(t("原片只读。检查后保存母片、有效样本图和完整制作记录。", "Sources stay unchanged. Save the master, sample-count map and full construction record after review."))
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button(t("制作并审查", "Build and review")) { model.build() }.disabled(model.busy || model.request == nil)
+                Button(t("制作并检查", "Build and review")) { model.build() }.disabled(model.busy || model.request == nil)
                     .accessibilityIdentifier("calibration.build-run")
                 Button(t("保存到母片库", "Save to library")) {
                     model.save { id in await saved(id); dismiss() }

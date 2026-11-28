@@ -16,6 +16,24 @@ import PhotonStackAppCore
     #expect(try Data(contentsOf: target) == original)
 }
 
+@Test(arguments: ["calibration-declare", "sensor-quality", "ser-extract", "xisf-import", "xisf-export", "plugin-run", "time-series"])
+func newProductCommandsPreserveExistingDirectories(command: String) throws {
+    let fm = FileManager.default
+    let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try fm.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? fm.removeItem(at: root) }
+    let target = root.appendingPathComponent("result")
+    let tx = try #require(AtomicOutputTransaction(arguments: [command, "--output-dir", target.path], workingDirectory: root))
+    try fm.createDirectory(at: tx.temporaryURL, withIntermediateDirectories: false)
+    try fm.createDirectory(at: target, withIntermediateDirectories: false)
+    let original = Data("original observation".utf8)
+    let file = target.appendingPathComponent("science.fits")
+    try original.write(to: file)
+    #expect(throws: ProcessingServiceError.self) { try tx.commit() }
+    tx.cleanUp()
+    #expect(try Data(contentsOf: file) == original)
+}
+
 @Test(arguments: ["review-preview", "denoise-nonlocal", "develop"])
 func auditReviewPreviewPublicationPreservesExistingAndConcurrentFiles(command: String) throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("AuditPublish-\(UUID())")

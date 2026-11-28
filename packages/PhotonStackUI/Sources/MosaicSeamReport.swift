@@ -23,10 +23,22 @@ public struct MosaicSeamRegion: Codable, Equatable, Sendable {
         return before == nil && after == nil
     }
 }
+public struct MosaicFinalSeamStatistics: Codable, Equatable, Sendable {
+    public var samples,backgroundCandidates,structuredSamples:Int
+    public var backgroundGradientExcessRms,backgroundGradientExcessP95,structureExcessP95,structureExcessFraction,rangeExcessP95,tolerance:[Double]
+    public var status:String
+    var isValid:Bool {
+        (0...2304).contains(samples) && (0...samples).contains(backgroundCandidates) && (0...samples).contains(structuredSamples) &&
+        ["insufficient-samples","review","no-large-excess"].contains(status) &&
+        [backgroundGradientExcessRms,backgroundGradientExcessP95,structureExcessP95,structureExcessFraction,rangeExcessP95,tolerance].allSatisfy { $0.count==3 && $0.allSatisfy { $0.isFinite && $0>=0 } } &&
+        structureExcessFraction.allSatisfy { $0<=1 } && (status=="insufficient-samples" || (samples>=64 && backgroundCandidates>=32))
+    }
+}
 public struct MosaicSeamPair: Codable, Equatable, Sendable, Identifiable {
     public var first, second: Int
     public var summary: MosaicSeamRegion
     public var cells: [MosaicSeamRegion]
+    public var final: MosaicFinalSeamStatistics? = nil
     public var id: String { "\(first)-\(second)" }
 }
 public struct MosaicExposureCorrection: Codable, Equatable, Sendable {
@@ -50,7 +62,7 @@ public struct MosaicSeamReport: Codable, Equatable, Sendable {
             c.gains.count == 3 && c.offsets.count == 3 && c.gains.allSatisfy { $0.isFinite && $0 > 0 } && c.offsets.allSatisfy(\.isFinite)
         }) else { return false }
         return pairs.allSatisfy { pair in
-            pair.first >= 0 && pair.second > pair.first && pair.second < panelCount && pair.cells.count == 16 &&
+            (pair.final?.isValid ?? true) && pair.first >= 0 && pair.second > pair.first && pair.second < panelCount && pair.cells.count == 16 &&
             pair.summary.isValid(width: width, height: height) && pair.cells.allSatisfy { cell in
                 cell.isValid(width: width, height: height) && cell.bounds[0] >= pair.summary.bounds[0] &&
                 cell.bounds[1] >= pair.summary.bounds[1] && cell.bounds[2] <= pair.summary.bounds[2] && cell.bounds[3] <= pair.summary.bounds[3]

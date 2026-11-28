@@ -59,7 +59,7 @@ struct SkyAnnotationView: View {
                         Text(r.linearDisplayPreview ? text("线性母片使用显示拉伸预览；未改原像素。", "Linear master shown with a display stretch; source pixels are unchanged.") : text("保留母片已有的显示色彩。", "Preserves the master's display colors.")).font(.caption2).foregroundStyle(.secondary)
                     }
                     if !session.isCurrent, session.report != nil { Text(text("筛选或显示设置已变更，请更新标注后导出。", "Settings changed; update annotations before export.")).font(.caption).foregroundStyle(.orange) }
-                    if let error = session.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+                    if let error = session.error { ProcessingErrorNotice(message:error,chinese:chinese) }
                 }.frame(width: 320)
             }
             HStack {
@@ -70,7 +70,7 @@ struct SkyAnnotationView: View {
                 Spacer()
                 if session.busy { ProgressView().controlSize(.small); Button(text("取消", "Cancel")) { session.cancel(); operation?.cancel() } }
                 if let savedURL { Button(text("查看导出", "Show export")) { NSWorkspace.shared.activateFileViewerSelecting([savedURL]) } }
-                Button(text("导出标注与配方…", "Export annotations…")) { save() }.disabled(session.busy || !session.isCurrent || operation != nil).buttonStyle(.borderedProminent).accessibilityIdentifier("sky-annotation.save")
+                Button(text("导出标注…", "Export annotations…")) { save() }.disabled(session.busy || !session.isCurrent || operation != nil).buttonStyle(.borderedProminent).accessibilityIdentifier("sky-annotation.save")
             }
         }.padding(18).frame(width: 1100, height: 750)
         .onDisappear { let pending = operation; pending?.cancel(); Task { await pending?.value; session.close() } }

@@ -138,9 +138,9 @@ struct DeepSkyRecipeSheet: View {
     }
 
     @ViewBuilder private func recipeControls(plannedCount: Int, minimumKept: Int) -> some View {
-        Menu(chinese ? "配方" : "Recipe") {
-            Button(chinese ? "导入配方" : "Import recipe") { importRecipe() }
-            Button(chinese ? "导出配方" : "Export recipe") { exportRecipe() }
+        Menu(chinese ? "参数文件" : "Settings file") {
+            Button(chinese ? "导入参数…" : "Import settings…") { importRecipe() }
+            Button(chinese ? "导出参数…" : "Export settings…") { exportRecipe() }
             Divider()
             Button(chinese ? "恢复默认处理参数" : "Reset processing settings") { model.resetDeepSkySettings() }
         }.disabled(model.isProcessing)
@@ -273,9 +273,7 @@ struct DeepSkyRecipeSheet: View {
                     VStack(spacing: 16) {
                         Spacer()
                         Image(systemName: "photo.on.rectangle.angled").font(.system(size: 42)).foregroundStyle(.secondary)
-                        Text(chinese ? "分析亮场并选择参与堆栈的帧" : "Analyze the sequence to select frames for stacking").font(.title3.weight(.semibold))
-                        Text(chinese ? "已导入 \(model.lightAssets.count) 张亮场。分析会检查星点、噪声、对齐和局部异常。\n完成后可直接看原片、多选标记，并随时撤销。" : "\(model.lightAssets.count) lights imported. Analyze stars, noise, registration and local anomalies.\nThen inspect originals, mark multiple frames and undo decisions.")
-                            .multilineTextAlignment(.center).foregroundStyle(.secondary)
+                        Text(chinese ? "尚未分析" : "Not analyzed").font(.title3.weight(.semibold))
                         if model.lightAssets.count < 3 {
                             Button(chinese ? "导入亮场文件夹…" : "Import light folder…", action: onImport)
                                 .buttonStyle(.borderedProminent)

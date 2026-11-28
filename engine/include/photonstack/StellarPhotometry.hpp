@@ -13,6 +13,9 @@ struct StellarApertureResult {
     std::string status;
     double x = 0, y = 0, centerOffset = 0, area = 0;
     std::array<double, 3> flux{}, skySigma{}, backgroundNoise{}, snr{};
+    // Sum w^2 * max(sample - fitted sky, 0). Divide by effective e-/unit
+    // to estimate independent-pixel source shot variance; excludes covariance.
+    std::array<double, 3> sourceShotCoefficient{};
     std::array<std::array<double, 3>, 3> skyPlane{}; // intercept, dx, dy
     std::array<unsigned, 3> skyUsed{};
 };

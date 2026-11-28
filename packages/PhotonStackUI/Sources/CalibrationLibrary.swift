@@ -14,12 +14,16 @@ actor CalibrationLibrary {
         var importedAt: Date
         var acquisition: CalibrationAcquisition
         var construction: CalibrationMasterConstruction? = nil
+        var reviewHistory: [CalibrationMasterRevision]? = nil
+        var rejected: Bool { reviewHistory?.last?.quality == "reject" }
         var isValid: Bool {
             schema == 1 && id == CalibrationLibrary.identity(masterSHA: acquisition.sha, construction: construction) &&
             (construction?.isValid ?? true) && acquisition.isValid && acquisition.channels == 1 &&
             CalibrationLibrary.roles.contains(role) && ["unknown", "included", "removed"].contains(biasState) &&
             (role != "bias" || biasState == "included") && CalibrationLibrary.validLabel(label) &&
-            notes.utf8.count <= 4096 && importedAt.timeIntervalSince1970.isFinite
+            notes.utf8.count <= 4096 && importedAt.timeIntervalSince1970.isFinite &&
+            (reviewHistory.map { !$0.isEmpty && $0.count <= 64 && $0.allSatisfy(\.isValid) &&
+                $0.last?.label == label && $0.last?.notes == notes && $0.last?.biasState == biasState } ?? true)
         }
     }
     struct Entry: Identifiable, Sendable {
@@ -184,7 +188,7 @@ actor CalibrationLibrary {
     func plan(lights: [URL], entries: [Entry], tolerance: Double) async throws -> CalibrationPlanReport {
         guard !lights.isEmpty, lights.count <= 4096, entries.count <= 256, lights.count * entries.count <= 262144,
               tolerance.isFinite, (0...10).contains(tolerance), Set(lights.map { $0.resolvingSymlinksInPath() }).count == lights.count,
-              Set(entries.map(\.id)).count == entries.count, entries.allSatisfy({ !$0.archived && CalibrationPlanReport.roles.contains($0.receipt?.role ?? "") }),
+              Set(entries.map(\.id)).count == entries.count, entries.allSatisfy({ !$0.archived && $0.receipt?.rejected == false && CalibrationPlanReport.roles.contains($0.receipt?.role ?? "") }),
               Set(entries.compactMap { $0.receipt?.acquisition.sha }).count == entries.count else {
             throw fail("Choose distinct light frames and active masters, and a temperature tolerance within 0–10°C.")
         }

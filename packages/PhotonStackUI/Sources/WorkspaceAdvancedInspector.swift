@@ -9,15 +9,17 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum AdvancedTool: String, CaseIterable {
-    case astrometry, finishing, channels, narrowband, starLayers, background, clouds, normalize, color, trails, stars, deconvolve, drizzle
+    case photometry, plugins, astrometry, finishing, channels, narrowband, starLayers, background, clouds, normalize, color, trails, stars, deconvolve, drizzle
 
     func title(chinese: Bool) -> String {
         switch self {
-        case .astrometry: chinese ? "天文定位与 WCS" : "Plate solving & WCS"
-        case .channels: chinese ? "多滤镜合色与表达式" : "Channels & expressions"
-        case .starLayers: chinese ? "星云与恒星分层" : "Nebula & star layers"
+        case .photometry: chinese ? "时间序列测光" : "Time-series photometry"
+        case .plugins: chinese ? "本地插件" : "Processing extensions"
+        case .astrometry: chinese ? "星图定位" : "Plate solving & WCS"
+        case .channels: chinese ? "通道合色" : "Channels & expressions"
+        case .starLayers: chinese ? "星云与星点分层" : "Nebula & star layers"
         case .narrowband: chinese ? "双窄带与 HOO" : "Dual band & HOO"
-        case .finishing: chinese ? "色彩与显示修整" : "Display finishing"
+        case .finishing: chinese ? "色彩与拉伸" : "Display finishing"
         case .background: chinese ? "背景校正" : "Background"
         case .clouds: chinese ? "云雾" : "Clouds"
         case .normalize: chinese ? "信号归一化" : "Normalize"
@@ -32,6 +34,8 @@ enum AdvancedTool: String, CaseIterable {
 
 @MainActor
 final class AdvancedToolSettings: ObservableObject {
+    let photometry = TimeSeriesSession()
+    let plugins = ImagePluginSession()
     let starLayers = StarLayerSession()
     let psf = PsfMeasurementSession()
     let channels = ChannelCompositionSession()
@@ -68,6 +72,7 @@ struct AdvancedProcessingSection: View {
     @ObservedObject var settings: AdvancedToolSettings
     private var chinese: Bool { model.language == .simplifiedChinese }
     @State private var backgroundReview = false
+    @State private var showPhotometry = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -77,6 +82,12 @@ struct AdvancedProcessingSection: View {
                 }
             }
             switch settings.tool {
+            case .photometry:
+                Button(chinese ? "测量光变…":"Select stars & measure light curve…") {showPhotometry=true}
+                    .accessibilityIdentifier("photometry.open-tool")
+                    .sheet(isPresented:$showPhotometry){TimeSeriesView(model:model,session:settings.photometry)}
+            case .plugins:
+                ImagePluginControl(model:model,session:settings.plugins)
             case .astrometry:
                 PlateSolveControl(model: model)
                 SkyAnnotationControl(model: model)
@@ -97,7 +108,7 @@ struct AdvancedProcessingSection: View {
                 .buttonStyle(.bordered)
 
             case .background:
-                Button(chinese ? "背景采样与模型…" : "Review background samples…") { backgroundReview = true }
+                Button(chinese ? "手动背景校正…" : "Review background samples…") { backgroundReview = true }
                     .disabled(model.currentInputURL == nil || model.hasActiveProcessing)
                     .accessibilityIdentifier("background.open-review")
                     .sheet(isPresented: $backgroundReview) {

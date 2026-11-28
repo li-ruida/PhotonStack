@@ -240,7 +240,7 @@ struct DeepSkyReviewEvidence {
                 parts.append(chinese ? "同组中位 \(number(group, places))" : "Group median \(number(group, places))")
             }
             if let limit = reviewLimit {
-                parts.append(chinese ? "配方复查线 \(number(limit, places))" : "Recipe review threshold \(number(limit, places))")
+                parts.append(chinese ? "复查阈值 \(number(limit, places))" : "Recipe review threshold \(number(limit, places))")
                 if let relativeLimit {
                     let bound = number(relativeLimit, places)
                     parts.append(chinese ? "相对排除线约 \(bound)（中位 + 0.15）" : "Relative exclusion threshold ≈ \(bound) (median + 0.15)")
@@ -270,12 +270,12 @@ struct DeepSkyReviewEvidence {
         case "high-noise":
             parts.append(chinese ? "报告噪声比 \(number(f.noiseRatio, 2)) 倍" : "Reported noise ratio \(number(f.noiseRatio, 2))×")
             if let limit = limits["selection.maximum-noise-ratio"] {
-                parts.append(chinese ? "配方上限 \(number(limit, 2)) 倍" : "Recipe maximum \(number(limit, 2))×")
+                parts.append(chinese ? "设定上限 \(number(limit, 2)) 倍" : "Recipe maximum \(number(limit, 2))×")
             }
         case "low-coverage":
             parts.append(chinese ? "网格有效覆盖 \(percent(f.coverage))" : "Valid grid coverage \(percent(f.coverage))")
             if let limit = limits["selection.minimum-coverage"] {
-                parts.append(chinese ? "配方最低 \(percent(limit))" : "Recipe minimum \(percent(limit))")
+                parts.append(chinese ? "设定下限 \(percent(limit))" : "Recipe minimum \(percent(limit))")
             }
         case "broad-temporal-residuals", "localized-transients-use-pixel-rejection":
             if f.temporalAvailable {
@@ -289,7 +289,7 @@ struct DeepSkyReviewEvidence {
         case "RegistrationRejected":
             if f.matches > 0 { parts.append(chinese ? "报告匹配 \(f.matches) 个星点" : "\(f.matches) reported matches") }
             if let limit = limits["registration.minimum-matches"] {
-                parts.append(chinese ? "配方至少要求 \(number(limit, 0)) 个匹配" : "Recipe requires at least \(number(limit, 0)) matches")
+                parts.append(chinese ? "至少需要 \(number(limit, 0)) 个匹配" : "Recipe requires at least \(number(limit, 0)) matches")
             }
         case "signed-linear-transient-candidate":
             if let trails = f.trails, !trails.isEmpty {

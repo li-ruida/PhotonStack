@@ -121,6 +121,10 @@ std::string report(const DeepSkyWorkflowResult& r, const DeepSkyRecipe& recipe, 
         << ",\"master\":" << json(r.master.string()) << ",\"backgroundMaster\":" << json(r.backgroundMaster.string())
         << ",\"developed\":" << json(r.developed.string()) << ",\"rejectionLow\":" << json(r.rejectionLow.string())
         << ",\"rejectionHigh\":" << json(r.rejectionHigh.string())
+        << ",\"drizzleWeights\":" << json(r.drizzleWeights.string())
+        << ",\"drizzleProvenance\":" << json(r.drizzleProvenance.string())
+        << ",\"drizzleCoverage\":[" << r.drizzleCoverage[0] << ',' << r.drizzleCoverage[1] << ',' << r.drizzleCoverage[2] << ']'
+        << ",\"drizzleCompleteCoverage\":" << r.drizzleCompleteCoverage
         << ",\"sensorPatternReport\":" << json(r.sensorPatternReport.string())
         << ",\"noiseReference\":" << json(r.noiseReference.string())
         << ",\"noiseReferenceManifest\":" << json(r.noiseReferenceManifest.string())

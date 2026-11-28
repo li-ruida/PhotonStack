@@ -47,10 +47,29 @@ class Restoration(unittest.TestCase):
             for a,b,w in zip(source[0],output[0],mask[0]):
                 if w==1:self.assertEqual(a,b)
 
+    def test_spatial_models_replay_and_old_recipe_compatibility(self):
+        with tempfile.TemporaryDirectory() as d:
+            p=Path(d);make(p/'source.fits',vary=True,background=20)
+            run('psf-measure','--input',p/'source.fits','--output-dir',p/'psf')
+            r=restore(p,'spatial','--spatial-mode','quadrants','--noise-model','poisson-gaussian',
+                      '--electrons-per-unit','2','--read-noise-electrons','3')
+            self.assertEqual(r['spatialMode'],'quadrants');self.assertEqual(r['noiseModel'],'poisson-gaussian')
+            self.assertLess(r['afterRms'],r['beforeRms'])
+            self.assertEqual(run('psf-restoration-inspect','--recipe',p/'spatial/recipe.txt'),r)
+            run('psf-restoration-replay','--recipe',p/'spatial/recipe.txt','--output-dir',p/'replay')
+            self.assertEqual((p/'spatial/restored.fits').read_bytes(),(p/'replay/restored.fits').read_bytes())
+            restore(p,'global')
+            recipe=p/'global/recipe.txt';lines=recipe.read_text().splitlines()
+            lines[0]='PhotonStack-PSF-Restoration-1';del lines[3];recipe.write_text('\n'.join(lines)+'\n')
+            old=run('psf-restoration-inspect','--recipe',recipe)
+            self.assertEqual(old['spatialMode'],'global');self.assertEqual(old['noiseModel'],'constant')
+            run('psf-restoration-replay','--recipe',recipe,'--output-dir',p/'old-replay')
+            self.assertEqual((p/'global/restored.fits').read_bytes(),(p/'old-replay/restored.fits').read_bytes())
+
     def test_invalid_options_destinations_and_tampering(self):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d);fixture(p)
-            for options in [('--amount','nan'),('--amount','1.1'),('--iterations','0'),('--iterations','1.5'),('--threads','17'),('--noise-sigma','-1'),('--pedestal','-1'),('--protect-above','-2'),('--wat','0')]:
+            for options in [('--amount','nan'),('--amount','1.1'),('--iterations','0'),('--iterations','1.5'),('--threads','17'),('--noise-sigma','-1'),('--pedestal','-1'),('--protect-above','-2'),('--wat','0'),('--spatial-mode','tiles'),('--noise-model','unknown'),('--electrons-per-unit','0'),('--read-noise-electrons','-1')]:
                 restore(p,'bad',*options,ok=False);self.assertFalse((p/'bad').exists())
             restore(p);saved=(p/'restored/recipe.txt').read_bytes();restore(p,ok=False);self.assertEqual(saved,(p/'restored/recipe.txt').read_bytes())
             product=p/'restored/restored.fits';original=product.read_bytes();product.write_bytes(original+b'changed')

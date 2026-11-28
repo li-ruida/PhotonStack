@@ -4,6 +4,7 @@
 #include "photonstack/CfaCalibration.hpp"
 #include <filesystem>
 #include <optional>
+#include <map>
 
 #include "photonstack/ImageCodec.hpp"
 #include "photonstack/ImageMetadata.hpp"
@@ -35,9 +36,13 @@ struct DualBandPlanes {
 DualBandPlanes readDualBandPlanes(const std::filesystem::path& path, const CfaCalibration* calibration = nullptr,
                                   DualBandSampling sampling = DualBandSampling::RedGrid);
 
+// Missing solution returns null; partial or unsupported WCS is an error.
+std::optional<SolvedPanel> readOptionalFitsWcs(const std::filesystem::path& path);
+
 struct DevelopableFitsImage {
     ImageBuffer image;
     std::optional<SolvedPanel> sky;
+    std::string unit;
 };
 // Validates mono/RGB/RGBA masters, rejects CFA and unsupported color encodings.
 // readWcs=false is reserved for solving independently of missing/stale WCS.
@@ -45,6 +50,10 @@ DevelopableFitsImage readDevelopableFits(const std::filesystem::path& path, bool
 // Replaces only primary-header coordinate cards. Original pixel bytes and
 // extension HDUs are copied exactly; acquisition cards are preserved.
 void copyFitsWithWcs(const std::filesystem::path& source, const std::filesystem::path& output, const SolvedPanel& sky);
+// Explicit acquisition declarations on a new copy; data and extension HDUs are unchanged.
+// Values are unquoted user strings. Storage, WCS and preprocessing flags cannot be edited.
+void copyFitsWithAcquisition(const std::filesystem::path& source, const std::filesystem::path& output,
+                             const std::map<std::string, std::string>& declarations);
 // Astrometry.net writes EQUINOX=2000 regardless of the index reference frame.
 // Only call with explicitly declared ICRS indices. No FK5 conversion is implied.
 SolvedPanel readAstrometryICRSPanel(const std::filesystem::path& path);
@@ -85,8 +94,12 @@ class FitsCodec {
     ImageWriteResult write(const ImageBuffer& image, const std::filesystem::path& path,
                            const TanGrid* sky = nullptr,
                            const std::vector<SipTerm>* distortion = nullptr,
-                           FitsOutputDomain domain = FitsOutputDomain::LinearScience) const;
+                           FitsOutputDomain domain = FitsOutputDomain::LinearScience,
+                           const std::string& unit = {}) const;
 };
+
+// Bounded primary-header values (unquoted), rejecting duplicate value cards.
+std::map<std::string,std::string> readFitsPrimaryValues(const std::filesystem::path& path);
 
 bool isFitsPath(const std::filesystem::path& path);
 

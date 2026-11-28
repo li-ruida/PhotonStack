@@ -48,7 +48,18 @@ inline void writeMosaicSeams(std::ostream& out, const std::optional<MosaicSeamDi
         out << "{\"first\":" << pair.first << ",\"second\":" << pair.second << ",\"summary\":";
         seamRegion(out, pair.summary); out << ",\"cells\":[";
         for (std::size_t k = 0; k < pair.cells.size(); ++k) { if (k) out << ','; seamRegion(out, pair.cells[k]); }
-        out << "]}";
+        out << "],\"final\":";
+        if(!pair.final)out<<"null";
+        else {const auto& f=*pair.final;
+            out<<"{\"samples\":"<<f.samples<<",\"backgroundCandidates\":"<<f.backgroundCandidates<<",\"structuredSamples\":"<<f.structuredSamples<<",\"status\":\""<<f.status<<"\"";
+            out<<",\"backgroundGradientExcessRms\":";seamArray(out,f.backgroundGradientExcessRms);
+            out<<",\"backgroundGradientExcessP95\":";seamArray(out,f.backgroundGradientExcessP95);
+            out<<",\"structureExcessP95\":";seamArray(out,f.structureExcessP95);
+            out<<",\"structureExcessFraction\":";seamArray(out,f.structureExcessFraction);
+            out<<",\"rangeExcessP95\":";seamArray(out,f.rangeExcessP95);
+            out<<",\"tolerance\":";seamArray(out,f.tolerance);out<<'}';
+        }
+        out << '}';
     }
     out << "]}"; out.precision(precision);
 }

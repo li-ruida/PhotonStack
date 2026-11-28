@@ -30,7 +30,7 @@ struct CalibrationStackPlan: Sendable {
         }
         return frames
     }
-    private static func compatible(_ a: CalibrationAcquisition, _ b: CalibrationAcquisition) -> Bool {
+    static func compatible(_ a: CalibrationAcquisition, _ b: CalibrationAcquisition) -> Bool {
         guard a.width == b.width, a.height == b.height, a.channels == 1, b.channels == 1 else { return false }
         // UTC dates and temperatures may differ after per-frame calibration;
         // exposure is kept equal because this handoff does not rescale flux.
@@ -155,6 +155,11 @@ extension CalibrationLibrary {
                 if active.contains(PhotonStackProject.assetIdentityPath(for: output)) {
                     try regular(output)
                     guard try Self.fileDigest(output) == frame.metrics["scienceSHA"] else { throw fail("A calibrated input changed; create a new stack project from the verified calibration task.") }
+                    guard let maskPath = frame.metrics["mask"], frame.metrics["maskSHA"] == report.frames[index].products["valid.fits"],
+                          frame.metrics["reportSHA"] == report.frames[index].products["report.json"] else { throw fail("Missing calibration diagnostics binding.") }
+                    let mask = URL(fileURLWithPath: maskPath), frameReport = mask.deletingLastPathComponent().appendingPathComponent("report.json")
+                    try regular(mask); try regular(frameReport)
+                    guard try Self.fileDigest(mask) == frame.metrics["maskSHA"], try Self.fileDigest(frameReport) == frame.metrics["reportSHA"] else { throw fail("Calibration diagnostics changed.") }
                 }
             }
         }

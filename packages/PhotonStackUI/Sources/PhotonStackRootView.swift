@@ -31,6 +31,7 @@ public extension Notification.Name {
     static let photonStackPreviewLayerStack = Notification.Name("dev.photonstack.previewLayerStack")
     static let photonStackSetApplicationLanguage = Notification.Name("dev.photonstack.setApplicationLanguage")
     static let photonStackSetAnalysisWorkerCount = Notification.Name("dev.photonstack.setAnalysisWorkerCount")
+    static let photonStackSetPromptToSaveOnExit = Notification.Name("dev.photonstack.setPromptToSaveOnExit")
     static let photonStackSetStackWorkerCount = Notification.Name("dev.photonstack.setStackWorkerCount")
     static let photonStackSetGPUAccelerationEnabled = Notification.Name("dev.photonstack.setGPUAccelerationEnabled")
     static let photonStackRequestApplicationTermination = Notification.Name("dev.photonstack.requestApplicationTermination")
@@ -152,6 +153,7 @@ public struct PhotonStackRootView: View {
                     Text(model.language == .simplifiedChinese ? "天区拼接" : "Sky mosaic").tag(true)
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 .frame(maxWidth: 340)
                 .padding(.vertical, 6)
                 .disabled(model.hasActiveProcessing)
@@ -171,8 +173,8 @@ public struct PhotonStackRootView: View {
                         Label(model.language == .simplifiedChinese ? "拼接相邻天区" : "Stitch adjacent sky panels",
                               systemImage: "rectangle.3.group")
                     } description: {
-                        Text(model.language == .simplifiedChinese ? "每个天区的原片放在一个子文件夹。选择总目录或多选天区文件夹，先分别堆栈，再用重叠区的星点拼接。"
-                             : "Put each panel’s exposures in its own folder. Select their parent or several panel folders to stack each group and stitch the overlapping stars.")
+                        Text(model.language == .simplifiedChinese ? "每个子文件夹一个天区，至少两个相互重叠的天区。"
+                             : "One subfolder per panel. At least two overlapping panels required.")
                     } actions: {
                         Button(model.language == .simplifiedChinese ? "导入天区文件夹…" : "Add panel folders…", action: startImportFolder)
                             .accessibilityIdentifier("journey.mosaic-folders")

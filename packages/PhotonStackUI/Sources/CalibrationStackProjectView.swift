@@ -89,7 +89,7 @@ struct CalibrationStackProjectView: View {
                 } else { Spacer() }
                 Text(model.frameCount.map { t("将复制 \($0) 张科学图及校准记录，保留负值与无效像素。", "Copies \($0) science frames and calibration records, preserving signed and missing samples.") } ?? t("请选择共 3–2000 张已完成且拍摄条件相容的亮场。", "Select 3–2000 completed lights with compatible acquisition settings."))
                     .font(.caption).foregroundStyle(.secondary).accessibilityIdentifier("calibration.stack-count")
-                if let error = model.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled).lineLimit(5) }
+                if let error = model.error { ProcessingErrorNotice(message:error,chinese:chinese) }
                 HStack {
                     Text(t("有效性掩膜仅保留为记录，不会作为亮场导入。", "Validity masks are retained as records, never imported as light frames."))
                         .font(.caption).foregroundStyle(.secondary)

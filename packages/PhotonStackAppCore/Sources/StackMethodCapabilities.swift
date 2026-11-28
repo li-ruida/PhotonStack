@@ -32,6 +32,9 @@ public extension DeepSkySettings {
     }
 
     func fieldIsApplicable(_ key: String, schema: DeepSkySchema) -> Bool {
+        let drizzle = effectiveValue("stack.cfa-drizzle", schema: schema) == "on"
+        if ["stack.drizzle-scale", "stack.drizzle-pixfrac"].contains(key) { return drizzle }
+        if drizzle && ["stack.method", "stack.normalize-background", "stack.rejection-maps", "stack.median-mad", "decode.debayer", "calibration.sensor-pattern", "denoise.noise-model"].contains(key) { return false }
         let method = StackMethod(rawValue: effectiveValue("stack.method", schema: schema)) ?? .sigma
         let alignment = effectiveValue("registration.mode", schema: schema)
         switch key {
@@ -52,6 +55,17 @@ public extension DeepSkySettings {
     /// strict and are validated by the engine, never silently rewritten on load.
     mutating func setCompatibleValue(_ value: String, for key: String, schema: DeepSkySchema) {
         values[key] = value
+        if key == "stack.cfa-drizzle", value == "on" {
+            values["stack.method"] = "average"
+            for field in ["stack.normalize-background", "stack.rejection-maps", "stack.median-mad", "calibration.sensor-pattern"] { values[field] = "off" }
+            values["decode.debayer"] = "on"
+            values["denoise.noise-model"] = "scene"
+            if effectiveValue("registration.mode", schema: schema) == "distortion" { values["registration.mode"] = "similarity" }
+        }
+        if key == "registration.mode", value == "distortion", effectiveValue("stack.cfa-drizzle", schema: schema) == "on" {
+            values["stack.cfa-drizzle"] = "off"
+        }
+        if key == "stack.method", value != "average" { values["stack.cfa-drizzle"] = "off" }
         if key == "stack.method", let method = StackMethod(rawValue: value) {
             if method != .sigma {
                 values["stack.median-mad"] = "off"
@@ -71,6 +85,7 @@ public extension DeepSkySettings {
 
     /// A composition setup, not an automatic cleanup or finishing preset.
     mutating func configureStarTrailComposition(schema: DeepSkySchema) {
+        values["stack.cfa-drizzle"] = "off"
         setCompatibleValue("maximum", for: "stack.method", schema: schema)
         setCompatibleValue("none", for: "registration.mode", schema: schema)
         values["stack.normalize-background"] = "off"

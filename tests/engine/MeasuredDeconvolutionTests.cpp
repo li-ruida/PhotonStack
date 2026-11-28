@@ -49,5 +49,49 @@ int main(){try{
     for(std::size_t p=0;p<n;++p)if(coverage[p])require(std::abs(damped.image.pixels[p*4]-im.pixels[p*4])<1e-5,"noise damping failed");
     auto zero=gray(9,7);auto z=restoreMeasuredPsf(zero,k);for(auto v:z.image.pixels)require(v==0,"zero image changed");
     for(auto bad:{-1.F,std::numeric_limits<float>::quiet_NaN()}){auto broken=k;broken.pixels[0]=bad;failed=false;try{restoreMeasuredPsf(im,broken);}catch(const std::invalid_argument&){failed=true;}require(failed,"bad PSF accepted");}
+    // Independently construct the spatial imaging matrix at source positions.
+    // Asymmetric and differently sized kernels catch transpose/phase mistakes.
+    MeasuredDeconvolutionOptions field;field.iterations=5;field.pedestal=2;field.noiseSigma=.4;
+    auto big=gray(5,3);big.pixels={.01F,.02F,.03F,.01F,.02F,.01F,.1F,.4F,.1F,.03F,.01F,.02F,.05F,.04F,.05F};
+    auto delta=gray(1,1);delta.pixels[0]=1;
+    field.spatialNodes={{.25,.25,k},{.75,.25,big},{.25,.75,delta},{.75,.75,k}};
+    std::vector<double> fieldMatrix(n*n);
+    for(std::size_t j=0;j<n;++j){
+        const double tx=std::clamp((double(j%7)/6-.25)/.5,0.,1.),ty=std::clamp((double(j/7)/5-.25)/.5,0.,1.);
+        for(std::size_t node=0;node<4;++node){const auto& kernel=field.spatialNodes[node].kernel;
+            double sum=0;for(float v:kernel.pixels)sum+=v;
+            const double weight=(node%2?tx:1-tx)*(node/2?ty:1-ty);
+            for(unsigned v=0;v<kernel.height;++v)for(unsigned u=0;u<kernel.width;++u){
+                int x=int(j%7)+int(u)-int(kernel.width/2),y=int(j/7)+int(v)-int(kernel.height/2);
+                if(x>=0&&y>=0&&x<7&&y<6)fieldMatrix[(y*7+x)*n+j]+=weight*kernel.pixels[v*kernel.width+u]/sum*coverage[j];
+            }
+        }
+    }
+    for(std::size_t i=0;i<n;++i){double support=0;for(std::size_t j=0;j<n;++j)support+=fieldMatrix[i*n+j];
+        if(support>0)for(std::size_t j=0;j<n;++j)fieldMatrix[i*n+j]/=support;
+    }
+    for(auto noise:{PsfNoiseModel::Constant,PsfNoiseModel::Poisson,PsfNoiseModel::PoissonGaussian}){
+        field.noiseModel=noise;field.electronsPerUnit=2.3;field.readNoiseElectrons=1.7;
+        std::vector<double> estimate(n);for(std::size_t p=0;p<n;++p)estimate[p]=coverage[p]?observed[p]+field.pedestal:0;
+        for(unsigned it=0;it<field.iterations;++it){std::vector<double> model(n),next(n);
+            for(std::size_t i=0;i<n;++i)for(std::size_t j=0;j<n;++j)model[i]+=fieldMatrix[i*n+j]*estimate[j];
+            for(std::size_t j=0;j<n;++j)if(coverage[j]){double adj=0,sensitivity=0;
+                for(std::size_t i=0;i<n;++i)if(coverage[i]){
+                    double variance=.16;if(noise!=PsfNoiseModel::Constant)variance+=std::max(0.,model[i]-2)/2.3;
+                    if(noise==PsfNoiseModel::PoissonGaussian)variance+=std::pow(1.7/2.3,2);
+                    const double residual=observed[i]+2-model[i],damp=residual*residual/(residual*residual+variance);
+                    const double ratio=1+damp*residual/model[i];
+                    adj+=fieldMatrix[i*n+j]*coverage[i]*ratio;sensitivity+=fieldMatrix[i*n+j]*coverage[i];
+                }next[j]=estimate[j]*adj/sensitivity;
+            }estimate=next;
+        }
+        const auto result=restoreMeasuredPsf(im,k,field);
+        for(std::size_t p=0;p<n;++p)if(coverage[p])require(std::abs(result.image.pixels[p*4]-(estimate[p]-2))<2e-5,"spatial/noise RL differs from independent dense matrix");
+    }
+    field.noiseModel=PsfNoiseModel::Constant;field.noiseSigma=0;field.pedestal=8;
+    auto fieldFlat=restoreMeasuredPsf(constant,k,field);
+    for(std::size_t p=0;p<n;++p)if(coverage[p])require(fieldFlat.image.pixels[p*4]==-4,"spatial field changed constant background");
+    auto missing=field;missing.spatialNodes.pop_back();failed=false;
+    try{restoreMeasuredPsf(im,k,missing);}catch(const std::invalid_argument&){failed=true;}require(failed,"incomplete PSF field accepted");
     std::cout<<"Measured PSF dense adjoint, boundaries, masks, thread parity and protection passed\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

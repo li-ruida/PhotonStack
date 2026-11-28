@@ -10,7 +10,7 @@ struct PlateSolveControl: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(zh ? "从星表识别当前母片的天区，供天球配准、拼接及坐标查看使用。" : "Identify this master against a local star catalog for sky registration and mosaics.")
                 .font(.caption).foregroundStyle(.secondary)
-            Button(zh ? "天文定位与残差审查…" : "Plate solve & review…") { presented = true }
+            Button(zh ? "星图定位…" : "Plate solve & review…") { presented = true }
                 .disabled(model.currentInputURL == nil || model.hasActiveProcessing).accessibilityIdentifier("plate-solve.open")
                 .sheet(isPresented: $presented) { if let source = model.currentInputURL { PlateSolveView(model: model, source: source) } }
         }
@@ -26,15 +26,16 @@ struct PlateSolveView: View {
     @AppStorage("plateSolve.solver") private var solverPath = ""
     @AppStorage("plateSolve.indices") private var indexPaths = "[]"
     private var zh: Bool { model.language == .simplifiedChinese }
+    private var locked: Bool { session.busy || saving || operation != nil }
     init(model: PhotonStackWorkspaceModel, source: URL) { self.model = model; _session = StateObject(wrappedValue: PlateSolveSession(source: source)) }
     var body: some View {
         VStack(spacing: 12) {
             HStack {
-                Text(zh ? "天文定位" : "Plate solving").font(.headline)
+                Text(zh ? "星图定位" : "Plate solving").font(.headline)
                 Spacer()
-                Button(zh ? "选择母片…" : "Choose master…") { chooseMaster() }.disabled(session.busy)
-                Button(zh ? "打开结果…" : "Open result…") { openResult() }.disabled(session.busy)
-                Button(zh ? "关闭" : "Close") { dismiss() }.disabled(saving).keyboardShortcut(.cancelAction)
+                Button(zh ? "选择母片…" : "Choose master…") { chooseMaster() }.disabled(locked)
+                Button(zh ? "打开结果…" : "Open result…") { openResult() }.disabled(locked)
+                ToolSheetCloseButton(chinese: zh, busy: locked) { dismiss() }
             }
             HStack(alignment: .top, spacing: 16) {
                 VStack {
@@ -53,17 +54,21 @@ struct PlateSolveView: View {
                         Divider()
                         if let r = session.report { result(r) }
                         if !session.isCurrent, session.report != nil { Text(zh ? "设置已更改，请重新定位后再保存。" : "Settings changed; solve again before saving.").font(.caption).foregroundStyle(.orange) }
-                        if let error = session.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+                        if let error = session.error { ProcessingErrorNotice(message:error,chinese:zh) }
                     }
                 }.frame(width: 330)
             }
-            HStack {
-                if session.busy { ProgressView().controlSize(.small); Text(zh ? "正在定位与复核…" : "Solving and validating…"); Button(zh ? "取消" : "Cancel") { session.cancel(); operation?.cancel() } }
+            ToolActionBar {
+                if locked {
+                    ToolTaskStatus(title: saving ? (zh ? "正在保存…" : "Saving…") : (zh ? "正在处理…" : "Processing…"), chinese: zh,
+                                   cancel: saving ? nil : { session.cancel(); operation?.cancel() })
+                }
                 Spacer()
                 Button(zh ? "保存带坐标母片…" : "Save solved master…") { save() }
-                    .disabled(session.busy || !session.isCurrent).buttonStyle(.borderedProminent).accessibilityIdentifier("plate-solve.save")
+                    .disabled(locked || !session.isCurrent).toolPrimaryAction().accessibilityIdentifier("plate-solve.save")
             }
         }.padding(18).frame(width: 1000, height: 680)
+        .interactiveDismissDisabled(locked)
         .onAppear {
             session.settings.solver = solverPath.isEmpty ? (["/opt/homebrew/bin/solve-field", "/usr/local/bin/solve-field"].first { FileManager.default.isExecutableFile(atPath: $0) } ?? "") : solverPath
             session.settings.indices = (try? JSONDecoder().decode([String].self, from: Data(indexPaths.utf8))) ?? []
@@ -76,18 +81,18 @@ struct PlateSolveView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(zh ? "本地求解器" : "Local solver").font(.subheadline.bold())
             HStack { Text(session.settings.solver.isEmpty ? (zh ? "尚未选择" : "Not selected") : URL(fileURLWithPath: session.settings.solver).lastPathComponent).font(.caption); Spacer(); Button(zh ? "选择…" : "Choose…") { chooseSolver() }.accessibilityIdentifier("plate-solve.solver") }
-            Text(zh ? "使用已安装的 Astrometry.net solve-field；照片和星点只在本机处理。" : "Uses an installed Astrometry.net solve-field; images and stars stay on this Mac.").font(.caption2).foregroundStyle(.secondary)
+            Text(zh ? "需要安装 Astrometry.net。照片只在本机处理。" : "Uses an installed Astrometry.net solve-field; images and stars stay on this Mac.").font(.caption2).foregroundStyle(.secondary)
             HStack { Text(zh ? "星表索引 \(session.settings.indices.count) 个" : "\(session.settings.indices.count) catalog indices").font(.caption); Spacer(); Button(zh ? "选择索引…" : "Select indices…") { chooseIndices() }.accessibilityIdentifier("plate-solve.indices") }
             ForEach(session.settings.indices, id: \.self) { Text(URL(fileURLWithPath: $0).lastPathComponent).font(.caption2).lineLimit(1) }
             Toggle(zh ? "已确认索引使用 ICRS 坐标" : "Indices use ICRS coordinates", isOn: $session.settings.icrsConfirmed).font(.caption).accessibilityIdentifier("plate-solve.icrs")
             Text(zh ? "索引应覆盖目标和视场尺度。缺少相应索引时无法求解；不读取原图 WCS 作为位置提示。" : "Indices must cover your sky and field scale. Existing image WCS is ignored.").font(.caption2).foregroundStyle(.secondary)
             Toggle(zh ? "提供像素尺度范围以加快搜索" : "Use a pixel-scale hint", isOn: $session.settings.useScaleHint).font(.caption)
             if session.settings.useScaleHint {
-                HStack { TextField("Min", value: $session.settings.scaleLow, format: .number); Text("–"); TextField("Max", value: $session.settings.scaleHigh, format: .number); Text("″/px") }.textFieldStyle(.roundedBorder)
+                HStack { TextField(zh ? "最小值" : "Min", value: $session.settings.scaleLow, format: .number); Text("–"); TextField(zh ? "最大值" : "Max", value: $session.settings.scaleHigh, format: .number); Text("″/px") }.textFieldStyle(.roundedBorder)
             }
             Stepper(value: $session.settings.timeout, in: 10...600, step: 10) { Text(zh ? "时间上限 \(session.settings.timeout) 秒" : "Time limit \(session.settings.timeout) s").font(.caption) }
             Button(zh ? "开始定位" : "Solve field") { session.begin() }.disabled(!session.settings.isValid).accessibilityIdentifier("plate-solve.run")
-        }.disabled(session.busy)
+        }.disabled(locked)
     }
     private func result(_ r: PlateSolveReport) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -95,8 +100,8 @@ struct PlateSolveView: View {
             Text(String(format: "RA %.6f° · Dec %+.6f°\n%.4f ″/px", r.centerRA, r.centerDec, r.scaleArcsecPerPixel)).font(.caption).monospacedDigit()
             Text(zh ? "拟合 \(r.fitted.count) 星 · 留出复核 \(r.validation.count) 星\n留出覆盖 \(r.validation.regions) / 16 区" : "\(r.fitted.count) fitted · \(r.validation.count) held-out matches\nHeld-out coverage: \(r.validation.regions) / 16 regions").font(.caption)
             Text(String(format: zh ? "留出残差：中位 %.3f / P95 %.3f 像素" : "Held-out residual: median %.3f / P95 %.3f px", r.validation.medianPixels, r.validation.p95Pixels)).font(.caption).monospacedDigit()
-            Text(zh ? "留出星未参与求解；这检查同一索引下的定位一致性，不代表独立 Gaia 精度或测光标定。" : "Held-out stars were excluded from solving. This checks consistency against the selected index, not independent Gaia accuracy or photometric calibration.").font(.caption2).foregroundStyle(.secondary)
-            Text(zh ? "另存带 WCS 的 FITS、残差报告与配方。保留原像素、拍摄信息和扩展数据。" : "Saves a new WCS FITS, residual report and recipe. Pixel bytes, acquisition metadata and extensions are retained.").font(.caption).foregroundStyle(.secondary)
+            Text(zh ? "验证星未参与定位，用于检查定位结果。" : "Held-out stars were excluded from solving. This checks consistency against the selected index, not independent Gaia accuracy or photometric calibration.").font(.caption2).foregroundStyle(.secondary)
+            Text(zh ? "另存带坐标的 FITS、残差报告和参数。保留原像素、拍摄信息和扩展数据。" : "Saves a new WCS FITS, residual report and recipe. Pixel bytes, acquisition metadata and extensions are retained.").font(.caption).foregroundStyle(.secondary)
         }
     }
     private func chooseMaster() { let p = NSOpenPanel(); p.allowedContentTypes = [UTType(filenameExtension: "fits") ?? .data, UTType(filenameExtension: "fit") ?? .data]; if p.runModal() == .OK, let u = p.url { session.choose(u) } }

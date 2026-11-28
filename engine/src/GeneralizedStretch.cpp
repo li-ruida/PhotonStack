@@ -35,13 +35,35 @@ double GeneralizedStretchCurve::derivative(double t) const {
 double GeneralizedStretchCurve::signedBase(double x) const {
     return x<options_.symmetry?-base(options_.symmetry-x):base(x-options_.symmetry);
 }
-double GeneralizedStretchCurve::evaluate(double x) const {
+double GeneralizedStretchCurve::forward(double x) const {
     if(!std::isfinite(x)||x<0||x>1)throw std::invalid_argument("GHS curve input must be in [0,1]");
     if(d_==0||x==0||x==1)return x;
     const auto& o=options_;
     const double q=x<o.shadowProtection?lowValue_+(x-o.shadowProtection)*lowSlope_:
         x>o.highlightProtection?highValue_+(x-o.highlightProtection)*highSlope_:signedBase(x);
     return std::clamp((q-q0_)/span_,0.,1.);
+}
+double GeneralizedStretchCurve::evaluate(double x) const {
+    if(!options_.inverse)return forward(x);
+    if(!std::isfinite(x)||x<0||x>1)throw std::invalid_argument("GHS curve input must be in [0,1]");
+    if(d_==0||x==0||x==1)return x;
+    const auto& o=options_;const double q=x*span_+q0_;
+    if(q<lowValue_&&lowSlope_>0)return std::clamp(o.shadowProtection+(q-lowValue_)/lowSlope_,0.,1.);
+    if(q>highValue_&&highSlope_>0)return std::clamp(o.highlightProtection+(q-highValue_)/highSlope_,0.,1.);
+    const double v=std::abs(q),b=o.localIntensity;
+    double distance;
+    if(std::abs(b)<1e-12)distance=-std::log1p(-v)/d_;
+    else if(b>0)distance=std::expm1(-b*std::log1p(-v))/(b*d_);
+    else if(std::abs(b+1)<1e-12)distance=std::expm1(v)/d_;
+    else distance=std::expm1(b/(b+1)*std::log1p(-(b+1)*v))/(-b*d_);
+    const double candidate=o.symmetry+std::copysign(distance,q);
+    if(std::isfinite(candidate)&&candidate>=0&&candidate<=1&&std::abs(forward(candidate)-x)<1e-12)return candidate;
+    // Degenerate near-flat floating-point branches have no reliable analytic
+    // inverse. Return the monotone generalized inverse, without claiming that
+    // clipping/quantization or RGB gamut blending can be undone.
+    double lo=0,hi=1;
+    for(unsigned i=0;i<60;++i){const double mid=(lo+hi)*.5;if(forward(mid)<x)lo=mid;else hi=mid;}
+    return (lo+hi)*.5;
 }
 GeneralizedStretchResult generalizedStretch(const ImageBuffer& source,const GeneralizedStretchOptions& o) {
     GeneralizedStretchCurve curve(o);
@@ -61,7 +83,15 @@ GeneralizedStretchResult generalizedStretch(const ImageBuffer& source,const Gene
                 values[c]=std::clamp((raw-o.black)/(o.white-o.black),0.,1.);result.normalized.pixels[p*source.channels+c]=float(values[c]);mapped[c]=curve.evaluate(values[c]);}
             stats.low+=low;stats.high+=high;
             const double luminance=colors==1?values[0]:.2126*values[0]+.7152*values[1]+.0722*values[2];
-            if(o.luminance&&colors==3&&luminance>0){
+            if(o.saturation){
+                if(colors==1)mapped[0]=values[0];
+                else {
+                    const double high=*std::max_element(values,values+3),low=*std::min_element(values,values+3);
+                    const double saturation=high>0?(high-low)/high:0;
+                    const double factor=saturation>0?curve.evaluate(saturation)/saturation:1;
+                    for(unsigned c=0;c<3;++c)mapped[c]=std::clamp(high-(high-values[c])*factor,0.,1.);
+                }
+            }else if(o.luminance&&colors==3&&luminance>0){
                 const double factor=curve.evaluate(luminance)/luminance;double blend=1;
                 for(unsigned c=0;c<3;++c)if(values[c]*factor>1)blend=std::min(blend,(1-mapped[c])/(values[c]*factor-mapped[c]));
                 if(blend<1)++stats.blend;

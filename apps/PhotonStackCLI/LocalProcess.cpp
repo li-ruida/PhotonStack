@@ -22,10 +22,11 @@ struct Signals {
 }
 #endif
 void runLocalProcess(const std::filesystem::path& executable,const std::vector<std::string>& args,
-                     const std::filesystem::path& directory,unsigned timeoutSeconds){
+                     const std::filesystem::path& directory,unsigned timeoutSeconds,const std::string& logName,const std::string& label){
 #if defined(__APPLE__) || defined(__linux__)
     if(!executable.is_absolute()||!std::filesystem::is_regular_file(executable)||access(executable.c_str(),X_OK)||timeoutSeconds<1||timeoutSeconds>600)
-        throw std::invalid_argument("Select an executable local solve-field and a 1...600 second timeout");
+        throw std::invalid_argument("Select an executable local tool and a 1...600 second timeout");
+    if(logName.empty()||logName.find_first_of("/\\")!=std::string::npos)throw std::invalid_argument("Invalid local process log name");
     Signals signals;
     std::vector<std::string> storage{executable.string()};storage.insert(storage.end(),args.begin(),args.end());
     std::vector<char*> argv;for(auto& s:storage)argv.push_back(s.data());argv.push_back(nullptr);
@@ -33,7 +34,7 @@ void runLocalProcess(const std::filesystem::path& executable,const std::vector<s
     posix_spawn_file_actions_init(&actions);posix_spawnattr_init(&attributes);
     int error=posix_spawn_file_actions_addchdir_np(&actions,directory.c_str());
     if(!error)error=posix_spawn_file_actions_addopen(&actions,STDIN_FILENO,"/dev/null",O_RDONLY,0);
-    if(!error)error=posix_spawn_file_actions_addopen(&actions,STDOUT_FILENO,"solver.log",O_WRONLY|O_CREAT|O_EXCL,0600);
+    if(!error)error=posix_spawn_file_actions_addopen(&actions,STDOUT_FILENO,logName.c_str(),O_WRONLY|O_CREAT|O_EXCL,0600);
     if(!error)error=posix_spawn_file_actions_adddup2(&actions,STDOUT_FILENO,STDERR_FILENO);
     sigset_t mask,defaults;sigemptyset(&mask);sigemptyset(&defaults);sigaddset(&defaults,SIGINT);sigaddset(&defaults,SIGTERM);
     if(!error)error=posix_spawnattr_setsigmask(&attributes,&mask);
@@ -43,16 +44,16 @@ void runLocalProcess(const std::filesystem::path& executable,const std::vector<s
     pid_t pid=-1;
     if(!error)error=posix_spawn(&pid,executable.c_str(),&actions,&attributes,argv.data(),environ);
     posix_spawn_file_actions_destroy(&actions);posix_spawnattr_destroy(&attributes);
-    if(error)throw std::runtime_error("Cannot start solve-field: "+std::string(std::strerror(error)));
+    if(error)throw std::runtime_error(label+" cannot start: "+std::string(std::strerror(error)));
     const auto start=std::chrono::steady_clock::now();std::string failure;int status=0;
     for(;;){
         const auto state=waitpid(pid,&status,WNOHANG);
         if(state==pid)break;
-        if(state<0&&errno!=EINTR){failure="Cannot wait for local solver";break;}
-        std::error_code ec;const auto size=std::filesystem::file_size(directory/"solver.log",ec);
-        if(interrupted)failure="Local plate solve cancelled";
-        else if(std::chrono::steady_clock::now()-start>std::chrono::seconds(timeoutSeconds))failure="Local plate solve timed out";
-        else if(!ec&&size>16*1024*1024)failure="Local solver log exceeded limit";
+        if(state<0&&errno!=EINTR){failure=label+" wait failed";break;}
+        std::error_code ec;const auto size=std::filesystem::file_size(directory/logName,ec);
+        if(interrupted)failure=label+" cancelled";
+        else if(std::chrono::steady_clock::now()-start>std::chrono::seconds(timeoutSeconds))failure=label+" timed out";
+        else if(!ec&&size>16*1024*1024)failure=label+" log exceeded limit";
         if(!failure.empty())break;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
@@ -64,9 +65,9 @@ void runLocalProcess(const std::filesystem::path& executable,const std::vector<s
         throw std::runtime_error(failure);
     }
     kill(-pid,SIGKILL);
-    if(!WIFEXITED(status)||WEXITSTATUS(status)!=0)throw std::runtime_error("Local solve-field failed; diagnostic log is on stderr");
+    if(!WIFEXITED(status)||WEXITSTATUS(status)!=0)throw std::runtime_error(label+" failed; diagnostic log is on stderr");
 #else
-    (void)executable;(void)args;(void)directory;(void)timeoutSeconds;
+    (void)executable;(void)args;(void)directory;(void)timeoutSeconds;(void)logName;(void)label;
     throw std::runtime_error("Local plate solving is supported on macOS and Linux");
 #endif
 }

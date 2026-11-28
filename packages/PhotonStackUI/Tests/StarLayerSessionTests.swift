@@ -61,3 +61,48 @@ func starLayerSessionRestoresRecipeAndRejectsChangedBases() async throws {
     try data.write(to: changed)
     do { _ = try await reopened.render(using: service); Issue.record("Expected changed-base rejection") } catch {}
 }
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil)) @MainActor
+func linearStarLayerSessionPreservesSourceAndRejectsWrongToolDomain() async throws {
+    let cli = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"]))
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("LinearStarSession-\(UUID())")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = root.appendingPathComponent("linear.fits"), removed = root.appendingPathComponent("removed.fits")
+    let cards = [("SIMPLE","T"),("BITPIX","-32"),("NAXIS","2"),("NAXIS1","64"),("NAXIS2","64")]
+    let header = (cards.map { ($0.0.padding(toLength: 8, withPad: " ", startingAt: 0)+"= "+$0.1).padding(toLength: 80, withPad: " ", startingAt: 0) }.joined()+"END").padding(toLength: 2880, withPad: " ", startingAt: 0)
+    for (path, offset) in [(source, 0), (removed, -10)] {
+        var data = Data(header.utf8)
+        for i in 0..<4096 {
+            var bits = (i == 0 ? Float.nan : Float(i - 100 + offset)).bitPattern.bigEndian
+            withUnsafeBytes(of: &bits) { data.append(contentsOf: $0) }
+        }
+        data.append(Data(repeating: 0, count: (2880-data.count%2880)%2880)); try data.write(to: path)
+    }
+    let original = try Data(contentsOf: source)
+    let service = CLIProcessingService(executableURL: cli)
+    let session = StarLayerSession()
+    _ = try await session.separate(input: source, starless: removed, output: root.appendingPathComponent("layers"), using: service)
+    #expect(session.linear)
+    #expect(try Data(contentsOf: try #require(session.rendered).appendingPathComponent("combined.fits")) == original)
+    session.settings.starsEV = -1
+    _ = try await session.render(using: service)
+    let expected = try Data(contentsOf: try #require(session.rendered).appendingPathComponent("combined.fits"))
+    let reopened = StarLayerSession()
+    try reopened.open(try #require(session.directory))
+    #expect(reopened.linear && reopened.settings == session.settings)
+    _ = try await reopened.render(using: service)
+    #expect(try Data(contentsOf: try #require(reopened.rendered).appendingPathComponent("combined.fits")) == expected)
+    reopened.settings.nebulaGamma = 2
+    do { _ = try await reopened.render(using: service); Issue.record("Gamma must not alter linear science") } catch {}
+    // Copy is a domain-conversion fixture, not evidence of model quality.
+    session.tool = ExternalImageTool(name: "Fixture copy", executable: URL(fileURLWithPath: "/bin/cp"),
+                                     arguments: ["{input}", "{output}"], linearFITS: true)
+    _ = try await session.separate(input: source, starless: nil, output: root.appendingPathComponent("external"), using: service)
+    #expect(try Data(contentsOf: try #require(session.rendered).appendingPathComponent("combined.fits")) == original)
+    let preview = try #require(session.rendered).appendingPathComponent("combined.tiff")
+    do { _ = try await session.separate(input: preview, starless: nil, output: root.appendingPathComponent("wrong-display"), using: service); Issue.record("Linear tool must reject display input") } catch {}
+    session.tool?.linearFITS = false
+    do { _ = try await session.separate(input: source, starless: nil, output: root.appendingPathComponent("wrong-linear"), using: service); Issue.record("Display tool must reject linear input") } catch {}
+    #expect(try Data(contentsOf: source) == original)
+}

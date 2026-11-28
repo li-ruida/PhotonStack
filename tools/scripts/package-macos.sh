@@ -67,6 +67,8 @@ cp -R "$ROOT_DIR/resources/OpenNGC" "$RESOURCES_DIR/OpenNGC"
 cp "$ROOT_DIR/third_party/colour-demosaicing-LICENSE.txt" "$RESOURCES_DIR/ThirdPartyNotices/"
 cp "$ROOT_DIR/third_party/pocketfft-LICENSE.md" "$RESOURCES_DIR/ThirdPartyNotices/"
 cp "$ROOT_DIR/third_party/pocketfft-header-NOTICE.txt" "$RESOURCES_DIR/ThirdPartyNotices/"
+cp "$ROOT_DIR/third_party/lz4-LICENSE.txt" "$RESOURCES_DIR/ThirdPartyNotices/"
+cp "$ROOT_DIR/third_party/zstd-LICENSE.txt" "$RESOURCES_DIR/ThirdPartyNotices/"
 cp "$EXECUTABLE" "$MACOS_DIR/PhotonStackMac"
 cp "$CLI_EXECUTABLE" "$MACOS_DIR/photonstack"
 

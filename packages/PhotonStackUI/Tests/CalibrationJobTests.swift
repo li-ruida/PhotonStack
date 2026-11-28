@@ -49,6 +49,111 @@ private func ready(_ source: CalibrationJobDraft) -> CalibrationJobDraft {
 }
 
 @Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func calibrationDraftPreservesPartialDecisionsAndRevalidatesSources() async throws {
+    let f = try await jobFixture(), fm = FileManager.default
+    defer { try? fm.removeItem(at: f.root) }
+    var draft = f.draft; draft.fillUniqueCandidates()
+    draft.assign(CalibrationJobDraft.omitted, role: 0, frames: [0])
+    draft.workers = 2; draft.memoryMiB = 256
+    let file = f.root.appendingPathComponent("assignment.json")
+    try await f.library.saveDraft(draft, to: file)
+    let reopened = try await f.library.openDraft(file)
+    #expect(!reopened.isReady && reopened.choices == draft.choices)
+    #expect(reopened.workers == 2 && reopened.memoryMiB == 256)
+    let bytes = try Data(contentsOf: file)
+    await #expect(throws: (any Error).self) { try await f.library.saveDraft(draft, to: f.root.appendingPathComponent("library/entry.json")) }
+    try jobFITS(URL(fileURLWithPath: draft.review.lights[0].path), role: "Light", value: 700)
+    await #expect(throws: (any Error).self) { try await f.library.openDraft(file) }
+    #expect(try Data(contentsOf: file) == bytes)
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func calibrationDraftRejectsArchivedMastersAndInvalidAssignmentIndices() async throws {
+    let f = try await jobFixture(), fm = FileManager.default
+    defer { try? fm.removeItem(at: f.root) }
+    let draft = ready(f.draft), file = f.root.appendingPathComponent("draft.json")
+    try await f.library.saveDraft(draft, to: file)
+    let reopened = try await f.library.openDraft(file)
+    #expect(try reopened.manifest() == draft.manifest())
+    try await f.library.archive(draft.entries[0])
+    await #expect(throws: (any Error).self) { try await f.library.openDraft(file) }
+    var json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+    json["choices"] = [[Int.max]]
+    try JSONSerialization.data(withJSONObject: json).write(to: file)
+    await #expect(throws: (any Error).self) { try await f.library.openDraft(file) }
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func calibrationMasterReviewIsAuditedAndExcludesRejectedInputs() async throws {
+    let f = try await jobFixture(), fm = FileManager.default
+    defer { try? fm.removeItem(at: f.root) }
+    let entry = f.draft.entries[0], original = try #require(entry.receipt)
+    let draftFile = f.root.appendingPathComponent("draft.json")
+    try await f.library.saveDraft(f.draft, to: draftFile)
+    try await f.library.revise(entry, label: "Rejected master", notes: "Inspection", biasState: original.biasState,
+                              quality: "reject", reason: "Visible artifact")
+    let current = try #require(try await f.library.list().first { $0.id == entry.id })
+    #expect(current.receipt?.rejected == true)
+    #expect(current.receipt?.reviewHistory?.last?.previousLabel == original.label)
+    #expect(try await f.library.verify(current).sha == original.acquisition.sha)
+    await #expect(throws: (any Error).self) { try await f.library.openDraft(draftFile) }
+    await #expect(throws: (any Error).self) {
+        try await f.library.plan(lights: f.draft.review.lights.map { URL(fileURLWithPath: $0.path) }, entries: [current], tolerance: 1)
+    }
+    await #expect(throws: (any Error).self) {
+        try await f.library.revise(entry, label: original.label, notes: "", biasState: original.biasState, quality: "keep", reason: "Stale edit")
+    }
+    try await f.library.revise(current, label: original.label, notes: "Rechecked", biasState: original.biasState, quality: "keep", reason: "Independent review")
+    let restored = try #require(try await f.library.list().first { $0.id == entry.id })
+    #expect(restored.receipt?.rejected == false && restored.receipt?.reviewHistory?.count == 2)
+    let exported = f.root.appendingPathComponent("reviewed-export")
+    try await f.library.export(restored, to: exported)
+    #expect(fm.fileExists(atPath: exported.appendingPathComponent("entry.json").path))
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func calibrationDeclarationCopiesWithoutChangingOriginalsThroughAppService() async throws {
+    let f = try await jobFixture(), fm = FileManager.default
+    defer { try? fm.removeItem(at: f.root) }
+    let inputs = f.draft.review.lights.map { URL(fileURLWithPath: $0.path) }
+    let original = try inputs.map { try Data(contentsOf: $0) }
+    let output = f.root.appendingPathComponent("declared")
+    let copies = try await f.library.declareAcquisition(inputs, fields: ["CAM-SER": "correct serial", "PSOPTICS": "correct train"], reason: "Acquisition log", to: output)
+    #expect(copies.count == 4)
+    let metadata = try await CalibrationAcquisition.inspect(copies, service: CLIProcessingService(executableURL: URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"]))))
+    #expect(metadata.allSatisfy { $0.text["cameraSerial"] == "correct serial" && $0.text["opticalTrain"] == "correct train" })
+    #expect(try inputs.map { try Data(contentsOf: $0) } == original)
+    #expect(fm.fileExists(atPath: output.appendingPathComponent("declarations.json").path))
+    await #expect(throws: (any Error).self) { try await f.library.declareAcquisition(inputs, fields: ["BITPIX": "16"], reason: "Invalid", to: f.root.appendingPathComponent("invalid")) }
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func calibrationQualityMapPersistsInDraftAndResumableJob() async throws {
+    let f = try await jobFixture(), fm = FileManager.default
+    defer { try? fm.removeItem(at: f.root) }
+    let entry = try #require(f.draft.entries.first { $0.receipt?.role == "dark" })
+    let quality = f.root.appendingPathComponent("quality")
+    let report = try await f.library.inspectQuality(entry, sigma: 1, tolerance: 0, flatMin: 0.5, flatMax: 1.5, to: quality)
+    #expect(report.isValid && report.rejected > 0 && report.rejected < 120)
+    var draft = ready(f.draft)
+    draft.badPixels = try await f.library.inspectBadPixels(quality.appendingPathComponent("bad-pixels.fits"))
+    #expect(draft.isReady && draft.validBadPixels)
+    let saved = f.root.appendingPathComponent("draft.json")
+    try await f.library.saveDraft(draft, to: saved)
+    let restored = try await f.library.openDraft(saved)
+    #expect(restored.badPixels == draft.badPixels)
+    let job = f.root.appendingPathComponent("job")
+    let partial = try await f.library.runCalibration(restored, to: job, maximumFrames: 1)
+    #expect(partial.matches(restored) && partial.badPixels?.sha == draft.badPixels?.sha)
+    let complete = try await f.library.resumeCalibration(job, expected: partial)
+    #expect(complete.completed == 4 && complete.matches(restored))
+    let path = quality.appendingPathComponent("bad-pixels.fits")
+    try Data("changed".utf8).write(to: path)
+    await #expect(throws: (any Error).self) { try await f.library.openDraft(saved) }
+    await #expect(throws: (any Error).self) { try await f.library.resumeCalibration(job, expected: complete) }
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
 func calibrationStackProjectCopiesOnlyScienceAndVerifiesOfflineInputs() async throws {
     let f = try await jobFixture(), fm = FileManager.default
     defer { try? fm.removeItem(at: f.root) }
@@ -279,4 +384,143 @@ func calibrationJobPreparationRequiresExplicitStatesAndBiasDependencies() async 
     #expect(model.error != nil && model.report == nil && !model.canResume)
     #expect(try Data(contentsOf: target.appendingPathComponent("job.txt")) == before)
     #expect(try await f.library.inspectCalibration(target).completed == 1)
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func calibrationBatchResumesCalibrationAndRetainsFailedGroupAttempts() async throws {
+    let f = try await jobFixture(), fm = FileManager.default; defer { try? fm.removeItem(at: f.root) }
+    let job = f.root.appendingPathComponent("job"), target = f.root.appendingPathComponent("batch")
+    let partial = try await f.library.runCalibration(ready(f.draft), to: job, maximumFrames: 1)
+    let science = try Data(contentsOf: job.appendingPathComponent("frame-000001/calibrated.fits"))
+    let created = try await f.library.createBatch(calibration: job, expected: partial, destination: target, backend: .cpu)
+    #expect(created.isValid && !created.calibrated && created.items.isEmpty)
+    await #expect(throws: (any Error).self) { try await f.library.createBatch(calibration: job, expected: partial, destination: target) }
+    let run = try await f.library.runBatch(target)
+    #expect(run.calibrated && !run.complete && run.items.count == 2)
+    #expect(run.items.allSatisfy { $0.count == 2 && $0.status == "failed" && $0.attempt != nil && !$0.message.isEmpty })
+    #expect(try Data(contentsOf: job.appendingPathComponent("frame-000001/calibrated.fits")) == science)
+    #expect(try await f.library.inspectCalibration(job).completed == 4)
+    let reopened = try await f.library.inspectBatch(target)
+    #expect(reopened.items.map(\.attempt) == run.items.map(\.attempt))
+    let retry = try await f.library.runBatch(target)
+    #expect(Set(retry.items.compactMap(\.attempt)).isDisjoint(with: run.items.compactMap(\.attempt)))
+    for attempt in run.items.compactMap(\.attempt) { #expect(fm.fileExists(atPath: target.appendingPathComponent(attempt).path)) }
+    let journal = target.appendingPathComponent("batch.json")
+    var value = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: journal)) as? [String: Any])
+    value["jobSHA"] = String(repeating: "0", count: 64)
+    try JSONSerialization.data(withJSONObject: value).write(to: journal)
+    await #expect(throws: (any Error).self) { try await f.library.runBatch(target) }
+}
+
+private func starJobFITS(_ url: URL, role: String, sequence: Int) throws {
+    try jobFITS(url, role: role, value: 0, exposure: role == "Bias" ? 0 : 60, day: sequence < 2 ? 15 : 16, sequence: sequence)
+    let data = try Data(contentsOf: url)
+    var header = String(decoding: data.prefix(2880), as: UTF8.self)
+    for (key,value) in [("NAXIS1","256"),("NAXIS2","192")] {
+        let start = try #require(header.range(of: key.padding(toLength: 8, withPad: " ", startingAt: 0) + "= ")?.lowerBound)
+        let end = header.index(start, offsetBy: 80)
+        header.replaceSubrange(start..<end, with: (key.padding(toLength: 8, withPad: " ", startingAt: 0) + "= " + value).padding(toLength: 80, withPad: " ", startingAt: 0))
+    }
+    var output = Data(header.utf8)
+    var stars: [(Double, Double, Double)] = []
+    for n in 0..<35 {
+        let x = 20 + (n * 53) % 210
+        let y = 20 + (n * 31) % 150
+        stars.append((Double(x), Double(y), Double(500 + n * 77)))
+    }
+    for y in 0..<192 { for x in 0..<256 {
+        var pixel = 10.0
+        if role == "Light" {
+            pixel += 100 + 0.01 * Double(x) + 0.02 * Double(y)
+            for (sx,sy,flux) in stars {
+                let dx = Double(x) - sx - Double(sequence) * 0.6, dy = Double(y) - sy + Double(sequence) * 0.35
+                pixel += flux * exp(-(dx*dx+dy*dy)/4.5)
+            }
+        }
+        var bits = Float(pixel).bitPattern.bigEndian
+        withUnsafeBytes(of: &bits) { output.append(contentsOf: $0) }
+    } }
+    output.append(Data(repeating: 0, count: (2880 - output.count % 2880) % 2880))
+    try output.write(to: url)
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func calibrationBatchStacksCompatibleDatesAndSkipsVerifiedResults() async throws {
+    let fm = FileManager.default, cli = try #require(ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"])
+    let root = fm.temporaryDirectory.appendingPathComponent("CalibrationBatch-\(UUID())")
+    try fm.createDirectory(at: root, withIntermediateDirectories: false); defer { try? fm.removeItem(at: root) }
+    let library = CalibrationLibrary(root: root.appendingPathComponent("library"), service: CLIProcessingService(executableURL: URL(fileURLWithPath: cli)))
+    let bias = root.appendingPathComponent("bias.fits"); try starJobFITS(bias, role: "Bias", sequence: 0)
+    _ = try await library.importMaster(bias, label: "Bias", role: "bias", biasState: "included", notes: "Synthetic star field")
+    let lights = try (0..<4).map { i in
+        let url = root.appendingPathComponent("light-\(i).fits"); try starJobFITS(url, role: "Light", sequence: i); return url
+    }
+    let entries = try await library.list(), review = try await library.plan(lights: lights, entries: entries, tolerance: 1)
+    var draft = try CalibrationJobDraft(review: review, entries: entries)
+    draft.fillUniqueCandidates()
+    for role in [1,2] { draft.assign(CalibrationJobDraft.omitted, role: role, frames: Array(0..<4)) }
+    let job = root.appendingPathComponent("job"), batchURL = root.appendingPathComponent("batch")
+    let report = try await library.runCalibration(draft, to: job)
+    #expect(Set(report.frames.map(\.group)).count == 2)
+    _ = try await library.createBatch(calibration: job, expected: report, destination: batchURL, backend: .cpu)
+    let batch = try await library.runBatch(batchURL)
+    #expect(batch.complete, "\(batch.items.map(\.message))")
+    #expect(batch.items.count == 1 && batch.items[0].count == 4 && batch.items[0].groups.count == 2)
+    let attempt = try #require(batch.items.first?.attempt)
+    let projectURL = batchURL.appendingPathComponent(attempt + "/project")
+    let project = try await ProjectRepository().load(from: projectURL)
+    #expect(project.deepSkySettings?.lastReport?.success == true && project.workspaceState?.previewURL != nil)
+    try await library.verifyStackProject(project)
+    let before = try Data(contentsOf: batchURL.appendingPathComponent("batch.json"))
+    // A completed queue can be verified without mounted original files.
+    try fm.moveItem(at: job, to: root.appendingPathComponent("offline-job"))
+    let resumed = try await library.runBatch(batchURL)
+    #expect(resumed.complete && resumed.items[0].attempt == attempt)
+    #expect(try Data(contentsOf: batchURL.appendingPathComponent("batch.json")) == before)
+    let product = try #require(project.workspaceState?.previewURL)
+    try Data("changed".utf8).write(to: product)
+    await #expect(throws: (any Error).self) { try await library.inspectBatch(batchURL) }
+}
+
+@Test func calibrationBatchFailureMessageKeepsReasonInsteadOfRecipeDump() {
+    let error = ProcessingServiceError.commandFailed(exitCode: 1, stderr: "{\"recipe\":\"large recipe\",\"errorCode\":\"SelectionNeedsReview\",\"message\":\"Too few stars\"}")
+    #expect(CalibrationBatch.failureMessage(error) == "SelectionNeedsReview: Too few stars")
+}
+
+@Test(.enabled(if: ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"] != nil))
+func cfaDrizzleAppServiceKeepsCoverageThroughRefinishing() async throws {
+    let fm = FileManager.default
+    let cli = try #require(ProcessInfo.processInfo.environment["PHOTONSTACK_TEST_CLI"])
+    let service = CLIProcessingService(executableURL: URL(fileURLWithPath: cli))
+    let root = fm.temporaryDirectory.appendingPathComponent("CfaDrizzle-\(UUID())")
+    try fm.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? fm.removeItem(at: root) }
+    let lights = try (0..<8).map { i in
+        let url = root.appendingPathComponent("light-\(i).fits")
+        try starJobFITS(url, role: "Light", sequence: i)
+        return url
+    }
+    let schema = try await service.deepSkySchema()
+    var settings = DeepSkySettings()
+    settings.setCompatibleValue("on", for: "stack.cfa-drizzle", schema: schema)
+    settings.values["registration.minimum-matches"] = "4"
+    settings.values["selection.apply"] = "off"
+    settings.values["stack.drizzle-scale"] = "1.5"
+    let recipe = root.appendingPathComponent("recipe.txt")
+    try settings.recipe(schema: schema, inputs: lights).write(to: recipe, atomically: true, encoding: .utf8)
+    let report = try await service.deepSky(recipe: recipe, outputDirectory: root.appendingPathComponent("stack"), analyzeOnly: false, computeBackend: .cpu)
+    #expect(report.success && report.drizzlePaths.count == 2)
+    #expect(report.drizzleCoverage?.count == 3 && (report.drizzleCompleteCoverage ?? 0) > 0.9)
+    let master = URL(fileURLWithPath: report.master)
+    let bytes = try Data(contentsOf: master)
+    settings.values["develop.saturation"] = "0.7"
+    try settings.recipe(schema: schema, inputs: lights).write(to: recipe, atomically: true, encoding: .utf8)
+    let finished = try await service.finishDeepSky(recipe: recipe, master: master, outputDirectory: root.appendingPathComponent("finish"), previous: report)
+    #expect(finished.drizzlePaths == report.drizzlePaths)
+    #expect(finished.drizzleCoverage == report.drizzleCoverage && finished.drizzleCompleteCoverage == report.drizzleCompleteCoverage)
+    #expect(try Data(contentsOf: master) == bytes)
+    try fm.removeItem(atPath: try #require(report.drizzleWeights))
+    await #expect(throws: (any Error).self) {
+        try await service.finishDeepSky(recipe: recipe, master: master, outputDirectory: root.appendingPathComponent("missing-weight"), previous: report)
+    }
 }

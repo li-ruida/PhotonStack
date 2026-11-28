@@ -96,14 +96,8 @@ struct AssetSidebar: View {
                         .font(.system(size: 38, weight: .regular))
                         .foregroundStyle(.secondary)
 
-                    VStack(spacing: 4) {
-                        Text(model.localized(.emptyAssetsTitle))
-                            .font(.headline)
-                        Text(model.localized(.emptyAssetsMessage))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
+                    Text(model.localized(.emptyAssetsTitle))
+                        .font(.headline)
 
                     Menu {
                         Button(action: onImportFiles) {
@@ -117,6 +111,7 @@ struct AssetSidebar: View {
                             .frame(maxWidth: 180)
                     }
                     .buttonStyle(.borderedProminent)
+                    .help(model.localized(.emptyAssetsMessage))
                     .disabled(model.isProcessing)
                 }
                 .padding(20)
@@ -277,15 +272,8 @@ private struct BuildIdentityBadge: View {
     private let identity = PhotonStackBuildIdentity.current
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "number")
-                .imageScale(.small)
-
-            Text(identity.displayText)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .font(.caption2.monospaced())
+        Text("v\(identity.version)")
+        .font(.caption2)
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
         .help(identity.helpText)

@@ -197,6 +197,13 @@ public struct DeepSkyReport: Codable, Equatable, Sendable {
     public var inputCount, selectedCount, referenceIndex: Int
     public var recipe, errorCode, message: String
     public var master, backgroundMaster, developed, rejectionLow, rejectionHigh: String
+    public var drizzleWeights: String? = nil
+    public var drizzleProvenance: String? = nil
+    public var drizzleCoverage: [Double]? = nil
+    public var drizzleCompleteCoverage: Double? = nil
+    public var drizzlePaths: [String] {
+        [drizzleWeights, drizzleProvenance].compactMap { $0 }.filter { !$0.isEmpty }
+    }
     public var sensorPatternReport: String? = nil
     public var noiseReference: String? = nil
     public var noiseReferenceManifest: String? = nil
@@ -269,6 +276,16 @@ public struct DeepSkyReport: Codable, Equatable, Sendable {
               frames.allSatisfy({ !$0.selected || $0.usable }) else { throw DeepSkyRecipeError.invalidReport }
         if !noiseReferencePaths.isEmpty || independentLuminanceNoise == true {
             guard !analysisOnly, noiseReferencePaths.count == 3,
+                  frames.allSatisfy({ !$0.selected || $0.sha256?.count == 64 }) else {
+                throw DeepSkyRecipeError.invalidReport
+            }
+        }
+        if !drizzlePaths.isEmpty {
+            guard !analysisOnly, drizzlePaths.count == 2,
+                  let coverage = drizzleCoverage, coverage.count == 3,
+                  coverage.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
+                  let complete = drizzleCompleteCoverage, complete.isFinite, (0...1).contains(complete),
+                  coverage.allSatisfy({ complete <= $0 + 1e-9 }),
                   frames.allSatisfy({ !$0.selected || $0.sha256?.count == 64 }) else {
                 throw DeepSkyRecipeError.invalidReport
             }

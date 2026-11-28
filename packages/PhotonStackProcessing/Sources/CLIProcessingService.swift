@@ -61,9 +61,10 @@ struct AtomicOutputTransaction: Sendable {
         guard let command = arguments.first else { return false }
         if command == "develop" { return arguments.contains("--statistics-reference") }
         if ["spcc", "star-layers", "background-review", "frequency-stack", "suppress-grid",
-            "review-preview", "denoise-nonlocal"].contains(command) { return true }
+            "review-preview", "denoise-nonlocal", "calibration-declare", "sensor-quality",
+            "ser-extract", "plugin-run", "time-series"].contains(command) { return true }
         return ["spcc-", "sky-annotat", "plate-solve", "ghs-", "psf-", "channel-",
-                "narrowband-", "sensor-master-"].contains { command.hasPrefix($0) }
+                "narrowband-", "sensor-master-", "xisf-"].contains { command.hasPrefix($0) }
     }
 
     func commit() throws {
@@ -1123,6 +1124,42 @@ public final class CLIProcessingService: ProcessingService {
             return .missing
         }
         guard expectedOutput.isDirectory == false else {
+            if command == "time-series" {
+                for name in ["recipe.txt","report.json","report.sha256","lightcurve.csv","measurements.csv"] {
+                    let file=url.appendingPathComponent(name)
+                    guard let values=try? file.resourceValues(forKeys:[.isRegularFileKey,.isSymbolicLinkKey,.fileSizeKey]),
+                          values.isRegularFile==true,values.isSymbolicLink != true,let size=values.fileSize,size>0,size<=64*1024*1024 else{return .invalid}
+                }
+                return .valid
+            }
+            if command == "plugin-run" {
+                for name in ["input.fits","result.fits","definition.psplugin","plugin.json","plugin.log"] {
+                    let file=url.appendingPathComponent(name)
+                    guard let values=try? file.resourceValues(forKeys:[.isRegularFileKey,.isSymbolicLinkKey,.fileSizeKey]),
+                          values.isRegularFile==true,values.isSymbolicLink != true,let size=values.fileSize,
+                          (name=="plugin.log" ? size>=0 : size>0) else{return .invalid}
+                    if name.hasSuffix(".fits") && !isReadableFITS(file) {return .invalid}
+                }
+                return .valid
+            }
+            if command == "xisf-export" {
+                // XISF is an interchange product, not an ImageIO preview. The
+                // typed exchange service additionally verifies all SHA records.
+                let image=url.appendingPathComponent("image.xisf")
+                guard let info=try? image.resourceValues(forKeys:[.isRegularFileKey,.isSymbolicLinkKey,.fileSizeKey]),
+                      info.isRegularFile==true,info.isSymbolicLink != true,let size=info.fileSize,size>=16,
+                      let handle=try? FileHandle(forReadingFrom:image) else{return .invalid}
+                defer{try? handle.close()}
+                guard let bytes=try? handle.read(upToCount:16),bytes.count==16,
+                      bytes.prefix(8)==Data("XISF0100".utf8),bytes.suffix(4)==Data(repeating:0,count:4) else{return .invalid}
+                let length=(0..<4).reduce(0){$0 | (Int(bytes[8+$1]) << (8*$1))}
+                guard length>0,length<=4*1024*1024,size>16+length else{return .invalid}
+                for name in ["exchange.json","metadata.xml"] {
+                    guard let value=try? url.appendingPathComponent(name).resourceValues(forKeys:[.isRegularFileKey,.isSymbolicLinkKey,.fileSizeKey]),
+                          value.isRegularFile==true,value.isSymbolicLink != true,let count=value.fileSize,count>0,count<=4*1024*1024 else{return .invalid}
+                }
+                return .valid
+            }
             if command == "spcc-narrowband-profile" {
                 // This command creates response data, not an image. The UI
                 // subsequently inspects the full scientific profile with the CLI.

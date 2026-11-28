@@ -21,13 +21,13 @@ struct PsfMeasurementControl:View {
                 }.accessibilityIdentifier("psf.channel")
                 HStack {
                     Text(zh ? "检测阈值 σ" : "Detection σ")
-                    TextField("Sigma",value:$session.sigma,format:.number).accessibilityIdentifier("psf.sigma")
+                    TextField(zh ? "检测阈值" : "Sigma",value:$session.sigma,format:.number).accessibilityIdentifier("psf.sigma")
                 }.textFieldStyle(.roundedBorder)
                 HStack {
                     Text(zh ? "饱和值" : "Saturation")
-                    TextField("Saturation",value:$session.saturation,format:.number).accessibilityIdentifier("psf.saturation")
+                    TextField(zh ? "饱和值" : "Saturation",value:$session.saturation,format:.number).accessibilityIdentifier("psf.saturation")
                 }.textFieldStyle(.roundedBorder)
-                Text(zh ? "饱和值使用母片物理计数；0 表示未知，只排除明显平台饱和。测量使用原始分辨率的椭圆高斯与局部背景模型。"
+                Text(zh ? "饱和值按图像原始数值填写；填 0 表示未知。"
                      : "Saturation uses master pixel units; 0 means unknown, with only obvious plateaus rejected. Fit elliptical Gaussians and local sky at native resolution.")
                     .font(.caption2).foregroundStyle(.secondary)
                 Button(zh ? "测量并保存 PSF…" : "Measure & save PSF…") {
@@ -45,22 +45,22 @@ struct PsfMeasurementControl:View {
         }.disabled(model.hasActiveProcessing)
     }
     @ViewBuilder private func summary(_ r:PsfMeasurementReport) -> some View {
-        Text(zh ? "采用 \(r.accepted) / 审查 \(r.stars.count) / 检出 \(r.detected)" : "Accepted \(r.accepted) / Reviewed \(r.stars.count) / Detected \(r.detected)").font(.caption)
+        Text(zh ? "采用 \(r.accepted) / 检查 \(r.stars.count) / 检出 \(r.detected)" : "Accepted \(r.accepted) / Reviewed \(r.stars.count) / Detected \(r.detected)").font(.caption)
         Text(String(format:zh ? "长 / 短轴 FWHM %.3f / %.3f px\n方向 %.1f° · 星宽 P10–P90 %.3f–%.3f px" : "Major / minor FWHM %.3f / %.3f px\nAngle %.1f° · Width P10–P90 %.3f–%.3f px",r.majorFwhm,r.minorFwhm,r.angle,r.fwhmP10,r.fwhmP90)).font(.caption2).monospacedDigit()
         if r.minorFwhm<2 {Text(zh ? "星点不足 2 像素，测量可能受采样相位影响；不是光学分辨率。" : "Stars are narrower than 2 pixels; sampling phase may bias the fit. This is not optical resolution.").font(.caption2).foregroundStyle(.orange)}
         if r.spatiallyVariable {Text(zh ? "星宽或形状随位置明显变化，单一 PSF 可能不适合全图。" : "Stellar widths or shapes vary substantially; a single PSF may not suit the full field.").font(.caption2).foregroundStyle(.orange)}
         HStack {
-            Button(zh ? "星点审查" : "Review stars") {show("stars-preview.tiff")}.accessibilityIdentifier("psf.review")
+            Button(zh ? "检查星点" : "Review stars") {show("stars-preview.tiff")}.accessibilityIdentifier("psf.review")
             Button(zh ? "PSF 核" : "PSF kernel") {show("psf.fits")}.accessibilityIdentifier("psf.kernel")
             Button(zh ? "原母片" : "Original") {show("original")}
         }
-        Text(zh ? "绿：采用 · 灰：手动排除 · 橙：达到饱和值 · 红：其他剔除。审查图已拉伸，仅用于显示。" : "Green: accepted; gray: excluded; orange: saturated; red: other rejection. Stretched review is display-only.").font(.caption2).foregroundStyle(.secondary)
+        Text(zh ? "绿：采用；灰：手动排除；橙：饱和；红：不合格。" : "Green: accepted; gray: excluded; orange: saturated; red: other rejection. Stretched review is display-only.").font(.caption2).foregroundStyle(.secondary)
         DisclosureGroup(zh ? "4 × 4 星宽分布" : "4 × 4 field widths") {
             ForEach(0..<16,id:\.self) {i in
                 Text(r.regions[i].count==0 ? "\(i/4+1),\(i%4+1) · —" : String(format:"%d,%d · n=%d · FWHM %.3f px",i/4+1,i%4+1,r.regions[i].count,r.regions[i].fwhm)).font(.caption2).monospacedDigit()
             }
         }
-        DisclosureGroup(zh ? "审查星点与排除项" : "Review & exclude stars") {
+        DisclosureGroup(zh ? "检查与排除星点" : "Review & exclude stars") {
             Text(zh ? "勾选后另存重测；更改通道或阈值会清除手动排除项。" : "Check stars to exclude, then measure again. Changing channel or thresholds clears exclusions.").font(.caption2).foregroundStyle(.secondary)
             if !session.canEditExclusions {Text(zh ? "参数已改变，请先重测再编辑排除项。" : "Settings changed. Measure again before editing exclusions.").font(.caption2).foregroundStyle(.secondary)}
             Toggle(zh ? "显示自动剔除的星点" : "Include automatically rejected stars",isOn:$showRejected).toggleStyle(.checkbox)

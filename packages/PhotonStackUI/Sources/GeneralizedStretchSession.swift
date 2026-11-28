@@ -7,8 +7,13 @@ struct GeneralizedStretchSettings: Equatable, Sendable {
     var symmetry = 0.0, shadowProtection = 0.0, highlightProtection = 1.0
     var black = 0.0, white = 1.0
     var luminance = true, automaticRange = true
+    var inverse = false, saturation = false
+    var mode: String {
+        get { saturation ? "saturation" : luminance ? "luminance" : "independent" }
+        set { saturation = newValue == "saturation"; luminance = newValue == "luminance" }
+    }
     var isValid: Bool {
-        [logStretch, localIntensity, symmetry, shadowProtection, highlightProtection, black, white].allSatisfy(\.isFinite) &&
+        !(saturation && luminance) && [logStretch, localIntensity, symmetry, shadowProtection, highlightProtection, black, white].allSatisfy(\.isFinite) &&
         (0...10).contains(logStretch) && (-5...15).contains(localIntensity) && shadowProtection >= 0 &&
         shadowProtection <= symmetry && symmetry <= highlightProtection && highlightProtection <= 1 &&
         (automaticRange || (black < white && (white-black).isFinite))
@@ -16,7 +21,7 @@ struct GeneralizedStretchSettings: Equatable, Sendable {
     var arguments: [String] {
         var a = ["--log-stretch", String(logStretch), "--local-intensity", String(localIntensity),
                  "--symmetry", String(symmetry), "--shadow-protection", String(shadowProtection),
-                 "--highlight-protection", String(highlightProtection), "--mode", luminance ? "luminance" : "independent"]
+                 "--highlight-protection", String(highlightProtection), "--mode", mode, "--inverse", inverse ? "on" : "off"]
         if !automaticRange { a += ["--black", String(black), "--white", String(white)] }
         return a
     }
@@ -26,15 +31,18 @@ struct GeneralizedStretchReport: Decodable {
     var width, height, previewWidth, coveredPixels, belowBlack, aboveWhite, gamutBlendedPixels: Int
     var logStretch, localIntensity, symmetry, shadowProtection, highlightProtection, black, white: Double
     var luminance, wcsPreserved: Bool
+    var inverse, saturation: Bool?
+    var stepCount: Int?
+    var steps: Int { stepCount ?? 1 }
     var beforeHistogram, afterHistogram: [Int]
     var curve: [Double]
     var settings: GeneralizedStretchSettings {
         .init(logStretch: logStretch, localIntensity: localIntensity, symmetry: symmetry,
               shadowProtection: shadowProtection, highlightProtection: highlightProtection,
-              black: black, white: white, luminance: luminance, automaticRange: false)
+              black: black, white: white, luminance: luminance, automaticRange: false, inverse: inverse ?? false, saturation: saturation ?? false)
     }
     var isValid: Bool {
-        type == "complete" && command == "ghs-stretch" && source.hasPrefix("/") &&
+        (1...32).contains(steps) && type == "complete" && command == "ghs-stretch" && source.hasPrefix("/") &&
         sourceSHA.count == 64 && sourceSHA.allSatisfy({ "0123456789abcdef".contains($0) }) &&
         ["linear", "display-srgb"].contains(sourceDomain) && outputDomain == "display-srgb" &&
         width > 0 && height > 0 && width <= 100_000 && height <= 100_000 &&
@@ -58,13 +66,22 @@ struct GeneralizedStretchReport: Decodable {
     private let service: any ProcessingService
     private let root = FileManager.default.temporaryDirectory.appendingPathComponent("PhotonStack-GHS-\(UUID())")
     private var task: Task<Void, Never>?
-    var isCurrent: Bool { report != nil && settings == report?.settings }
+    private var prefixRecipe: URL?
+    private var prefixOnly = false
+    @Published private(set) var prefixSteps = 0
+    var isCurrent: Bool { report != nil && settings == report?.settings && report?.steps == prefixSteps + 1 }
     init(source: URL, service: any ProcessingService = CLIProcessingService.makeDefault()) {
         self.source = source.resolvingSymlinksInPath(); self.service = service
     }
     func choose(_ file: URL) {
         guard !busy else { return }
         source = file.resolvingSymlinksInPath(); settings = .init(); report = nil; output = nil; image = nil; error = nil
+        prefixRecipe = nil; prefixOnly = false; prefixSteps = 0
+    }
+    func appendStep() {
+        guard !busy, isCurrent, let output, let report, report.steps < 32 else { return }
+        prefixRecipe = output.appendingPathComponent("recipe.txt"); prefixOnly = false; prefixSteps = report.steps
+        settings = .init(black: 0, white: 1, automaticRange: false)
     }
     func begin() {
         guard !busy, task == nil else { return }
@@ -89,6 +106,7 @@ struct GeneralizedStretchReport: Decodable {
     private func render(_ requested: GeneralizedStretchSettings, to folder: URL, preview: Bool) async throws -> GeneralizedStretchReport {
         guard requested.isValid else { throw ProcessingServiceError.invalidArguments("GHS requires 0 ≤ LP ≤ SP ≤ HP ≤ 1 and black < white.") }
         var args = ["ghs-stretch", "--input", source.path, "--output-dir", folder.path] + requested.arguments
+        if let prefixRecipe { args += ["--chain-recipe", prefixRecipe.path, "--chain-prefix-only", prefixOnly ? "on" : "off"] }
         if preview { args += ["--preview-width", "1200"] }
         if let report { args += ["--expected-sha", report.sourceSHA] }
         let response = try await service.runCLI(arguments: args)
@@ -96,7 +114,7 @@ struct GeneralizedStretchReport: Decodable {
         let value = try decode(response.standardOutput)
         var resolved = requested
         if requested.automaticRange { resolved.black = value.black; resolved.white = value.white; resolved.automaticRange = false }
-        guard value.settings == resolved, URL(fileURLWithPath: value.source).resolvingSymlinksInPath() == source,
+        guard value.steps == prefixSteps + 1, value.settings == resolved, URL(fileURLWithPath: value.source).resolvingSymlinksInPath() == source,
               value.previewWidth == (preview ? 1200 : 0), report == nil || value.sourceSHA == report?.sourceSHA else {
             throw ProcessingServiceError.invalidReport(command: "ghs-stretch")
         }
@@ -112,7 +130,7 @@ struct GeneralizedStretchReport: Decodable {
             let previous = output
             if settings == requested { settings = value.settings }
             report = value; output = folder; loadImage()
-            if let previous, previous.deletingLastPathComponent() == root { try? FileManager.default.removeItem(at: previous) }
+            if let previous, previous.deletingLastPathComponent() == root, previous != prefixRecipe?.deletingLastPathComponent() { try? FileManager.default.removeItem(at: previous) }
         } catch { try? FileManager.default.removeItem(at: folder); throw error }
     }
     func open(_ folder: URL) async throws {
@@ -122,6 +140,7 @@ struct GeneralizedStretchReport: Decodable {
         try Task.checkCancellation()
         let value = try decode(response.standardOutput)
         source = URL(fileURLWithPath: value.source).resolvingSymlinksInPath()
+        prefixRecipe = folder.appendingPathComponent("recipe.txt"); prefixOnly = true; prefixSteps = value.steps - 1
         settings = value.settings; report = value; output = folder; loadImage()
     }
     func saveResult(to folder: URL) async throws -> URL {

@@ -35,6 +35,23 @@ func ghsPreviewSaveReopenAndSourceGuards() async throws {
     reopened.before = true; #expect(reopened.image != nil)
     _ = try await reopened.saveResult(to: root.appendingPathComponent("again"))
     #expect(try Data(contentsOf: root.appendingPathComponent("again/display.fits")) == originalResult)
+    // App multi-step preview/save/reopen must replay from the original Float32
+    // source without depending on a temporary preview or quantized TIFF.
+    reopened.appendStep()
+    #expect(!reopened.isCurrent && reopened.prefixSteps == 1 && reopened.settings.black == 0 && reopened.settings.white == 1)
+    reopened.settings.inverse = true; reopened.settings.logStretch = 2; reopened.settings.mode = "saturation"
+    try await reopened.updatePreview()
+    #expect(reopened.isCurrent && reopened.report?.steps == 2 && reopened.report?.inverse == true && reopened.report?.saturation == true)
+    let chain = root.appendingPathComponent("chain")
+    _ = try await reopened.saveResult(to: chain)
+    let chainedPixels = try Data(contentsOf: chain.appendingPathComponent("display.fits"))
+    let restored = GeneralizedStretchSession(source: source, service: service); defer { restored.close() }
+    try await restored.open(chain)
+    #expect(restored.isCurrent && restored.prefixSteps == 1 && restored.settings.mode == "saturation" && restored.settings.inverse)
+    _ = try await restored.saveResult(to: root.appendingPathComponent("chain-replay"))
+    #expect(try Data(contentsOf: root.appendingPathComponent("chain-replay/display.fits")) == chainedPixels)
+    restored.settings.logStretch = 1; try await restored.updatePreview()
+    #expect(restored.report?.steps == 2) // Editing the final step must not append it twice.
     #expect(try Data(contentsOf: source) == data)
     data[data.count-1] ^= 1; try data.write(to: source)
     do { try await reopened.updatePreview(); Issue.record("Changed source accepted") } catch { }

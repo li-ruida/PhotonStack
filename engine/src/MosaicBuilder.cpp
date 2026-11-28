@@ -1740,9 +1740,29 @@ MosaicResult composeMosaic(
             seams->pairs.push_back(detail::measureMosaicSeam(i, j, {left, top, right, bottom}, seams->channels, sample));
         }
     }
+    const auto inspectFinal=[&](MosaicResult& result) {
+        if(!result.ok||!seams)return;
+        for(auto& pair:seams->pairs){
+            const auto sample=[&](double x,double y)->std::optional<detail::MosaicFinalSample>{
+                if(sampleCoverage(result.image,float(x),float(y))<.99F)return std::nullopt;
+                detail::MosaicFinalSample values{};
+                for(unsigned k=0;k<2;++k){const auto index=k==0?pair.first:pair.second;MosaicPoint source;
+                    if(!inverseTransformPoint(result.placements[index],float(x),float(y),source)||sampleCoverage(images[index],source.x,source.y)<.99F)return std::nullopt;
+                    for(unsigned c=0;c<seams->channels;++c){
+                        values[k][c]=sampleStraightColor(images[index],source.x,source.y,c)*corrections[index].gains[c]+corrections[index].offsets[c];
+                        if(clampColor)values[k][c]=std::clamp(values[k][c],0.,1.);
+                    }
+                }
+                for(unsigned c=0;c<seams->channels;++c)values[2][c]=sampleStraightColor(result.image,float(x),float(y),c);
+                return values;
+            };
+            pair.final=detail::measureFinalMosaicSeam(pair.summary.bounds,seams->channels,sample);
+        }
+    };
     if (options.blendMode == MosaicBlendMode::Multiband) {
         auto result = composeMultiband(
             images, std::move(placements), corrections, width, height, exposureMatched, progress, clampColor);
+        inspectFinal(result);
         result.seams = std::move(seams);
         return result;
     }
@@ -1881,6 +1901,7 @@ MosaicResult composeMosaic(
     result.placements = std::move(placements);
     result.exposureMatched = exposureMatched;
     result.blendMode = options.blendMode;
+    inspectFinal(result);
     result.seams = std::move(seams);
     return result;
 }

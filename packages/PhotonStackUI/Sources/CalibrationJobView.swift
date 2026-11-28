@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import PhotonStackProcessing
+import UniformTypeIdentifiers
 
 struct CalibrationJobView: View {
     @StateObject private var model: CalibrationJobSession
@@ -10,6 +11,7 @@ struct CalibrationJobView: View {
     @State private var group = 0
     @State private var frame: Int? = 0
     @State private var stacking = false
+    @State private var batchLaunch: CalibrationBatchLaunch?
     init(library: CalibrationLibrary, launch: CalibrationJobLaunch, chinese: Bool, openProject: @escaping (URL) -> Void) {
         _model = StateObject(wrappedValue: CalibrationJobSession(library: library, launch: launch)); self.chinese = chinese
         self.openProject = openProject
@@ -46,19 +48,22 @@ struct CalibrationJobView: View {
             }
             if let error = model.error {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(t("本次操作未成功。请检查母片分配，以及原片、母片和任务文件是否可读且未被修改。已保存的帧会保留。", "This operation did not succeed. Check master assignments and that source frames, masters and task files are readable and unchanged. Saved frames are retained."))
+                    Text(t("校准未完成。请检查文件和母片分配后重试，已完成的帧会保留。", "This operation did not succeed. Check master assignments and that source frames, masters and task files are readable and unchanged. Saved frames are retained."))
                         .foregroundStyle(.red).accessibilityIdentifier("calibration.job-error")
                     DisclosureGroup(t("错误详情", "Error details")) {
                         ScrollView { Text(error).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 90)
                     }.accessibilityIdentifier("calibration.job-error-details")
                 }.font(.caption)
             }
-            Text(t("保留线性 CFA / 单色与原始坐标。只写新任务目录，原片不修改；校准完成后仍需配准、堆栈与显影。", "Preserves linear CFA / mono and source coordinates. Writes only to a new task folder; sources stay unchanged. Registration, stacking and development follow calibration."))
+            Text(t("校准结果另存，原片不变。完成后可继续对齐和堆栈。", "Preserves linear CFA / mono and source coordinates. Writes only to a new task folder; sources stay unchanged. Registration, stacking and development follow calibration."))
                 .font(.caption).foregroundStyle(.secondary)
         }.padding(18).frame(width: 1010, height: 710)
             .task { if model.directory != nil { model.refresh() } }
             .onDisappear { model.cancel() }
             .interactiveDismissDisabled(model.busy)
+            .sheet(item: $batchLaunch) { launch in
+                CalibrationBatchView(library: model.library, launch: launch, chinese: chinese, openProject: openProject)
+            }
             .sheet(isPresented: $stacking) {
                 if let directory = model.directory, let report = model.report {
                     CalibrationStackProjectView(library: model.library, directory: directory, report: report, chinese: chinese, openProject: openProject)
@@ -84,6 +89,21 @@ struct CalibrationJobView: View {
                     .accessibilityIdentifier("calibration.job-ready")
                 Spacer()
                 Button(t("填入唯一候选", "Fill unique candidates")) { model.draft?.fillUniqueCandidates() }.accessibilityIdentifier("calibration.job-suggest")
+                Button(t("保存草稿…", "Save draft…")) {
+                    let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "calibration-draft.json"
+                    if panel.runModal() == .OK, let url = panel.url { model.saveDraft(to: url) }
+                }.disabled(model.busy).accessibilityIdentifier("calibration.save-draft")
+            }
+            if let file = model.savedDraft { Text(t("已保存草稿：", "Draft saved: ") + file.lastPathComponent).font(.caption).foregroundStyle(.secondary) }
+            HStack {
+                Button(t("选择坏像素图…", "Choose defect map…")) {
+                    let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+                    if panel.runModal() == .OK, let url = panel.url { model.chooseBadPixels(url) }
+                }.disabled(model.busy).accessibilityIdentifier("calibration.choose-defects")
+                if let map = draft.badPixels {
+                    Text(URL(fileURLWithPath: map.path).lastPathComponent).font(.caption)
+                    Button(t("移除", "Remove")) { model.draft?.badPixels = nil }.disabled(model.busy)
+                } else { Text(t("可选；标记的像素输出为无效值，不做插值。", "Optional; flagged pixels become missing samples, without interpolation.")).font(.caption).foregroundStyle(.secondary) }
             }
             HSplitView {
                 VStack(alignment: .leading, spacing: 8) {
@@ -138,7 +158,7 @@ struct CalibrationJobView: View {
                     ForEach([128, 256, 512, 1024, 2048], id: \.self) { Text("\($0) MiB").tag($0) }
                 }.frame(width: 135).labelsHidden()
                 Spacer()
-                Button(t("选择保存位置并开始…", "Choose destination and start…")) { start() }.buttonStyle(.borderedProminent)
+                Button(t("开始校准…", "Start calibration…")) { start() }.buttonStyle(.borderedProminent)
                     .disabled(!model.canStart).accessibilityIdentifier("calibration.job-start")
             }.font(.callout)
         }.disabled(model.busy)
@@ -223,6 +243,11 @@ struct CalibrationJobView: View {
             HStack {
                 if model.stopped { Text(t("已停止，完成帧已保留。", "Stopped; completed frames retained.")).font(.caption).foregroundStyle(.secondary) }
                 Spacer()
+                if let report = model.report, let directory = model.directory {
+                    Button(t("批量校准与堆栈…", "Batch calibrate and stack…")) {
+                        batchLaunch = .init(calibration: directory, expected: report)
+                    }.disabled(model.busy).accessibilityIdentifier("calibration.job-batch")
+                }
                 if let report = model.report, report.completed >= 3 {
                     Button(t("进入堆栈…", "Continue to stacking…")) { stacking = true }.disabled(model.busy)
                         .accessibilityIdentifier("calibration.job-stack")

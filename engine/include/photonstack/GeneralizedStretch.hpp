@@ -9,6 +9,7 @@ struct GeneralizedStretchOptions {
     double localIntensity = 1; // b, -5...15
     double symmetry = 0, shadowProtection = 0, highlightProtection = 1;
     double black = 0, white = 1; // Input physical units, shared by RGB.
+    bool inverse = false, saturation = false;
     bool luminance = true; // Rec.709 scaling with bounded RGB blending.
 };
 class GeneralizedStretchCurve {
@@ -17,6 +18,7 @@ class GeneralizedStretchCurve {
     double base(double distance) const;
     double derivative(double distance) const;
     double signedBase(double x) const;
+    double forward(double x) const;
 public:
     explicit GeneralizedStretchCurve(const GeneralizedStretchOptions&);
     double evaluate(double x) const; // Normalized x in [0,1]; exact formula, not LUT.

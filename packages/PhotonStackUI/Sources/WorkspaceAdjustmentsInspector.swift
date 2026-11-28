@@ -228,7 +228,7 @@ private struct ExportSettingsSection: View {
                 get: { model.exportOptions.fitsValueMode }, set: { model.setFITSValueMode($0) }
             )) {
                 Text(model.language == .simplifiedChinese ? "显示范围" : "Display range").tag(FITSValueMode.display)
-                Text(model.language == .simplifiedChinese ? "科学数值" : "Scientific values").tag(FITSValueMode.scientific)
+                Text(model.language == .simplifiedChinese ? "原始数值" : "Scientific values").tag(FITSValueMode.scientific)
             }
             #if os(macOS)
             Button(model.localized(.exportAction)) {

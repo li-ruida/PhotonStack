@@ -23,6 +23,24 @@ int main(){try {
     const double d=std::expm1(2.);for(int i=0;i<=100;++i){double x=i/100.;require(std::abs(harmonic.evaluate(x)-x*(1+d)/(1+d*x))<1e-14,"known harmonic curve");}
     o.localIntensity=-1;GeneralizedStretchCurve logarithmic(o);
     for(int i=0;i<=100;++i){double x=i/100.;require(std::abs(logarithmic.evaluate(x)-std::log1p(d*x)/std::log1p(d))<1e-14,"known logarithmic curve");}
+    for(double b:{-5.,-1.-1e-10,-1.,-1.+1e-10,-.1,0.,.1,1.,15.})for(double sp:{0.,.2,.5,1.}) {
+        o={};o.logStretch=2;o.localIntensity=b;o.symmetry=sp;o.shadowProtection=sp/2;o.highlightProtection=(1+sp)/2;
+        GeneralizedStretchCurve forward(o);o.inverse=true;GeneralizedStretchCurve inverse(o);
+        double last=0;
+        for(int i=0;i<=1000;++i){const double x=i/1000.,y=inverse.evaluate(x);
+            require(std::abs(forward.evaluate(y)-x)<1e-10,"inverse forward residual");
+            require(std::abs(inverse.evaluate(forward.evaluate(x))-x)<1e-10,"forward inverse residual");
+            require(y>=last&&y>=0&&y<=1,"inverse monotonic bounds");last=y;}
+    }
+    o={};o.logStretch=2;o.inverse=true;o.localIntensity=1;GeneralizedStretchCurve ih(o);
+    for(int i=0;i<=100;++i){double y=i/100.;require(std::abs(ih.evaluate(y)-y/(1+d-d*y))<1e-13,"independent harmonic inverse");}
+    ImageBuffer colors;colors.width=3;colors.height=1;colors.channels=4;colors.pixels={.8F,.4F,.2F,1, .3F,.3F,.3F,1, 0,0,0,1};
+    o={};o.saturation=true;o.luminance=false;auto sat=generalizedStretch(colors,o);
+    require(sat.image.pixels[0]==colors.pixels[0]&&sat.image.pixels[1]<colors.pixels[1]&&sat.image.pixels[2]<colors.pixels[2],"HSV saturation preserves value");
+    require(std::abs((sat.image.pixels[1]-sat.image.pixels[2])/(sat.image.pixels[0]-sat.image.pixels[2])-1./3)<1e-6,"HSV hue preserved");
+    for(int i=4;i<12;++i)require(sat.image.pixels[i]==colors.pixels[i],"neutral pixels changed");
+    o.inverse=true;auto unsat=generalizedStretch(sat.image,o);
+    for(std::size_t i=0;i<colors.pixels.size();++i)require(std::abs(unsat.image.pixels[i]-colors.pixels[i])<2e-6,"saturation inverse");
     ImageBuffer im;im.width=5;im.height=1;im.channels=4;im.pixels={.02F,.01F,.005F,1, 1,0,0,.25F, 0,0,0,1, 1,1,1,1, NAN,NAN,NAN,0};
     o={};auto result=generalizedStretch(im,o);require(result.coveredPixels==4,"coverage count");require(result.gamutBlendedPixels==1,"gamut count");
     for(auto v:result.image.pixels)require(std::isfinite(v)&&v>=0&&v<=1,"bounded output");

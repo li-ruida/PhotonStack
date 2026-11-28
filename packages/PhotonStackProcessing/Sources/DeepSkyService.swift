@@ -92,6 +92,10 @@ public extension ProcessingService {
         report.rejectionLow = previous.rejectionLow
         report.rejectionHigh = previous.rejectionHigh
         report.sensorPatternReport = previous.sensorPatternReport
+        report.drizzleWeights = previous.drizzleWeights
+        report.drizzleProvenance = previous.drizzleProvenance
+        report.drizzleCoverage = previous.drizzleCoverage
+        report.drizzleCompleteCoverage = previous.drizzleCompleteCoverage
         // Switching to scene-based finishing does not discard a reusable noise
         // bundle. It remains attached to the unchanged scientific master.
         if report.noiseReferencePaths.isEmpty {
@@ -100,6 +104,7 @@ public extension ProcessingService {
             report.noiseReferenceInputs = previous.noiseReferenceInputs
         }
         try validateNoiseReferencePaths(report)
+        try validateDrizzlePaths(report)
         guard try deepSkySourceDigest(master) == masterDigest else { throw DeepSkyRecipeError.masterChanged }
         if let sourcesVerified {
             try await DeepSkyResultReuse.revalidateSourcesForRefinish(sourcesVerified, reportURL: previousReportURL)
@@ -154,6 +159,7 @@ public extension ProcessingService {
         guard report.success, report.analysisOnly == analyzeOnly else { throw DeepSkyRecipeError.invalidReport }
         if !analyzeOnly {
             try validateNoiseReferencePaths(report)
+            try validateDrizzlePaths(report)
             try validateDeepSkyProducts([report.master, report.backgroundMaster, report.developed], in: outputDirectory)
             report.masterSHA256 = try deepSkySourceDigest(URL(fileURLWithPath: report.master))
             report.developedSHA256 = try deepSkySourceDigest(URL(fileURLWithPath: report.developed))
@@ -251,4 +257,14 @@ private func deepSkySourceDigest(_ url: URL) throws -> String {
 private func decodeDeepSkyOutput<T: Decodable>(_ result: ProcessingCommandResult) throws -> T {
     guard let line = result.standardOutput.split(separator: "\n").last else { throw DeepSkyRecipeError.invalidReport }
     return try JSONDecoder().decode(T.self, from: Data(line.utf8))
+}
+
+private func validateDrizzlePaths(_ report: DeepSkyReport) throws {
+    guard !report.drizzlePaths.isEmpty else { return }
+    let directory = URL(fileURLWithPath: report.master).deletingLastPathComponent()
+    guard report.drizzlePaths.count == 2,
+          zip(report.drizzlePaths, ["drizzle-weights.fits", "drizzle-inputs.txt"]).allSatisfy({
+              URL(fileURLWithPath: $0.0).standardizedFileURL.path == directory.appendingPathComponent($0.1).standardizedFileURL.path
+          }) else { throw DeepSkyRecipeError.invalidReport }
+    try validateDeepSkyProducts(report.drizzlePaths, in: directory)
 }

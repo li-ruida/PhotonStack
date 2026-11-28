@@ -22,6 +22,7 @@ struct WorkflowLibrarySheet: View {
     @State private var busy = false
     @State private var error: String?
     @State private var confirmDelete = false
+    @State private var creating = false
     private var chinese: Bool { model.language == .simplifiedChinese }
     private var selected: ReusableWorkflow? { workflows.first { $0.id == selection } }
     private var locked: Bool { busy || model.hasActiveProcessing || batch.isRunning }
@@ -34,14 +35,14 @@ struct WorkflowLibrarySheet: View {
                 Spacer()
                 Button(t("关闭", "Close")) { presented = false }.keyboardShortcut(.cancelAction).disabled(busy)
             }
-            Text(t("把当前处理步骤保存为工作流，可对其他目标重复使用。", "Save the current processing steps to reuse them on other targets."))
-                .foregroundStyle(.secondary)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    captureSection
-                    Divider()
                     librarySection
-                    if let workflow = selected {
+                    if creating {
+                        captureSection
+                    }
+                    if !creating, let workflow = selected {
+                        Divider()
                         stepSummary(workflow)
                         targetSection(workflow)
                     }
@@ -53,13 +54,14 @@ struct WorkflowLibrarySheet: View {
                 Text(localizedWorkflowMessage(error)).foregroundStyle(.red).textSelection(.enabled).font(.callout)
             }
         }
-        .padding(22).frame(width: 820, height: 700)
+        .padding(20)
+        .frame(width: 760, height: selected != nil || draft != nil || !batch.items.isEmpty ? 640 : 360)
         .interactiveDismissDisabled(busy)
         .task { await load() }
         .task(id: selected?.combinesFrames) {
             if selected?.combinesFrames == true { await model.loadDeepSkySchema() }
         }
-        .onChange(of: selection) { _, _ in ready = false; checks = [] }
+        .onChange(of: selection) { _, _ in ready = false; checks = []; creating = false }
         .confirmationDialog(t("删除这个已保存的工作流？", "Delete this saved workflow?"), isPresented: $confirmDelete) {
             Button(t("删除工作流", "Delete workflow"), role: .destructive) {
                 guard let selected else { return }
@@ -68,20 +70,21 @@ struct WorkflowLibrarySheet: View {
                     selection = workflows.first?.id
                 }
             }
-        } message: { Text(t("只删除配方，不删除照片或已生成的结果。", "Only the recipe is deleted, never photos or results.")) }
+        } message: { Text(t("只删除工作流，保留照片和处理结果。", "Only the workflow is deleted. Photos and results are kept.")) }
     }
 
     private var captureSection: some View {
-        GroupBox(t("1 · 保存当前处理步骤", "1 · Save the current steps")) {
+        GroupBox(t("保存当前步骤", "Save current steps")) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    TextField(t("工作流名称，例如：城市星轨去航迹", "Name, e.g. City star trails"), text: $name)
+                    TextField(t("工作流名称", "Workflow name"), text: $name)
                         .accessibilityIdentifier("workflow.name")
-                    Button(t("读取当前步骤", "Read current steps")) {
+                    Button(t("读取步骤", "Read steps")) {
                         perform { draft = try await model.captureReusableWorkflow(name: name, redetectSelections: redetect) }
                     }.disabled(locked || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .help(t("仅包含已应用的调整。", "Includes applied edits only."))
                 }
-                Toggle(t("在新照片上重新检测航迹和云雾", "Detect trails and clouds again on new images"), isOn: $redetect)
+                Toggle(t("重新检测航迹和云雾", "Redetect trails and clouds"), isOn: $redetect)
                     .font(.callout)
                 if let draft {
                     stepSummary(draft)
@@ -91,9 +94,10 @@ struct WorkflowLibrarySheet: View {
                                 workflows = try await repository.save(draft)
                                 selection = draft.id
                                 self.draft = nil
+                                creating = false
                             }
                         }.buttonStyle(.borderedProminent).disabled(locked)
-                        Text(t("保存的是上方已应用步骤，不是尚未执行的滑块值。", "Saves applied steps, not unexecuted slider changes.")).font(.caption).foregroundStyle(.secondary)
+                        Text(t("仅保存已应用的调整", "Applied edits only")).font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }.padding(6)
@@ -106,15 +110,19 @@ struct WorkflowLibrarySheet: View {
     private var librarySection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text(t("2 · 选择工作流", "2 · Choose a workflow")).font(.headline)
+                Button(creating ? t("取消新建", "Cancel new workflow") : t("新建工作流", "New workflow")) { creating.toggle() }
+                    .disabled(locked).accessibilityIdentifier("workflow.new")
                 Spacer()
-                Button(t("导入配方", "Import recipe")) { importWorkflow() }.disabled(locked)
-                Button(t("导出配方", "Export recipe")) { exportWorkflow() }.disabled(locked || selected == nil)
-                Button(t("删除", "Delete"), role: .destructive) { confirmDelete = true }.disabled(locked || selected == nil)
+                Button(t("导入工作流…", "Import workflow…")) { importWorkflow() }.disabled(locked)
+                Button(t("导出工作流…", "Export workflow…")) { exportWorkflow() }.disabled(locked || selected == nil || creating)
+                Button(t("删除", "Delete"), role: .destructive) { confirmDelete = true }.disabled(locked || selected == nil || creating)
             }
             if workflows.isEmpty {
-                Text(t("还没有工作流。先处理一组照片后保存，或导入已有配方。", "No workflows yet. Process a set and save its steps, or import a recipe.")).foregroundStyle(.secondary)
-            } else {
+                if !creating {
+                    ContentUnavailableView(t("暂无工作流", "No saved workflows"), systemImage: "point.3.connected.trianglepath.dotted")
+                        .frame(maxWidth: .infinity)
+                }
+            } else if !creating {
                 Picker(t("已保存", "Saved"), selection: $selection) {
                     ForEach(workflows) { workflow in Text(workflow.name).tag(Optional(workflow.id)) }
                 }.disabled(locked).accessibilityIdentifier("workflow.selection")
@@ -146,7 +154,8 @@ struct WorkflowLibrarySheet: View {
                     }
                 }
             }
-            Text(t("最后按保存的导出设置生成全分辨率 TIFF。", "Exports full-resolution TIFF using the saved export settings.")).font(.caption).foregroundStyle(.secondary)
+            Label(t("全分辨率 TIFF", "Full-resolution TIFF"), systemImage: "square.and.arrow.up")
+                .font(.caption).foregroundStyle(.secondary)
             ForEach(workflow.notices, id: \.self) {
                 Text(localizedWorkflowMessage($0)).font(.caption).foregroundStyle(.secondary)
             }
@@ -155,12 +164,13 @@ struct WorkflowLibrarySheet: View {
 
     private func targetSection(_ workflow: ReusableWorkflow) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(t("3 · 选择新目标并运行", "3 · Choose new targets and run")).font(.headline)
-            Text(t("每个目标单独一个文件夹。读取其 lights 子目录（若存在），否则读取该文件夹顶层；不递归混合其他目标。校准帧放在 darks / biases / flats 子目录。", "One folder per target. Reads its lights subfolder if present, otherwise its top level; never mixes nested targets. Calibration frames go in darks / biases / flats."))
-                .font(.caption).foregroundStyle(.secondary)
+            Text(t("处理目标", "Targets")).font(.headline)
             HStack {
                 Button(t("选择目标文件夹…", "Choose target folders…")) { chooseFolders() }.disabled(locked)
-                Text(t("已选 \(folders.count) 个", "\(folders.count) selected")).foregroundStyle(.secondary)
+                    .help(t("每个文件夹一个目标。读取 lights 子目录（若存在），否则读取文件夹顶层。校准帧放在 darks / biases / flats 子目录。", "One folder per target. Reads lights if present, otherwise the folder's top level. Place calibration frames in darks / biases / flats."))
+                if !folders.isEmpty {
+                    Text(t("\(folders.count) 个", "\(folders.count) selected")).foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button(t("选择输出位置…", "Choose output location…")) { chooseOutput() }.disabled(locked)
             }

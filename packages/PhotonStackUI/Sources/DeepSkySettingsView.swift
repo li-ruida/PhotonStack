@@ -67,10 +67,15 @@ struct DeepSkySettingsView: View {
                                 VStack(alignment: .leading, spacing: 12) {
                                     Text(groupGuidance(group)).font(.caption).foregroundStyle(.secondary)
                                         .fixedSize(horizontal: false, vertical: true)
+                                    if group == "stack", model.deepSkySettings.values["stack.cfa-drizzle"] == "on" {
+                                        DisclosureGroup(chinese ? "CFA Drizzle 使用条件" : "CFA Drizzle requirements") {
+                                            Text(chinese ? "需要足够的拍摄位移。采用平均合成，不剔除异常像素；缺失颜色不补洞，结果附逐色权重。去马赛克仅用于星点分析。" : "Requires sufficient dithering. Uses averaging without outlier rejection; missing colors remain invalid. Per-color weights are saved. Demosaicing is used only for star analysis.").font(.caption).foregroundStyle(.secondary)
+                                        }
+                                    }
                                     ForEach(fields.filter { $0.group == group }) { field in
                                         fieldControl(field)
                                         if field.key == "background.exclusions" {
-                                            Button(chinese ? "在图像上编辑保护区…" : "Edit regions on image…", action: onEditProtection)
+                                            Button(chinese ? "编辑保护区…" : "Edit regions on image…", action: onEditProtection)
                                                 .disabled(!model.canRefinishDeepSkyMaster || model.deepSkySettings.lastReport?.crop == nil)
                                                 .accessibilityIdentifier("background-protection.open")
                                         }
@@ -88,7 +93,10 @@ struct DeepSkySettingsView: View {
     }
 
     private func groupGuidance(_ group: String) -> String {
-        switch group {
+        if group == "stack", model.deepSkySettings.values["stack.cfa-drizzle"] == "on" {
+            return chinese ? "直接用彩色原片的采样点重建 RGB。请先校准亮场，并清空此处的暗场、偏置和平场路径。" : "Accumulate original CFA samples per color. Dithering is required; RGB weights are saved and missing colors remain invalid. Average only, without pixel rejection. Calibrate lights first in Calibration Management and clear master paths here. Demosaicing is used only for star analysis."
+        }
+        return switch group {
         case "calibration": chinese ? "校准帧需与拍摄条件匹配。也可在素材栏指定暗场、偏置和平场。" : "Use calibration frames matched to acquisition conditions. Assign darks, biases and flats in the asset list."
         case "decode": chinese ? "按 FITS 中记录的拜耳阵列还原色彩。更改 FITS 或 RAW 解码设置后需重新堆栈。" : "Bayer FITS frames use their recorded color pattern. Stack again after changing FITS or RAW decoding."
         case "selection": chinese ? "先分析，再复查异常帧。相对质量筛选无法保证所有保留帧都清晰。" : "Analyze first, then inspect flagged frames. Relative screening cannot guarantee sharpness."
@@ -107,6 +115,7 @@ struct DeepSkySettingsView: View {
         "decode.debayer", "decode.demosaic", "registration.mode",
         "selection.apply", "selection.maximum-fwhm-ratio", "selection.maximum-eccentricity",
         "selection.maximum-noise-ratio", "selection.minimum-kept",
+        "stack.cfa-drizzle", "stack.drizzle-scale", "stack.drizzle-pixfrac",
         "stack.method", "stack.normalize-background", "stack.sigma-low", "stack.sigma-high",
         "background.model", "background.exclusions", "background.polynomial-strength",
         "background.grid-strength", "crop.coverage",

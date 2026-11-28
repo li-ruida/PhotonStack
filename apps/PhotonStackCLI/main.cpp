@@ -1,3 +1,7 @@
+#include "SerCommand.hpp"
+#include "XisfCommand.hpp"
+#include "ImagePluginCommand.hpp"
+#include "TimeSeriesCommand.hpp"
 #include <algorithm>
 #include <charconv>
 #include <chrono>
@@ -341,6 +345,17 @@ void printUsage() {
               << "  photonstack sensor-master-build --manifest <inputs.txt> --output-dir <new-directory> [--memory-mib 512 --threads 4 --tile-pixels 65536]\n"
               << "  photonstack sensor-master-inspect|sensor-master-replay --recipe <recipe.txt> [--output-dir <new-directory>]\n"
               << "  photonstack calibration-plan --manifest <acquisition-list.txt>\n"
+              << "  photonstack calibration-declare --manifest <declarations.txt> --output-dir <new-folder>\n"
+              << "  photonstack time-series --recipe <sequence.txt> --output-dir <new-directory>\n"
+              << "  photonstack plugin-inspect --definition <tool.psplugin>\n"
+              << "  photonstack plugin-run --definition <tool.psplugin> --input <linear.fits> --output-dir <new-directory>\n"
+              << "  photonstack xisf-import --input <image.xisf> --output-dir <new-directory> [--image 0]\n"
+              << "  photonstack xisf-export --input <image.fits> --output-dir <new-directory> [--compression zlib|none]\n"
+              << "  photonstack ser-inspect --input <capture.ser> [--byte-order compatibility|specification|little|big]\n"
+              << "  photonstack ser-extract --input <capture.ser> --output-dir <new-folder> [--first 0 --count 100 --step 1 --byte-order compatibility]\n"
+              << "  photonstack star-layers linear-split --input <linear.fits> --starless <linear-starless.fits> --output-dir <new-folder>\n"
+              << "  photonstack star-layers linear-render --layers <folder> --output-dir <new-folder> [--stars-ev -1 --nebula-ev 0]\n"
+              << "  photonstack sensor-quality --input <master.fits> --output-dir <new-folder> [--sigma 8 --absolute-tolerance 10 --flat-min 0.5 --flat-max 1.5]\n"
               << "  photonstack calibration-run --manifest <job.txt> --output-dir <new-job> [--max-frames <n>]\n"
               << "  photonstack calibration-resume --job <saved-job> [--max-frames <n>]\n"
               << "  photonstack calibration-job-inspect --job <saved-job>\n"
@@ -348,9 +363,9 @@ void printUsage() {
               << "  photonstack spcc-narrowband-profile --profile <base.txt> --layout mono|osc-dual|extracted-hoo --centers r,g,b --widths r,g,b --name <name> --output-dir <new-directory> [--expected-sha sha256]\n"
               << "  photonstack spcc-field --input <solved-linear-rgb.fits> [--expected-sha sha256]\n"
               << "  photonstack spcc-catalog-inspect --catalog <catalog.txt> [--expected-sha sha256]\n"
-              << "  photonstack ghs-stretch --input <master.fits|developed.tiff> --output-dir <new-directory> [--log-stretch 3 --local-intensity 1 --symmetry 0 --shadow-protection 0 --highlight-protection 1 --mode luminance|independent --black value --white value --preview-width 1200]\n"
+              << "  photonstack ghs-stretch --input <master.fits|developed.tiff> --output-dir <new-directory> [--log-stretch 3 --local-intensity 1 --symmetry 0 --shadow-protection 0 --highlight-protection 1 --mode luminance|independent|saturation --inverse on|off --chain-recipe <previous/recipe.txt> --black value --white value --preview-width 1200]\n"
               << "  photonstack ghs-inspect|ghs-replay --recipe <recipe.txt> [--output-dir <new-directory>]\n"
-              << "  photonstack psf-restore --measurement <recipe.txt> --output-dir <new-directory> [--iterations 8 --amount 1 --pedestal 0 --noise-sigma 0 --protect-above 0 --threads 4]\n"
+              << "  photonstack psf-restore --measurement <recipe.txt> --output-dir <new-directory> [--iterations 8 --amount 1 --pedestal 0 --noise-sigma 0 --protect-above 0 --threads 4 --spatial-mode global|quadrants --noise-model constant|poisson|poisson-gaussian --electrons-per-unit 1 --read-noise-electrons 0]\n"
               << "  photonstack psf-restoration-inspect --recipe <recipe.txt>\n"
               << "  photonstack psf-restoration-replay --recipe <recipe.txt> --output-dir <new-directory>\n"
               << "  photonstack psf-inspect --recipe <recipe.txt>\n"
@@ -7154,6 +7169,22 @@ int runCommandImpl(const std::vector<std::string>& args) {
         try { return runBackgroundReview(args); }
         catch (const std::exception& error) { printError("BackgroundReviewFailed", error.what()); return 1; }
     }
+    if (args[0] == "time-series") {
+        try { return runTimeSeries(args); }
+        catch (const std::exception& e) { printError("TimeSeriesFailed", e.what()); return 1; }
+    }
+    if (args[0] == "plugin-inspect" || args[0] == "plugin-run") {
+        try { return runImagePlugin(args); }
+        catch (const std::exception& e) { printError("ImagePluginFailed", e.what()); return 1; }
+    }
+    if (args[0] == "xisf-import" || args[0] == "xisf-export") {
+        try { return runXisf(args); }
+        catch (const std::exception& e) { printError("XisfExchangeFailed", e.what()); return 1; }
+    }
+    if (args[0] == "ser-inspect" || args[0] == "ser-extract") {
+        try { return runSer(args); }
+        catch (const std::exception& error) { printError("SerSequenceFailed", error.what()); return 1; }
+    }
     if (args[0] == "star-layers") {
         try { return runStarLayers(args); }
         catch (const std::exception& error) { printError("StarLayersFailed", error.what()); return 1; }
@@ -7173,6 +7204,14 @@ int runCommandImpl(const std::vector<std::string>& args) {
     if (args[0] == "calibration-run" || args[0] == "calibration-resume" || args[0] == "calibration-job-inspect") {
         try { return runCalibrationJob(args); }
         catch (const std::exception& error) { printError("CalibrationJobFailed", error.what()); return 1; }
+    }
+    if (args[0] == "calibration-declare") {
+        try { return runAcquisitionDeclaration(args); }
+        catch (const std::exception& error) { printError("CalibrationDeclarationFailed", error.what()); return 1; }
+    }
+    if (args[0] == "sensor-quality") {
+        try { return runSensorQuality(args); }
+        catch (const std::exception& error) { printError("SensorQualityFailed", error.what()); return 1; }
     }
     if (args[0] == "calibration-inspect" || args[0] == "calibration-match" || args[0] == "calibration-plan") {
         try { return runCalibrationMetadata(args); }

@@ -18,7 +18,7 @@ struct BackgroundReviewView: View {
             HStack {
                 Text(zh ? "背景采样与模型" : "Background samples & model").font(.headline)
                 Spacer()
-                Button(zh ? "关闭" : "Close") { dismiss() }.disabled(saving)
+                ToolSheetCloseButton(chinese: zh, busy: session.busy || saving) { dismiss() }
             }
             HStack(alignment: .top, spacing: 16) {
                 VStack {
@@ -45,7 +45,7 @@ struct BackgroundReviewView: View {
                             Button(zh ? "生成网格" : "Reset grid") { session.resetGrid() }
                             Button(zh ? "清空" : "Clear") { session.recipe?.samples = []; session.selected = nil }
                         }
-                        Text(zh ? "点击图像添加点，避开星云、光晕和亮星。绿：用于拟合；橙：部分通道剔除；红：异常；灰：禁用或覆盖不足。"
+                        Text(zh ? "点击空白天空添加采样点，避开星云和亮星。绿点有效，橙红点需检查，灰点未使用。"
                              : "Click to add points away from nebulosity, halos and bright stars. Green: used; orange: partial; red: outlier; gray: disabled or uncovered.")
                             .font(.caption).foregroundStyle(.secondary)
                         selectedSample
@@ -69,7 +69,7 @@ struct BackgroundReviewView: View {
                                 }
                                 Toggle(zh ? "剔除留出检查异常点" : "Reject leave-one-out outliers",
                                        isOn: field(\.rbfRejectOutliers, fallback: true))
-                                Text(zh ? "平滑值越大越接近整体平面；0 会经过所有采用点。低平滑可能过拟合，需避开目标。最多 512 个有效采样点。"
+                                Text(zh ? "平滑值越大，背景变化越缓和。采样点请避开星云，最多 512 个。"
                                      : "More smoothing approaches a plane; 0 interpolates retained points. Low smoothing may overfit. Avoid targets. Maximum 512 valid samples.")
                                     .font(.caption).foregroundStyle(.secondary)
                             } else {
@@ -86,7 +86,7 @@ struct BackgroundReviewView: View {
                                 .font(.caption)
                         }
                         Button(zh ? "更新预览" : "Update preview") { session.begin() }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.bordered)
                             .disabled(session.recipe == nil)
                             .accessibilityIdentifier("background.evaluate")
                         if let report = session.report, session.renderedRecipe != nil {
@@ -104,30 +104,29 @@ struct BackgroundReviewView: View {
                             }
                         }
                         HStack {
-                            Button(zh ? "保存配方…" : "Save recipe…") { saveRecipe() }.disabled(session.recipe == nil)
-                            Button(zh ? "打开配方…" : "Open recipe…") { openRecipe() }
+                            Button(zh ? "保存参数…" : "Save settings…") { saveRecipe() }.disabled(session.recipe == nil)
+                            Button(zh ? "打开参数…" : "Open settings…") { openRecipe() }
                         }
-                        Text(zh ? "校正不会改变像素位置。保存浮点 FITS，保留负值、覆盖率及可识别的 TAN/SIP 坐标。"
+                        Text(zh ? "另存为 FITS，保留原坐标和有效范围。"
                              : "Correction keeps pixel positions. Float FITS retains negative values, coverage and recognized TAN/SIP coordinates.")
                             .font(.caption).foregroundStyle(.secondary)
                     }.disabled(session.busy || saving)
                 }.frame(width: 290)
             }
-            if let error = session.error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-            HStack {
-                if session.busy {
-                    ProgressView().controlSize(.small)
-                    Text(zh ? "测量采样点并拟合背景…" : "Measuring samples and fitting background…").font(.caption)
-                    Button(zh ? "取消" : "Cancel") { session.cancel() }
+            if let error = session.error { ProcessingErrorNotice(message:error,chinese:zh) }
+            ToolActionBar {
+                if session.busy || saving {
+                    ToolTaskStatus(title: saving ? (zh ? "正在保存…" : "Saving…") : (zh ? "正在更新预览…" : "Updating preview…"), chinese: zh,
+                                   cancel: saving ? nil : { session.cancel() })
                 }
                 Spacer()
-                Button(zh ? "保存并使用校正结果…" : "Save & use corrected…") { saveResult() }
+                Button(zh ? "保存并使用…" : "Save & use result…") { saveResult() }
                     .disabled(!session.isCurrent || session.busy || saving)
-                    .accessibilityIdentifier("background.save-result")
+                    .toolPrimaryAction().accessibilityIdentifier("background.save-result")
             }
         }
         .padding(18).frame(minWidth: 920, idealWidth: 1100, minHeight: 640, idealHeight: 760)
-        .interactiveDismissDisabled(saving)
+        .interactiveDismissDisabled(session.busy || saving)
         .task { session.begin(inspect: true) }
         .onDisappear { operation?.cancel(); session.close(after: operation) }
     }

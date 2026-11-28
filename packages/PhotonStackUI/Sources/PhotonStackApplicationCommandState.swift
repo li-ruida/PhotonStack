@@ -3,6 +3,7 @@ import SwiftUI
 
 public struct PhotonStackApplicationCommandSnapshot: Equatable, Sendable {
     public var language: AppLanguage
+    public var promptToSaveOnExit: Bool
     public var analysisWorkerCount: Int
     public var stackWorkerCount: Int
     public var computeBackend: DeepSkyComputeBackend
@@ -19,11 +20,13 @@ public struct PhotonStackApplicationCommandSnapshot: Equatable, Sendable {
         gpuAccelerationEnabled: Bool? = nil,
         computeBackend: DeepSkyComputeBackend? = nil,
         performance: DeepSkyRunPerformance? = nil,
+        promptToSaveOnExit: Bool = false,
         isWorkspaceActive: Bool,
         canRunBatchRegistration: Bool,
         canPreviewLayerStack: Bool
     ) {
         self.language = language
+        self.promptToSaveOnExit = promptToSaveOnExit
         self.analysisWorkerCount = AppSettings.normalizedAnalysisWorkerCount(analysisWorkerCount)
         self.stackWorkerCount = AppSettings.normalizedStackWorkerCount(stackWorkerCount)
         self.computeBackend = computeBackend ?? DeepSkyComputeBackend(gpuAcceleration: gpuAccelerationEnabled)
@@ -38,7 +41,8 @@ public struct PhotonStackApplicationCommandSnapshot: Equatable, Sendable {
         analysisWorkerCount: Int = 0,
         stackWorkerCount: Int = 0,
         gpuAccelerationEnabled: Bool? = nil,
-        computeBackend: DeepSkyComputeBackend? = nil
+        computeBackend: DeepSkyComputeBackend? = nil,
+        promptToSaveOnExit: Bool = false
     ) -> Self {
         Self(
             language: language,
@@ -46,6 +50,7 @@ public struct PhotonStackApplicationCommandSnapshot: Equatable, Sendable {
             stackWorkerCount: stackWorkerCount,
             gpuAccelerationEnabled: gpuAccelerationEnabled,
             computeBackend: computeBackend,
+            promptToSaveOnExit: promptToSaveOnExit,
             isWorkspaceActive: false,
             canRunBatchRegistration: false,
             canPreviewLayerStack: false
@@ -93,6 +98,12 @@ public final class PhotonStackApplicationCommandState: ObservableObject {
             name: .photonStackSetApplicationLanguage,
             object: language
         )
+    }
+
+    public func requestPromptToSaveOnExit(_ enabled: Bool) {
+        guard snapshot.promptToSaveOnExit != enabled else { return }
+        snapshot.promptToSaveOnExit = enabled
+        NotificationCenter.default.post(name: .photonStackSetPromptToSaveOnExit, object: enabled)
     }
 
     public func requestAnalysisWorkerCount(_ count: Int) {

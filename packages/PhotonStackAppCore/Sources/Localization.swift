@@ -378,7 +378,7 @@ public enum AppLanguage: String, Codable, CaseIterable, Equatable, Sendable {
         case (.simplifiedChinese, .display):
             return "显示归一化"
         case (.simplifiedChinese, .scientific):
-            return "保留科学值"
+            return "保留原始数值"
         }
     }
 
@@ -1061,8 +1061,8 @@ public enum LocalizedTextKey: String, CaseIterable, Codable, Sendable {
 private enum LocalizedTextCatalog {
     private static let english: [LocalizedTextKey: String] = [
         .importAction: "Import",
-        .importFilesAction: "Import Files...",
-        .importFolderAction: "Import Folder...",
+        .importFilesAction: "Import Files…",
+        .importFolderAction: "Import Folder…",
         .importFilesMessage: "Choose one or more RAW, FITS, TIFF, JPEG, PNG, or HEIF files.",
         .importFolderMessage: "Choose a folder. Supported images in its subfolders will also be imported.",
         .assetImportQueued: "%d asset(s) will be imported after the current task finishes.",
@@ -1308,7 +1308,7 @@ private enum LocalizedTextCatalog {
         .languageLabel: "Language",
         .savedProject: "Saved project",
         .openedProject: "Opened project",
-        .cancellingTask: "Cancelling current task...",
+        .cancellingTask: "Cancelling…",
         .cancelledTask: "Task cancelled",
         .restoredPreview: "Restored previous preview",
         .workflowNoLights: "Assign at least one imported asset as Light before running the workflow.",
@@ -1470,8 +1470,8 @@ private enum LocalizedTextCatalog {
 
     private static let simplifiedChinese: [LocalizedTextKey: String] = [
         .importAction: "导入",
-        .importFilesAction: "导入文件...",
-        .importFolderAction: "导入文件夹...",
+        .importFilesAction: "导入文件…",
+        .importFolderAction: "导入文件夹…",
         .importFilesMessage: "选择一个或多个 RAW、FITS、TIFF、JPEG、PNG 或 HEIF 文件。",
         .importFolderMessage: "同时导入子文件夹中的图像。",
         .assetImportQueued: "已排队 %d 个素材，将在当前任务结束后导入。",
@@ -1518,7 +1518,7 @@ private enum LocalizedTextCatalog {
         .exportBitDepth: "位深",
         .exportColorSpace: "色彩空间",
         .fitsValueMode: "FITS 输入数值",
-        .fitsValueModeHelp: "仅 FITS 能保留浮点科学值；PNG、JPEG、HEIF 和 TIFF 导出会进行显示归一化或整数量化。",
+        .fitsValueModeHelp: "保留原始浮点数值请导出 FITS；其他格式用于显示，会转换亮度范围或位深。",
         .jpegQuality: "JPEG 质量",
         .exportSidecarFailed: "图像已导出，但无法保存 PhotonStack 辅助信息文件。",
         .noImage: "无图像",
@@ -1717,7 +1717,7 @@ private enum LocalizedTextCatalog {
         .languageLabel: "语言",
         .savedProject: "已保存项目",
         .openedProject: "已打开项目",
-        .cancellingTask: "正在取消当前任务...",
+        .cancellingTask: "正在取消…",
         .cancelledTask: "任务已取消",
         .restoredPreview: "已恢复上一张预览",
         .workflowNoLights: "运行工作流前至少需要一个亮场素材。",
@@ -1732,21 +1732,21 @@ private enum LocalizedTextCatalog {
         .inspectorAdjustmentsGroup: "图像调整",
         .inspectorBatchGroup: "批处理",
         .inspectorHistoryGroup: "历史与任务",
-        .inspectorProjectGroupIntro: "用于新建项目、选择模板、管理自动保存，并快速打开最近处理过的工作区。",
-        .inspectorAssetGroupIntro: "查看当前素材、分配亮场/暗场等校准角色，并在处理前调整 RAW 解码参数。",
-        .inspectorPhotoInfoGroupIntro: "查看尺寸、格式、相机、镜头、曝光、ISO、光圈、焦距、白平衡和解码器等摄影参数。",
-        .inspectorWorkspaceGroupIntro: "管理源素材、智能中间对象和最终可见的图层栈。",
-        .inspectorWorkflowGroupIntro: "在同一个工作台中分析亮场、筛选原片，并完成校准、对齐、堆栈和显影。",
-        .inspectorAdjustmentsGroupIntro: "包含直方图、RGB 曲线、拉伸、对比度、降噪、锐化、缩星、背景校正、航迹/流星/云雾处理等图像工具。",
-        .inspectorBatchGroupIntro: "把重复处理加入队列，支持暂停、继续和重试，适合长时间批量任务。",
-        .inspectorHistoryGroupIntro: "查看可重放的处理步骤、撤销/重做编辑图，并检查正在运行或已完成的任务。",
+        .inspectorProjectGroupIntro: "管理项目、模板、自动保存和最近项目。",
+        .inspectorAssetGroupIntro: "分配亮场、暗场等素材类型，设置 RAW 解码参数。",
+        .inspectorPhotoInfoGroupIntro: "查看图像格式、拍摄参数和相机信息。",
+        .inspectorWorkspaceGroupIntro: "管理素材、处理结果和图层。",
+        .inspectorWorkflowGroupIntro: "筛选原片，完成校准、对齐、堆栈和显影。",
+        .inspectorAdjustmentsGroupIntro: "调整亮度、色彩和细节，修正背景与拍摄干扰。",
+        .inspectorBatchGroupIntro: "管理批量任务，支持暂停、继续和重试。",
+        .inspectorHistoryGroupIntro: "查看处理记录、撤销修改和检查任务进度。",
         .photoInfoSection: "摄影参数",
         .imageSizeLabel: "尺寸",
         .formatLabel: "格式",
         .channelsLabel: "通道",
         .bitDepthLabel: "位深",
         .orientationLabel: "方向",
-        .metadataUnavailable: "这个文件没有读取到相机元数据。",
+        .metadataUnavailable: "未读取到相机信息。",
         .projectSection: "项目",
         .templateLabel: "模板",
         .newProject: "新建项目",

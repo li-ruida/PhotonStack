@@ -13,7 +13,7 @@ struct ChannelCompositionControl: View {
                 ForEach(ChannelPreset.allCases, id: \.self) { p in Text(p == .custom && zh ? "自定义" : p.rawValue).tag(p) }
             }.onChange(of: preset) { _, value in session.apply(value) }
                 .accessibilityIdentifier("channels.preset")
-            Text(zh ? "选择已校准、配准到同一像素网格的单色线性 FITS。合色不自动匹配背景、曝光或星点宽度。"
+            Text(zh ? "选择已校准、对齐的单色 FITS，再分配到 R、G、B 通道。"
                  : "Choose calibrated, registered linear mono FITS. Composition does not match background, exposure or star widths.")
                 .font(.caption).foregroundStyle(.secondary)
             ForEach(session.masters) { master in
@@ -56,13 +56,13 @@ struct ChannelCompositionControl: View {
                      : "LRGB scales RGB by L / (0.2126R + 0.7152G + 0.0722B), preserving ratios. Match intensities first; zero denominators are invalid.")
                     .font(.caption2).foregroundStyle(.secondary)
             }
-            Button(zh ? "合色并另存线性母片…" : "Compose & save linear master…") {
+            Button(zh ? "合色并保存…" : "Compose & save linear master…") {
                 guard let output = chooseOutput() else { return }
                 model.startChannelCompositionJob { service in try await session.compose(output: output, using: service) }
             }.disabled(!session.canCompose).accessibilityIdentifier("channels.compose")
             Divider()
             HStack {
-                Button(zh ? "打开合色配方…" : "Open composition…") {
+                Button(zh ? "打开合色结果…" : "Open composition…") {
                     let panel = NativeFilePanels.makeImportFolderPanel(message: zh ? "选择含 recipe.txt 的多滤镜合色目录。" : "Choose a channel composition folder containing recipe.txt.")
                     guard panel.runModal() == .OK, let directory = panel.url else { return }
                     model.startChannelCompositionJob { service in
@@ -72,7 +72,7 @@ struct ChannelCompositionControl: View {
                     }
                 }.accessibilityIdentifier("channels.open")
                 if session.report != nil {
-                    Button(zh ? "新配方" : "New recipe") { session.newComposition() }
+                    Button(zh ? "新建合色" : "New composition") { session.newComposition() }
                 }
             }
             if session.report != nil {

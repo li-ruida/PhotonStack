@@ -22,6 +22,7 @@ add_library(photonstack_engine STATIC
   src/Calibrator.cpp
   src/CfaCalibration.cpp
   src/CfaDrizzle.cpp
+  src/DeepSkyDrizzle.cpp
   src/CloudRemoval.cpp
   src/ComaReducer.cpp
   src/ColorAdjuster.cpp
@@ -33,10 +34,12 @@ add_library(photonstack_engine STATIC
   src/Deconvolution.cpp
   src/DrizzleStacker.cpp
   src/FitsNumericTable.cpp
+  src/SerSequence.cpp
   src/FitsCodec.cpp
   src/CalibrationMetadata.cpp
   src/SensorMasterBuilder.cpp
   src/SensorCalibration.cpp
+  src/SensorQuality.cpp
   src/FileDigest.cpp
   src/FrameQualityAnalyzer.cpp
   src/SequenceQualityAnalyzer.cpp

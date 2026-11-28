@@ -12,7 +12,9 @@ namespace photonstack {
 // nonfinite values become NaN; finite values outside Float32 range are errors.
 class SensorFitsReader {
   public:
-    explicit SensorFitsReader(const std::filesystem::path& path, bool hashWhileReading = false);
+    enum class Domain { DeclaredLinear, CameraCFA };
+    explicit SensorFitsReader(const std::filesystem::path& path, bool hashWhileReading = false,
+                              Domain domain = Domain::DeclaredLinear);
     ~SensorFitsReader();
     SensorFitsReader(SensorFitsReader&&) noexcept;
     SensorFitsReader& operator=(SensorFitsReader&&) noexcept;

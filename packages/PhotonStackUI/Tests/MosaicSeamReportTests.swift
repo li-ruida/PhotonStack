@@ -69,3 +69,19 @@ private func decodeMosaic(_ object: [String: Any]) throws -> MosaicQualityReport
     bad = valid; bad.pairs[0].summary.after?.rmsDifference[0] = -1
     #expect(!bad.isValid(panelCount: 2))
 }
+
+@Test func mosaicFinalChecksPersistWithoutUpgradingLegacyReports() throws {
+    var report=seamFixture()
+    let zero=[0.0,0,0]
+    report.pairs[0].final = .init(samples:128,backgroundCandidates:40,structuredSamples:32,
+        backgroundGradientExcessRms:zero,backgroundGradientExcessP95:zero,structureExcessP95:zero,
+        structureExcessFraction:zero,rangeExcessP95:zero,tolerance:[0.01,0.01,0.01],status:"no-large-excess")
+    #expect(report.isValid(panelCount:2))
+    #expect(try JSONDecoder().decode(MosaicSeamReport.self,from:JSONEncoder().encode(report))==report)
+    report.pairs[0].final?.backgroundCandidates=1
+    #expect(!report.isValid(panelCount:2))
+    report.pairs[0].final?.status="insufficient-samples"
+    #expect(report.isValid(panelCount:2))
+    report.pairs[0].final?.structureExcessFraction=[2,0,0]
+    #expect(!report.isValid(panelCount:2))
+}

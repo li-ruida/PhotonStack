@@ -1,4 +1,5 @@
 #include "DemosaicRatio.hpp"
+#include "photonstack/ParallelRanges.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -30,37 +31,41 @@ std::vector<float> demosaicRatio(const std::vector<float>& mosaic, int width, in
     std::vector<double> normalized;
     if (!unitGains) {
         normalized.resize(count);
-        for (int y = 0; y < height; ++y)
+        parallelRows(width, height, [&](int y) noexcept {
             for (int x = 0; x < width; ++x) {
                 const auto p = static_cast<std::size_t>(y) * width + x;
                 normalized[p] = static_cast<double>(mosaic[p]) * gains[color(x, y)];
             }
+        });
     }
     const auto sample = [&](int x, int y) {
         const auto p = index(x, y);
         return unitGains ? static_cast<double>(mosaic[p]) : normalized[p];
     };
-    std::vector<double> guide(count), green(count);
+    std::vector<double> low(count);
     std::vector<float> rgb(count * 3, std::numeric_limits<float>::quiet_NaN());
-    for (int y = 0; y < height; ++y)
+    parallelRows(width, height, [&](int y) noexcept {
         for (int x = 0; x < width; ++x) {
             const auto p = static_cast<std::size_t>(y) * width + x;
             double sum = 0;
             for (int dy = -1; dy <= 1; ++dy)
                 for (int dx = -1; dx <= 1; ++dx)
                     sum += (dx ? 1 : 2) * (dy ? 1 : 2) * sample(x + dx, y + dy);
-            guide[p] = sum / 16;
+            low[p] = sum / 16;
         }
+    });
     // [1,2,1]/4 has variance 1/2 along each axis. Undo its second spatial
     // moment before using ratios, without fitting a stellar PSF or a strength.
-    auto low = guide;
-    for (int y = 0; y < height; ++y)
+    std::vector<double> guide(count);
+    parallelRows(width, height, [&](int y) noexcept {
         for (int x = 0; x < width; ++x) {
             const auto p = static_cast<std::size_t>(y) * width + x;
             guide[p] = low[p] - .25 * (low[index(x - 1, y)] + low[index(x + 1, y)] +
                                       low[index(x, y - 1)] + low[index(x, y + 1)] - 4 * low[p]);
         }
+    });
     std::vector<double>().swap(low);
+    std::vector<double> green(count);
     const auto estimate = [&](int x, int y, int dx, int dy) {
         const double near = sample(x + dx, y + dy);
         const double center = guide[index(x, y)], far = guide[index(x + 2 * dx, y + 2 * dy)];
@@ -69,7 +74,7 @@ std::vector<float> demosaicRatio(const std::vector<float>& mosaic, int width, in
         // Signed scientific samples cannot be normalized by a positive ratio.
         return near + (center - far) * .5;
     };
-    for (int y = 0; y < height; ++y)
+    parallelRows(width, height, [&](int y) noexcept {
         for (int x = 0; x < width; ++x) {
             const auto p = static_cast<std::size_t>(y) * width + x;
             green[p] = color(x, y) == 1 ? sample(x, y) :
@@ -77,8 +82,9 @@ std::vector<float> demosaicRatio(const std::vector<float>& mosaic, int width, in
                  (estimate(x, y, 0, -1) + estimate(x, y, 0, 1))) / 4;
             rgb[p * 3 + 1] = color(x, y) == 1 ? mosaic[p] : static_cast<float>(green[p] / gains[1]);
         }
+    });
     std::vector<double>().swap(guide);
-    for (int y = 0; y < height; ++y)
+    parallelRows(width, height, [&](int y) noexcept {
         for (int x = 0; x < width; ++x) {
             const auto p = static_cast<std::size_t>(y) * width + x;
             for (int c : {0, 2}) {
@@ -100,6 +106,7 @@ std::vector<float> demosaicRatio(const std::vector<float>& mosaic, int width, in
                 rgb[p * 3 + c] = static_cast<float>((green[p] + residual) / gains[c]);
             }
         }
+    });
     std::vector<double>().swap(green);
     std::vector<double>().swap(normalized);
 
@@ -107,7 +114,7 @@ std::vector<float> demosaicRatio(const std::vector<float>& mosaic, int width, in
     // This binomial kernel annihilates CFA parity frequencies. Missing samples
     // occupy 1/2 of G and 3/4 of R/B; correcting only those sites preserves the
     // interior integrated flux of the baseline while retaining measured values.
-    std::vector<double> difference(count), horizontal(count), smooth(count);
+    std::vector<double> difference(count), horizontal(count);
     constexpr int kernel[5]{1, 4, 6, 4, 1};
     for (int c = 0; c < 3; ++c) {
         for (std::size_t p = 0; p < count; ++p) {
@@ -116,31 +123,30 @@ std::vector<float> demosaicRatio(const std::vector<float>& mosaic, int width, in
             difference[p] = std::isfinite(rgb[p * 3 + c]) && std::isfinite(baseline[p * 4 + c])
                 ? static_cast<double>(rgb[p * 3 + c]) - baseline[p * 4 + c] : 0;
         }
-        for (int y = 0; y < height; ++y)
+        parallelRows(width, height, [&](int y) noexcept {
             for (int x = 0; x < width; ++x) {
                 double sum = 0;
                 for (int j = 0; j < 5; ++j)
                     sum += kernel[j] * difference[index(x + j - 2, y)];
                 horizontal[static_cast<std::size_t>(y) * width + x] = sum / 16;
             }
-        for (int y = 0; y < height; ++y)
+        });
+        parallelRows(width, height, [&](int y) noexcept {
             for (int x = 0; x < width; ++x) {
                 double sum = 0;
                 for (int j = 0; j < 5; ++j)
                     sum += kernel[j] * horizontal[index(x, y + j - 2)];
-                smooth[static_cast<std::size_t>(y) * width + x] = sum / 16;
-            }
-        for (int y = 0; y < height; ++y)
-            for (int x = 0; x < width; ++x) {
+                const double smooth = sum / 16;
                 const auto p = static_cast<std::size_t>(y) * width + x;
                 if (color(x, y) == c) {
                     rgb[p * 3 + c] = mosaic[p];
                     continue;
                 }
-                const double value = rgb[p * 3 + c] - (c == 1 ? 2. : 4. / 3.) * smooth[p];
+                const double value = rgb[p * 3 + c] - (c == 1 ? 2. : 4. / 3.) * smooth;
                 rgb[p * 3 + c] = std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max()
                     ? static_cast<float>(value) : baseline[p * 4 + c];
             }
+        });
     }
     return rgb;
 }

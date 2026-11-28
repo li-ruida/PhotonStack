@@ -20,7 +20,7 @@ public enum DeepSkyResultReuse {
         let buildIdentity: String
         var computeBackend: DeepSkyComputeBackend? = nil
         let engineSHA256: String
-        let recipe: String
+        var recipe: String
         let sources: [Source]
 
         func preservesStack(from previousRecipe: String) -> Bool {
@@ -59,17 +59,31 @@ public enum DeepSkyResultReuse {
         for key in ["calibration.darks", "calibration.biases", "calibration.flats"] {
             paths += try quotedPaths(inspected.values[key] ?? "")
         }
-        let logicalPaths = Set(paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }).sorted()
-        guard !logicalPaths.isEmpty, logicalPaths.count <= 8_000 else { throw DeepSkyRecipeError.invalidReport }
-        return Prepared(buildIdentity: buildIdentity, engineSHA256: try digest(engine.resolvingSymlinksInPath()), recipe: inspected.recipe, sources: try sources(logicalPaths))
+        return try await prepare(recipe: inspected.recipe, paths: paths, buildIdentity: buildIdentity, engine: engine)
     }
 
-    static func publish(_ prepared: Prepared, report: DeepSkyReport, reportURL: URL) async throws {
+    static func prepare(recipe: String, paths: [String], buildIdentity: String, engine: URL,
+                        verified: VerifiedSources? = nil) async throws -> Prepared {
+        let logicalPaths = Set(paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }).sorted()
+        guard !logicalPaths.isEmpty, logicalPaths.count <= 8_000 else { throw DeepSkyRecipeError.invalidReport }
+        let fingerprints: [Source]
+        if let verified, verified.sources.map(\.path) == logicalPaths {
+            fingerprints = verified.sources
+        } else {
+            fingerprints = try await sources(logicalPaths)
+        }
+        return Prepared(buildIdentity: buildIdentity, engineSHA256: try digest(engine.resolvingSymlinksInPath()),
+                        recipe: recipe, sources: fingerprints)
+    }
+
+    static func publish(_ prepared: Prepared, report: DeepSkyReport, reportURL: URL,
+                        verifiedAfterRun: VerifiedSources? = nil) async throws {
         // Non-canonical historical finish recipes may remain usable, but must
         // not receive a receipt claiming an exact canonical recipe match.
         guard report.recipe == prepared.recipe else { return }
-        guard report.success, !report.analysisOnly,
-              try sources(prepared.sources.map(\.path)) == prepared.sources else {
+        guard report.success, !report.analysisOnly else { throw DeepSkyRecipeError.invalidReport }
+        if verifiedAfterRun?.sources != prepared.sources,
+           try await sources(prepared.sources.map(\.path)) != prepared.sources {
             throw DeepSkyRecipeError.inputsChanged
         }
         let output = URL(fileURLWithPath: report.developed).standardizedFileURL
@@ -91,7 +105,7 @@ public enum DeepSkyResultReuse {
                   !receipt.sources.isEmpty, receipt.sources.count <= 8_000,
                   Set(receipt.sources.map(\.path)).count == receipt.sources.count,
                   try digest(reportURL) == receipt.reportSHA256,
-                  try sources(receipt.sources.map(\.path)) == receipt.sources,
+                  try await sources(receipt.sources.map(\.path)) == receipt.sources,
                   try digest(output) == receipt.outputSHA256 else { return nil }
             return output
         } catch is CancellationError {
@@ -132,22 +146,27 @@ public enum DeepSkyResultReuse {
     static func revalidateSourcesForRefinish(_ verified: VerifiedSources, reportURL: URL) async throws {
         guard try digest(reportURL) == verified.reportSHA256 else { throw DeepSkyRecipeError.invalidReport }
         do {
-            guard try sources(verified.sources.map(\.path)) == verified.sources else { throw DeepSkyRecipeError.inputsChanged }
+            guard try await sources(verified.sources.map(\.path)) == verified.sources else { throw DeepSkyRecipeError.inputsChanged }
         } catch is CancellationError { throw CancellationError() }
         catch { throw DeepSkyRecipeError.inputsChanged }
     }
 
     /// Canonical recipes quote each input and quote the calibration path list a
     /// second time. Reuse this parser for protecting export destinations as well.
-    public static func sourcePaths(inRecipe recipe: String) throws -> [String] {
+    public static func sourcePaths(inRecipe recipe: String, requiringCanonicalLines: Bool = false) throws -> [String] {
         guard recipe.hasPrefix("PHOTONSTACK_DEEP_SKY_RECIPE 1\n") else { throw DeepSkyRecipeError.invalidText }
         var result: [String] = []
-        for line in recipe.split(separator: "\n") {
-            guard let separator = line.firstIndex(where: { $0.isWhitespace }) else { continue }
+        for line in recipe.split(separator: "\n").dropFirst() {
+            guard let separator = line.firstIndex(where: { $0.isWhitespace }), separator != line.startIndex else {
+                if requiringCanonicalLines { throw DeepSkyRecipeError.invalidText }
+                continue
+            }
             let key = line[..<separator]
-            guard key == "input" || ["calibration.darks", "calibration.biases", "calibration.flats"].contains(String(key)) else { continue }
+            let source = key == "input" || ["calibration.darks", "calibration.biases", "calibration.flats"].contains(String(key))
+            guard source || requiringCanonicalLines else { continue }
             let outer = try quotedPaths(String(line[line.index(after: separator)...]), allowEmpty: true)
             guard outer.count == 1 else { throw DeepSkyRecipeError.invalidText }
+            guard source else { continue }
             if key == "input" {
                 guard !outer[0].isEmpty else { throw DeepSkyRecipeError.invalidText }
                 result.append(outer[0])
@@ -168,11 +187,30 @@ public enum DeepSkyResultReuse {
         return data
     }
 
-    private static func sources(_ paths: [String]) throws -> [Source] {
-        try paths.map { path in
-            let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
-            return Source(path: path, resolvedPath: resolved.path, sha256: try digest(resolved))
+    private static func sources(_ paths: [String]) async throws -> [Source] {
+        let workers = min(4, paths.count)
+        let groups = try await withThrowingTaskGroup(of: [(Int, Source)].self) { group in
+            for worker in 0..<workers {
+                group.addTask {
+                    var results: [(Int, Source)] = []
+                    for i in stride(from: worker, to: paths.count, by: workers) {
+                        let path = paths[i]
+                        let logical = URL(fileURLWithPath: path)
+                        let resolved = logical.resolvingSymlinksInPath().standardizedFileURL
+                        let hash = try digest(resolved)
+                        guard logical.resolvingSymlinksInPath().standardizedFileURL == resolved else {
+                            throw DeepSkyRecipeError.inputsChanged
+                        }
+                        results.append((i, Source(path: path, resolvedPath: resolved.path, sha256: hash)))
+                    }
+                    return results
+                }
+            }
+            var results: [(Int, Source)] = []
+            for try await batch in group { results += batch }
+            return results
         }
+        return groups.sorted { $0.0 < $1.0 }.map(\.1)
     }
 
     private static func digest(_ url: URL) throws -> String {
@@ -182,7 +220,7 @@ public enum DeepSkyResultReuse {
         let file = try FileHandle(forReadingFrom: url)
         defer { try? file.close() }
         var hash = SHA256()
-        while let data = try file.read(upToCount: 1_048_576), !data.isEmpty {
+        while let data = try file.read(upToCount: 4 * 1024 * 1024), !data.isEmpty {
             try Task.checkCancellation()
             hash.update(data: data)
         }

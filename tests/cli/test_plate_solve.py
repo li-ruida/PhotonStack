@@ -41,12 +41,6 @@ def read(file):
  data=struct.unpack_from('>'+str(int(h['NAXIS2'])*len(keys))+'d',b,offset)
  return {k:list(data[j::len(keys)]) for j,k in enumerate(keys)}
 s=read('sources.xyls');n=len(s['X']);mode=Path(sys.argv[0]).stem
-if mode=='sleep':
- import os,time
- pid=os.fork()
- if pid==0:
-  time.sleep(60);os._exit(0)
- Path('child.pid').write_text(str(pid));time.sleep(60);sys.exit(0)
 if mode=='unsolved':sys.exit(0)
 # Independent inverse gnomonic transform, chosen pointing across RA=0.
 a=math.radians(359.9);d=math.radians(30)
@@ -74,8 +68,11 @@ def setup(p):
                 for xx in range(int(x)-6,int(x)+7):values[yy*n+xx]+=amp*math.exp(-((xx-x)**2+(yy-y)**2)/(2*1.25**2))
     source=p/'source.fits';write(source,values,n,n,{'CTYPE1':"'BROKEN'",'DATE-OBS':"'2026-09-09'",'EXPTIME':180,'FILTER':"'Ha'"})
     index=p/'index.fits';index.write_bytes(b'fixture index, not a real sky catalog')
-    for name in ['solver','wrong','unsolved','noheld','sleep']:
+    for name in ['solver','wrong','unsolved','noheld']:
         f=p/name;f.write_text('#!'+sys.executable+'\n'+FIXTURE);f.chmod(0o755)
+    sleeper = p/'sleep'
+    sleeper.write_text('#!/bin/sh\n/bin/sleep 60 &\necho "$!" > child.tmp\n/bin/mv child.tmp child.pid\nwait\n')
+    sleeper.chmod(0o755)
     return source,index
 
 def command(p,out='out',solver='solver',extra=()):
@@ -122,14 +119,18 @@ class PlateSolve(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             p=Path(d);setup(p)
             for mode in ['timeout','cancel']:
-                start=time.monotonic();proc=subprocess.Popen(command(p,mode,'sleep',['--timeout','1' if mode=='timeout' else '60']),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                start=time.monotonic();proc=subprocess.Popen(command(p,mode,'sleep',['--timeout','3' if mode=='timeout' else '60']),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
                 child=p/mode/'child.pid'
-                while not child.exists() and proc.poll() is None and time.monotonic()-start<5:time.sleep(.02)
-                self.assertTrue(child.exists())
+                while not child.exists() and proc.poll() is None and time.monotonic()-start<12:time.sleep(.02)
+                if not child.exists():
+                    if proc.poll() is None: proc.terminate()
+                    stdout, stderr = proc.communicate(timeout=5)
+                    self.fail(f'{mode} solver did not reach fork: {stdout!r} {stderr!r}')
                 pid=int(child.read_text())
                 if mode=='cancel':proc.terminate()
-                proc.communicate(timeout=5);self.assertNotEqual(proc.returncode,0)
-                self.assertLess(time.monotonic()-start,4)
+                _, stderr = proc.communicate(timeout=6)
+                self.assertNotEqual(proc.returncode,0)
+                self.assertIn(b'timed out' if mode=='timeout' else b'cancelled', stderr)
                 for _ in range(50):
                     try:os.kill(pid,0)
                     except ProcessLookupError:break

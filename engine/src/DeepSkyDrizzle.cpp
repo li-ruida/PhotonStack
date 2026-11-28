@@ -1,5 +1,5 @@
 #include "DeepSkyDrizzle.hpp"
-#include "WorkingMemory.hpp"
+#include "photonstack/WorkingMemory.hpp"
 #include "photonstack/CfaDrizzle.hpp"
 #include "photonstack/SensorMasterBuilder.hpp"
 #include "photonstack/FitsCodec.hpp"
@@ -31,7 +31,8 @@ template<class M> bool sameField(const M& a, const M& b, const char* key) {
 void validateDrizzleSource(const std::filesystem::path& path, const std::filesystem::path& reference) {
     // This reader respects integer BLANK, signed calibrated values and nonfinite masks.
     // Missing PSCOLOR is accepted only for explicit camera CFA; nonlinear declarations fail.
-    SensorFitsReader reader(path, false), ref(reference, false);
+    SensorFitsReader reader(path, false, SensorFitsReader::Domain::CameraCFA);
+    SensorFitsReader ref(reference, false, SensorFitsReader::Domain::CameraCFA);
     const auto& a=reader.metadata(); const auto& b=ref.metadata();
     (void)pattern(a); (void)pattern(b);
     require(a.width==b.width && a.height==b.height, "CFA Drizzle requires matching sensor dimensions");
@@ -46,7 +47,7 @@ ImageBuffer combineCfaDrizzle(const std::vector<std::size_t>& selected,
     DeepSkyWorkflowResult& r, const DeepSkyProgress& progress) {
     StageScope timer(Stage::Combine);
     const auto& reference=r.frames.at(r.referenceIndex).input;
-    SensorFitsReader ref(reference,false);
+    SensorFitsReader ref(reference, false, SensorFitsReader::Domain::CameraCFA);
     const auto& meta=ref.metadata();
     const double scale=o.drizzleScale;
     const auto width=std::uint32_t(std::ceil(meta.width*scale));
@@ -74,10 +75,10 @@ ImageBuffer combineCfaDrizzle(const std::vector<std::size_t>& selected,
         <<"transform source-zero-based-centers-to-native-reference\n";
     for (std::size_t slot=0;slot<selected.size();++slot) {
         const auto i=selected[slot]; const auto& report=r.frames.at(i);
-        require(fileSHA256(report.input)==report.sha256, "CFA source bytes changed before accumulation");
-        SensorFitsReader source(report.input,false);
+        SensorFitsReader source(report.input, true, SensorFitsReader::Domain::CameraCFA);
         const auto& a=source.metadata();
         std::vector<float> samples(std::size_t(a.width)*a.height); source.read(0,samples);
+        require(source.sourceSHA256() == report.sha256, "CFA source bytes changed before accumulation");
         CfaDrizzleFrame f; f.width=a.width; f.height=a.height; f.samples=samples;
         f.pattern=pattern(a); // Metadata already incorporates stored-row Bayer offsets.
         f.weight=o.stack.frameWeights.empty()?1:o.stack.frameWeights.at(i);
@@ -99,7 +100,6 @@ ImageBuffer combineCfaDrizzle(const std::vector<std::size_t>& selected,
             <<' '<<a.text.at("sampling")<<' '<<f.weight;
         for (const auto v:f.transform) provenance<<' '<<v;
         provenance<<'\n';
-        require(fileSHA256(report.input)==report.sha256, "CFA source bytes changed during accumulation");
         if(progress) progress("cfa-drizzle",.58+.27*(slot+1)/selected.size(),slot+1,selected.size());
     }
     ImageBuffer weights; weights.width=width; weights.height=height; weights.pixels.resize(pixels*4);

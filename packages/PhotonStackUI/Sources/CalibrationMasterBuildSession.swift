@@ -45,46 +45,49 @@ final class CalibrationMasterBuildSession: ObservableObject {
         if let old = draft { Task { await library.discardDraft(old.id) } }
         draft = nil; error = nil
     }
-    func cancel() { generation = UUID(); task?.cancel(); task = nil; busy = false }
+    // Only the task's completion may release busy and permit another operation.
+    func cancel() { task?.cancel() }
     func close() { cancel(); invalidate() }
     func choose(_ urls: [URL]) {
         guard !busy else { return }
-        cancel(); invalidate(); let token = generation; busy = true
+        invalidate(); generation = UUID(); let token = generation; busy = true
         task = Task {
+            defer { if generation == token { busy = false; task = nil } }
             do {
                 let files = try await library.scanLights(urls)
                 try Task.checkCancellation()
                 guard files.count <= 256 else { throw CalibrationAcquisition.failure("Choose at most 256 raw calibration frames.") }
                 if generation == token { frames = files }
             } catch { if !Task.isCancelled && generation == token { self.error = error.localizedDescription } }
-            if generation == token { busy = false; task = nil }
         }
     }
     func build() {
         guard !busy, let request else { return }
-        cancel(); invalidate(); let token = generation; busy = true
+        invalidate(); generation = UUID(); let token = generation; busy = true
         task = Task {
+            defer { if generation == token { busy = false; task = nil } }
             do {
                 let value = try await library.buildMaster(request)
                 if Task.isCancelled || generation != token { await library.discardDraft(value.id); return }
                 draft = value
             } catch { if !Task.isCancelled && generation == token { self.error = error.localizedDescription } }
-            if generation == token { busy = false; task = nil }
         }
     }
     func save(_ onSaved: @escaping @MainActor (String) async -> Void) {
         guard canSave, let draft = currentDraft else { return }
-        cancel(); let token = generation; busy = true; error = nil
+        generation = UUID(); let token = generation; busy = true; error = nil
         let label = name, note = notes
         task = Task {
+            defer { if generation == token { busy = false; task = nil } }
             do {
                 let id = try await library.saveDraft(draft.id, label: label, notes: note)
-                self.draft = nil
-                // A published entry remains authoritative even if cancellation
-                // arrives just after the atomic publication.
+                guard generation == token else { return }
+                if self.draft?.id == draft.id { self.draft = nil }
+                try Task.checkCancellation()
+                // Publication remains durable, but a cancelled sheet must not
+                // clear newer state or invoke its completion callback.
                 await onSaved(id)
             } catch { if !Task.isCancelled && generation == token { self.error = error.localizedDescription } }
-            if generation == token { busy = false; task = nil }
         }
     }
 }

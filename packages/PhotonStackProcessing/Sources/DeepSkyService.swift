@@ -26,7 +26,7 @@ public extension ProcessingService {
         let sourcesVerified = try await DeepSkyResultReuse.validateSourcesForRefinish(report: previous, reportURL: previousReportURL)
         var reuse: DeepSkyResultReuse.Prepared?
         if let buildIdentity, let sourcesVerified {
-            var candidate = try await prepareDeepSkyReuse(recipe: recipe, buildIdentity: buildIdentity)
+            var candidate = try await prepareDeepSkyReuse(recipe: recipe, buildIdentity: buildIdentity, verified: sourcesVerified)
             candidate?.computeBackend = sourcesVerified.computeBackend
             // A master made by engine/build A and finished by B is valid, but
             // cannot claim to be the result of running the full recipe with B.
@@ -48,7 +48,7 @@ public extension ProcessingService {
             }
         }
         #endif
-        let originalRecipe = try String(contentsOf: recipe, encoding: .utf8)
+        let originalRecipe = try readDeepSkyRecipeText(recipe)
         let patternLine = "calibration.sensor-pattern \"on\""
         let hasPattern = originalRecipe.split(separator: "\n").contains(Substring(patternLine))
         var effectiveRecipe = recipe
@@ -58,9 +58,10 @@ public extension ProcessingService {
             guard previous.recipe.split(separator: "\n").contains(Substring(patternLine)),
                   let provenance = previous.sensorPatternReport, !provenance.isEmpty,
                   FileManager.default.fileExists(atPath: provenance) else { throw DeepSkyRecipeError.invalidReport }
+            let hashes = Dictionary(sourcesVerified?.sources.map { ($0.resolvedPath, $0.sha256) } ?? [], uniquingKeysWith: { first, _ in first })
             for frame in previous.frames {
                 guard let expected = frame.sha256, expected.count == 64,
-                      try deepSkySourceDigest(URL(fileURLWithPath: frame.input)) == expected else {
+                      try (hashes[frame.input] ?? deepSkySourceDigest(URL(fileURLWithPath: frame.input))) == expected else {
                     throw DeepSkyRecipeError.inputsChanged
                 }
             }
@@ -114,7 +115,7 @@ public extension ProcessingService {
         try report.validate()
         let reportURL = outputDirectory.appendingPathComponent("app-report.json")
         try JSONEncoder().encode(report).write(to: reportURL, options: .atomic)
-        if let reuse { try await DeepSkyResultReuse.publish(reuse, report: report, reportURL: reportURL) }
+        if let reuse { try await DeepSkyResultReuse.publish(reuse, report: report, reportURL: reportURL, verifiedAfterRun: sourcesVerified) }
         return report
     }
 
@@ -164,15 +165,39 @@ public extension ProcessingService {
             report.developedSHA256 = try deepSkySourceDigest(URL(fileURLWithPath: report.developed))
             let reportURL = outputDirectory.appendingPathComponent("app-report.json")
             try JSONEncoder().encode(report).write(to: reportURL, options: .atomic)
-            if let reuse { try await DeepSkyResultReuse.publish(reuse, report: report, reportURL: reportURL) }
+            if var reuse {
+                if reuse.recipe != report.recipe {
+                    let paths = try DeepSkyResultReuse.sourcePaths(inRecipe: report.recipe)
+                    let identities = Set(paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
+                    guard identities == Set(reuse.sources.map(\.path)) else { throw DeepSkyRecipeError.inputsChanged }
+                    reuse.recipe = report.recipe
+                }
+                try await DeepSkyResultReuse.publish(reuse, report: report, reportURL: reportURL)
+            }
         }
         return report
     }
 
-    private func prepareDeepSkyReuse(recipe: URL, buildIdentity: String?) async throws -> DeepSkyResultReuse.Prepared? {
+    private func readDeepSkyRecipeText(_ url: URL) throws -> String {
+        let data = try BoundedDocumentIO.read(from: url, maximumBytes: 4 * 1024 * 1024, fileManager: .default)
+        guard let text = String(data: data, encoding: .utf8) else { throw DeepSkyRecipeError.invalidText }
+        return text
+    }
+
+    private func prepareDeepSkyReuse(recipe: URL, buildIdentity: String?,
+                                     verified: DeepSkyResultReuse.VerifiedSources? = nil) async throws -> DeepSkyResultReuse.Prepared? {
         #if os(macOS)
         guard let buildIdentity, let cli = self as? CLIProcessingService else { return nil }
-        return try await DeepSkyResultReuse.prepare(inspectDeepSkyRecipe(recipe), buildIdentity: buildIdentity, engine: cli.executableURL)
+        // App-generated recipes already contain absolute source paths. Preserve
+        // the engine parser for hand-authored and relative-path recipes.
+        let text = try readDeepSkyRecipeText(recipe)
+        if let paths = try? DeepSkyResultReuse.sourcePaths(inRecipe: text, requiringCanonicalLines: true), !paths.isEmpty,
+           paths.allSatisfy({ $0.hasPrefix("/") }), text.contains("\noutput.save-denoise-stages ") {
+            return try await DeepSkyResultReuse.prepare(recipe: text, paths: paths, buildIdentity: buildIdentity,
+                                                       engine: cli.executableURL, verified: verified)
+        }
+        let inspected = try await inspectDeepSkyRecipe(recipe)
+        return try await DeepSkyResultReuse.prepare(inspected, buildIdentity: buildIdentity, engine: cli.executableURL)
         #else
         return nil
         #endif
@@ -222,7 +247,7 @@ private func deepSkySourceDigest(_ url: URL) throws -> String {
     let file = try FileHandle(forReadingFrom: url)
     defer { try? file.close() }
     var digest = SHA256()
-    while let data = try file.read(upToCount: 1_048_576), !data.isEmpty {
+    while let data = try file.read(upToCount: 4 * 1024 * 1024), !data.isEmpty {
         try Task.checkCancellation()
         digest.update(data: data)
     }

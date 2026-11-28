@@ -108,50 +108,49 @@ ImageReadResult decodeAppleRawFloat(const std::filesystem::path& path, const Raw
                 return rawDecodeError("RawDecodeFailed", "Could not create the RAW output color space");
             }
 
-            NSDictionary<CIContextOption, id>* contextOptions = @{
-                kCIContextWorkingFormat : @(kCIFormatRGBAf),
-                kCIContextCacheIntermediates : @NO,
-                kCIContextOutputPremultiplied : @NO,
-            };
-            id<MTLDevice> metalDevice = options.useGPU ? MTLCreateSystemDefaultDevice() : nil;
             CIContext* context = nil;
-            bool explicitMetal = metalDevice != nil;
-            if (!options.useGPU) {
-                NSDictionary<CIContextOption, id>* softwareOptions = @{
+            @try {
+                NSDictionary<CIContextOption, id>* contextOptions = @{
                     kCIContextWorkingFormat : @(kCIFormatRGBAf),
                     kCIContextCacheIntermediates : @NO,
                     kCIContextOutputPremultiplied : @NO,
-                    kCIContextUseSoftwareRenderer : @YES,
                 };
-                context = [CIContext contextWithOptions:softwareOptions];
-            } else {
-                context = metalDevice == nil
-                    ? [CIContext contextWithOptions:contextOptions]
-                    : [CIContext contextWithMTLDevice:metalDevice options:contextOptions];
-            }
-            if (context == nil && metalDevice != nil) {
-                NSDictionary<CIContextOption, id>* compatibleMetalOptions = @{
-                    kCIContextCacheIntermediates : @NO,
-                    kCIContextOutputPremultiplied : @NO,
-                };
-                context = [CIContext contextWithMTLDevice:metalDevice options:compatibleMetalOptions];
-            }
-            if (context == nil && options.useGPU) {
-                NSDictionary<CIContextOption, id>* compatibleCPUOptions = @{
-                    kCIContextCacheIntermediates : @NO,
-                    kCIContextOutputPremultiplied : @NO,
-                };
-                explicitMetal = false;
-                context = [CIContext contextWithOptions:compatibleCPUOptions];
-            }
-            if (context == nil) {
-                CGColorSpaceRelease(outputColorSpace);
-                return rawDecodeError("RawDecodeFailed", "Could not create the Core Image RAW rendering context");
-            }
+                id<MTLDevice> metalDevice = options.useGPU ? MTLCreateSystemDefaultDevice() : nil;
+                bool explicitMetal = metalDevice != nil;
+                if (!options.useGPU) {
+                    NSDictionary<CIContextOption, id>* softwareOptions = @{
+                        kCIContextWorkingFormat : @(kCIFormatRGBAf),
+                        kCIContextCacheIntermediates : @NO,
+                        kCIContextOutputPremultiplied : @NO,
+                        kCIContextUseSoftwareRenderer : @YES,
+                    };
+                    context = [CIContext contextWithOptions:softwareOptions];
+                } else {
+                    context = metalDevice == nil
+                        ? [CIContext contextWithOptions:contextOptions]
+                        : [CIContext contextWithMTLDevice:metalDevice options:contextOptions];
+                }
+                if (context == nil && metalDevice != nil) {
+                    NSDictionary<CIContextOption, id>* compatibleMetalOptions = @{
+                        kCIContextCacheIntermediates : @NO,
+                        kCIContextOutputPremultiplied : @NO,
+                    };
+                    context = [CIContext contextWithMTLDevice:metalDevice options:compatibleMetalOptions];
+                }
+                if (context == nil && options.useGPU) {
+                    NSDictionary<CIContextOption, id>* compatibleCPUOptions = @{
+                        kCIContextCacheIntermediates : @NO,
+                        kCIContextOutputPremultiplied : @NO,
+                    };
+                    explicitMetal = false;
+                    context = [CIContext contextWithOptions:compatibleCPUOptions];
+                }
+                if (context == nil) {
+                    return rawDecodeError("RawDecodeFailed", "Could not create the Core Image RAW rendering context");
+                }
 
-            detail::recordBackend(explicitMetal ? "metal" : options.useGPU ? "core-image-auto" : "cpu",
-                                  options.useGPU && !explicitMetal ? "explicit Metal context unavailable" : "");
-            @try {
+                detail::recordBackend(explicitMetal ? "metal" : options.useGPU ? "core-image-auto" : "cpu",
+                                      options.useGPU && !explicitMetal ? "explicit Metal context unavailable" : "");
                 const auto rowBytes = static_cast<ptrdiff_t>(width) * 4 * static_cast<ptrdiff_t>(sizeof(float));
                 constexpr std::uint32_t renderRows = 512;
                 for (std::uint32_t outputRow = 0; outputRow < height; outputRow += renderRows) {

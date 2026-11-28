@@ -255,6 +255,8 @@ struct CalibrationLibraryView: View {
         if panel.runModal() == .OK, let url = panel.url {
             session.perform {
                 let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let sources = (report.lights + report.masters.map(\.acquisition)).map { URL(fileURLWithPath: $0.path) }
+                try WorkspaceExportProtection.validate(url, sources: sources)
                 try encoder.encode(report).write(to: url, options: .atomic)
             }
         }

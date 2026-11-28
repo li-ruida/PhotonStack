@@ -1,4 +1,5 @@
 #include "GeneralizedStretchCommand.hpp"
+#include "OutputPath.hpp"
 #include "ChannelRecipe.hpp"
 #include "photonstack/GeneralizedStretch.hpp"
 #include "photonstack/FitsCodec.hpp"
@@ -125,6 +126,7 @@ int runGeneralizedStretch(const std::vector<std::string>& args) {
             else{if(v<0||v>2048||v!=std::floor(v))throw std::invalid_argument("GHS preview width must be 0...2048");r.previewWidth=unsigned(v);}
         }else throw std::invalid_argument("Unknown GHS option: "+key);
     }
+    if (!inspect) photonstack::cli::requireNewOutputPath(output);
     if(!fresh){
         if(recipe.empty())throw std::invalid_argument("Specify --recipe");r=readRecipe(recipe,inspect);
         if(inspect){std::ifstream in(recipe.parent_path()/"report.json");std::cout<<in.rdbuf();return 0;}
@@ -138,7 +140,6 @@ int runGeneralizedStretch(const std::vector<std::string>& args) {
         if(prior.source!=r.source||prior.sha!=r.sha)throw std::invalid_argument("GHS chain refers to a different source");
         r.prefix=prior.prefix;if(!prefixOnly)r.prefix.push_back(prior.options);
     }else if(prefixOnly)throw std::invalid_argument("Prefix mode requires a chain recipe");
-    if(output.empty()||fs::exists(output))throw std::invalid_argument("Choose a new GHS output directory");
     DevelopableFitsImage input;
     if(isFitsPath(r.source))input=readDevelopableFits(r.source);
     else{

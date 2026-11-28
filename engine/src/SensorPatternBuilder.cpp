@@ -1,3 +1,5 @@
+#include "photonstack/WorkingMemory.hpp"
+#include "photonstack/ParallelRanges.hpp"
 #include "photonstack/SensorPatternBuilder.hpp"
 #include <algorithm>
 #include <atomic>
@@ -84,23 +86,26 @@ Residual residual(const ImageBuffer& raw) {
     for (std::size_t p = 0; p < raw.pixelCount(); ++p)
         ensure(raw.pixels[p * 4 + 3] == 1 && std::isfinite(raw.pixels[p * 4]), "Incomplete or nonfinite sensor frame");
     for (unsigned c = 0; c < 4; ++c) {
-        for (unsigned y = 0; y < h; ++y)
+        detail::parallelRows(w, h, [&](std::size_t y) noexcept {
             for (unsigned x = 0; x < w; ++x)
                 a[y * w + x] = raw.pixels[((2 * y + c / 2) * raw.width + 2 * x + c % 2) * 4];
-        for (unsigned y = 0; y < h; ++y)
+        });
+        detail::parallelRows(w, h, [&](std::size_t y) noexcept {
             for (unsigned x = 0; x < w; ++x) {
                 double sum = 0;
                 for (int k = -2; k <= 2; ++k)
                     sum += kernel[k + 2] * a[y * w + reflect(int(x) + k, w)];
                 tmp[y * w + x] = float(sum);
             }
-        for (unsigned y = 0; y < h; ++y)
+        });
+        detail::parallelRows(w, h, [&](std::size_t y) noexcept {
             for (unsigned x = 0; x < w; ++x) {
                 double sum = 0;
                 for (int k = -2; k <= 2; ++k)
                     sum += kernel[k + 2] * tmp[reflect(int(y) + k, h) * w + x];
                 hp[y * w + x] = float(double(a[y * w + x]) - sum);
             }
+        });
         std::vector<float> samples;
         const auto stride = std::max<std::size_t>(1, hp.size() / 200000);
         for (std::size_t p = 0; p < hp.size(); p += stride)
@@ -112,20 +117,22 @@ Residual residual(const ImageBuffer& raw) {
         result.sigma[c] = float(sigma);
         for (std::size_t p = 0; p < hp.size(); ++p)
             confidence[p] = float(1 - smooth((std::abs(hp[p] - center) / sigma - 4) / 2));
-        for (unsigned y = 0; y < h; ++y)
+        detail::parallelRows(w, h, [&](std::size_t y) noexcept {
             for (unsigned x = 0; x < w; ++x) {
                 float weight = 1;
                 for (int k = -3; k <= 3; ++k)
                     weight = std::min(weight, confidence[y * w + std::clamp(int(x) + k, 0, int(w) - 1)]);
                 expanded[y * w + x] = weight;
             }
-        for (unsigned y = 0; y < h; ++y)
+        });
+        detail::parallelRows(w, h, [&](std::size_t y) noexcept {
             for (unsigned x = 0; x < w; ++x) {
                 float weight = 1;
                 for (int k = -3; k <= 3; ++k)
                     weight = std::min(weight, expanded[std::clamp(int(y) + k, 0, int(h) - 1) * w + x]);
                 result.samples[(2 * y + c / 2) * raw.width + 2 * x + c % 2] = {hp[y * w + x], weight};
             }
+        });
     }
     return result;
 }
@@ -209,24 +216,31 @@ SensorPatternResult SensorPatternBuilder::build(const std::vector<std::filesyste
         };
         emit(0);
         std::vector<std::array<float, 4>> noiseScales(inputs.size());
-        for (std::size_t i = 0; i < inputs.size(); ++i) {
-            identity(result.sources[i]);
-            FitsDecodeOptions decode;
-            decode.mode = FitsDecodeMode::Scientific;
-            decode.debayer = false;
-            const auto image = FitsCodec().read(result.sources[i].path, decode);
-            ensure(image.ok, image.message.c_str());
-            ensure(image.image.width == w && image.image.height == h && image.image.channels == 4,
-                   "Unexpected sensor decode geometry");
-            const auto values = residual(image.image);
-            std::ofstream stream(cache.path / (std::to_string(i) + ".bin"), std::ios::binary);
-            noiseScales[i] = values.sigma;
-            stream.write(reinterpret_cast<const char*>(values.samples.data()),
-                         std::streamsize(values.samples.size() * sizeof(Sample)));
-            stream.close();
-            ensure(bool(stream), "Cannot write sensor residual cache");
-            identity(result.sources[i]);
-            emit(.6 * (i + 1) / inputs.size());
+        const auto perFrame = 16ULL * 1024 * 1024 + std::uint64_t(count) * 64;
+        const auto workers = std::clamp<std::size_t>(detail::workingMemoryBudget() / perFrame, 1, 4);
+        for (std::size_t first = 0; first < inputs.size(); first += workers) {
+            const auto batch = std::min(workers, inputs.size() - first);
+            detail::runWorkers(batch, [&](std::size_t worker) {
+                detail::ScopedRangeWorkerLimit inner(std::max<std::size_t>(1, 8 / batch));
+                const auto i = first + worker;
+                identity(result.sources[i]);
+                FitsDecodeOptions decode;
+                decode.mode = FitsDecodeMode::Scientific;
+                decode.debayer = false;
+                const auto image = FitsCodec().read(result.sources[i].path, decode);
+                ensure(image.ok, image.message.c_str());
+                ensure(image.image.width == w && image.image.height == h && image.image.channels == 4,
+                       "Unexpected sensor decode geometry");
+                const auto values = residual(image.image);
+                std::ofstream stream(cache.path / (std::to_string(i) + ".bin"), std::ios::binary);
+                noiseScales[i] = values.sigma;
+                stream.write(reinterpret_cast<const char*>(values.samples.data()),
+                             std::streamsize(values.samples.size() * sizeof(Sample)));
+                stream.close();
+                ensure(bool(stream), "Cannot write sensor residual cache");
+                identity(result.sources[i]);
+            });
+            emit(.6 * (first + batch) / inputs.size());
         }
         std::array<std::vector<float>, 3> centers;
         std::array<std::vector<float>, 3> counts;
@@ -250,12 +264,16 @@ SensorPatternResult SensorPatternBuilder::build(const std::vector<std::filesyste
         const auto tileSize = std::max<std::size_t>(1, (32ULL * 1024 * 1024) / (sizeof(Sample) * inputs.size()));
         for (std::size_t start = 0; start < count; start += tileSize) {
             const auto n = std::min(tileSize, count - start);
-            std::vector<Sample> tile(n * inputs.size()), sample;
+            std::vector<Sample> tile(n * inputs.size());
             for (std::size_t i = 0; i < inputs.size(); ++i) {
                 streams[i].read(reinterpret_cast<char*>(tile.data() + i * n), std::streamsize(n * sizeof(Sample)));
                 ensure(streams[i].gcount() == std::streamsize(n * sizeof(Sample)), "Truncated sensor cache");
             }
-            for (std::size_t p = 0; p < n; ++p)
+            const auto workers = std::max<std::size_t>(1, std::min<std::size_t>(8, n / 1024));
+            detail::runWorkers(workers, [&](std::size_t worker) {
+                std::vector<Sample> sample;
+                sample.reserve(inputs.size() / 3 + 1);
+                for (auto p = n * worker / workers; p < n * (worker + 1) / workers; ++p)
                 for (unsigned f = 0; f < 3; ++f) {
                     sample.clear();
                     double weight = 0;
@@ -270,6 +288,7 @@ SensorPatternResult SensorPatternBuilder::build(const std::vector<std::filesyste
                     const unsigned channel = 2 * ((start + p) / w % 2) + (start + p) % w % 2;
                     centers[f][start + p] = location(sample, scales[f][channel]);
                 }
+            });
             emit(.6 + .2 * (start + n) / count);
         }
         streams.clear();

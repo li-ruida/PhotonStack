@@ -4,7 +4,7 @@ import ImageIO
 import PhotonStackAppCore
 import SwiftUI
 
-struct MaskBrushCanvasGeometry {
+struct MaskBrushCanvasGeometry: Equatable {
     let imageRect: CGRect
     let canvasSize: CGSize
 
@@ -138,18 +138,15 @@ struct MaskBrushEditorSheet: View {
     @State private var activeSampler = MaskBrushStrokeSampler()
     @State private var zoomScale = 1.0
 
-    private let maskImage: CGImage?
-    private let sourceSize: CGSize
+    @State private var maskImage: CGImage?
+    @State private var loading = true
+    @State private var sourceSize = CGSize(width: 1, height: 1)
 
     init(model: PhotonStackWorkspaceModel, layerID: ProcessingLayer.ID, maskURL: URL) {
         self.model = model
         self.layerID = layerID
         self.maskURL = maskURL
-        let image = Self.loadImage(maskURL)
-        maskImage = image
-        sourceSize = CGSize(width: image?.width ?? 1, height: image?.height ?? 1)
-        let initialSize = min(max(min(sourceSize.width, sourceSize.height) * 0.025, 8), 160)
-        _brushSize = State(initialValue: initialSize)
+        _brushSize = State(initialValue: 8)
     }
 
     var body: some View {
@@ -231,20 +228,18 @@ struct MaskBrushEditorSheet: View {
                     zoomScale: zoomScale
                 )
                 ScrollView([.horizontal, .vertical]) {
-                    Canvas { context, _ in
-                        context.fill(
-                            Path(CGRect(origin: .zero, size: geometry.canvasSize)),
-                            with: .color(.black)
-                        )
+                    ZStack {
+                        Color.black
                         if let maskImage {
-                            context.draw(Image(decorative: maskImage, scale: 1), in: geometry.imageRect)
+                            Image(decorative: maskImage, scale: 1).resizable()
+                                .frame(width: geometry.imageRect.width, height: geometry.imageRect.height)
+                                .position(x: geometry.imageRect.midX, y: geometry.imageRect.midY)
                         }
-                        draw(
-                            strokes: strokeGroups.flatMap { $0 },
-                            activeSegments: activeSampler.visibleSegments,
-                            geometry: geometry,
-                            context: &context
-                        )
+                        CommittedBrushStrokes(groups: strokeGroups, geometry: geometry).equatable()
+                        Canvas { context, _ in
+                            draw(strokes: [], activeSegments: activeSampler.visibleSegments,
+                                 geometry: geometry, context: &context)
+                        }
                     }
                     .frame(width: geometry.canvasSize.width, height: geometry.canvasSize.height)
                     .contentShape(Rectangle())
@@ -252,7 +247,7 @@ struct MaskBrushEditorSheet: View {
                 }
                 .background(.black)
                 .overlay {
-                    if maskImage == nil {
+                    if loading { ProgressView() } else if maskImage == nil {
                         ContentUnavailableView(maskURL.lastPathComponent, systemImage: "exclamationmark.triangle")
                     }
                 }
@@ -305,6 +300,18 @@ struct MaskBrushEditorSheet: View {
             .background(.bar)
         }
         .frame(minWidth: 820, minHeight: 620)
+        .task(id: maskURL) {
+            loading = true
+            let url = maskURL
+            let decoded = await Task.detached(priority: .userInitiated) { Self.loadImage(url) }.value
+            guard !Task.isCancelled else { return }
+            if let (image, size) = decoded {
+                maskImage = image
+                sourceSize = size
+                brushSize = min(max(min(size.width, size.height) * 0.025, 8), 160)
+            }
+            loading = false
+        }
     }
 
     private var brushSizeRange: ClosedRange<Double> {
@@ -347,10 +354,10 @@ struct MaskBrushEditorSheet: View {
         context: inout GraphicsContext
     ) {
         for stroke in strokes {
-            draw(stroke: stroke, geometry: geometry, context: &context)
+            Self.draw(stroke: stroke, geometry: geometry, context: &context)
         }
         for activePoints in activeSegments {
-            draw(
+            Self.draw(
                 stroke: MaskBrushStroke(
                     mode: mode,
                     points: activePoints,
@@ -363,7 +370,7 @@ struct MaskBrushEditorSheet: View {
         }
     }
 
-    private func draw(
+    fileprivate static func draw(
         stroke: MaskBrushStroke,
         geometry: MaskBrushCanvasGeometry,
         context: inout GraphicsContext
@@ -399,13 +406,28 @@ struct MaskBrushEditorSheet: View {
         )
     }
 
-    private static func loadImage(_ url: URL) -> CGImage? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            return nil
+    nonisolated private static func loadImage(_ url: URL) -> (CGImage, CGSize)? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
+              let preview = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 2048,
+                  kCGImageSourceShouldCacheImmediately: true,
+              ] as CFDictionary) else { return nil }
+        return (preview, CGSize(width: width.doubleValue, height: height.doubleValue))
+    }
+}
+
+private struct CommittedBrushStrokes: View, Equatable {
+    let groups: [[MaskBrushStroke]]
+    let geometry: MaskBrushCanvasGeometry
+    var body: some View {
+        Canvas { context, _ in
+            for group in groups {
+                for stroke in group { MaskBrushEditorSheet.draw(stroke: stroke, geometry: geometry, context: &context) }
+            }
         }
-        return CGImageSourceCreateImageAtIndex(source, 0, [
-            kCGImageSourceShouldCache: true,
-            kCGImageSourceShouldCacheImmediately: true,
-        ] as CFDictionary)
     }
 }

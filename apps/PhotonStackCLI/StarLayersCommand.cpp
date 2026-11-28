@@ -1,4 +1,6 @@
+#include "LinearSamples.hpp"
 #include "StarLayersCommand.hpp"
+#include "OutputPath.hpp"
 #include "photonstack/FileDigest.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/ImageCodec.hpp"
@@ -46,15 +48,15 @@ ImageBuffer readLinear(const fs::path& path) {
     auto& image = result.image;
     if (image.channels != 4 || image.empty())
         throw std::invalid_argument("Expected RGBA input");
-    for (std::size_t p = 0; p < image.pixelCount(); ++p) {
+    photonstack::cli::processPixels(image.pixelCount(), [&](std::size_t p) {
         auto* s = &image.pixels[p * 4];
         for (int c = 0; c < 4; ++c)
             if (!std::isfinite(s[c]))
                 throw std::invalid_argument("Nonfinite samples require a validity mask");
         if (image.colorEncoding == ColorEncoding::SRGB)
             for (int c = 0; c < 3; ++c)
-                s[c] = s[c] <= .04045F ? s[c] / 12.92F : std::pow((s[c] + .055F) / 1.055F, 2.4F);
-    }
+                s[c] = photonstack::cli::decodeUnitSRGB(s[c]);
+    });
     image.colorEncoding = ColorEncoding::Linear;
     return std::move(image);
 }
@@ -188,10 +190,10 @@ void render(const Arguments& args) {
         throw std::invalid_argument("Layer files changed or the layer manifest is invalid");
     auto nebula = readLinear(input / "starless.fits"), stars = readLinear(input / "stars.fits");
     compatible(nebula, stars);
-    for (std::size_t p = 0; p < nebula.pixelCount(); ++p) {
+    photonstack::cli::processPixels(nebula.pixelCount(), [&](std::size_t p) {
         adjust(&nebula.pixels[4 * p], nebulaEV, gamma, nebulaSat);
         adjust(&stars.pixels[4 * p], starsEV, 1, starSat);
-    }
+    });
     OutputDirectory out(required(args, "--output-dir"));
     display(nebula, out.path / "starless-preview.tiff");
     display(stars, out.path / "stars-preview.tiff");
@@ -230,6 +232,7 @@ int runStarLayers(const std::vector<std::string>& args) {
         if (i + 1 >= args.size() || !values.emplace(args[i], args[i + 1]).second)
             throw std::invalid_argument("Missing or duplicate star layer option");
     }
+    photonstack::cli::requireNewOutputPath(required(values, "--output-dir"));
     if (args[1] == "prepare")
         prepare(values);
     else if (args[1] == "split")

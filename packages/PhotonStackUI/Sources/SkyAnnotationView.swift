@@ -101,6 +101,6 @@ struct SkyAnnotationView: View {
     }
     private func choose() { let p = NSOpenPanel(); p.allowedContentTypes = [UTType(filenameExtension: "fits") ?? .data, UTType(filenameExtension: "fit") ?? .data]; if p.runModal() == .OK, let url = p.url { session.choose(url); selected = nil } }
     private func folder() -> URL? { let p = NSOpenPanel(); p.canChooseFiles = false; p.canChooseDirectories = true; p.canCreateDirectories = true; return p.runModal() == .OK ? p.url : nil }
-    private func open() { guard let folder = folder() else { return }; operation = Task { defer { operation = nil }; do { try await session.open(folder); session.error = nil; selected = nil } catch { session.error = error.localizedDescription } } }
-    private func save() { guard let parent = folder() else { return }; operation = Task { defer { operation = nil }; do { savedURL = try await session.save(to: parent.appendingPathComponent("SkyAnnotation-"+UUID().uuidString.prefix(8))); session.error = nil } catch { session.error = error.localizedDescription } } }
+    private func open() { guard let folder = folder() else { return }; operation = Task { defer { operation = nil }; do { try await session.open(folder); session.error = nil; selected = nil } catch is CancellationError { } catch { if !Task.isCancelled { session.error = error.localizedDescription } } } }
+    private func save() { guard let parent = folder() else { return }; operation = Task { defer { operation = nil }; do { savedURL = try await session.save(to: parent.appendingPathComponent("SkyAnnotation-"+UUID().uuidString.prefix(8))); session.error = nil } catch is CancellationError { } catch { if !Task.isCancelled { session.error = error.localizedDescription } } } }
 }

@@ -12,6 +12,23 @@ private func externalFixture(_ script: String) throws -> (URL, URL) {
 }
 private let tinyPNG = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==")!
 
+@Test func externalToolDefinitionsReadOnlyBoundedRegularFiles() throws {
+    let (root, executable) = try externalFixture("exit 0")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let tool = ExternalImageTool(name: "Example", executable: executable, arguments: ["{input}", "{output}"])
+    let definition = root.appendingPathComponent("tool.json")
+    var bytes = try JSONEncoder().encode(tool)
+    bytes.append(Data(repeating: 0x20, count: 65536 - bytes.count))
+    try bytes.write(to: definition)
+    #expect(try ExternalImageTool.load(from: definition) == tool)
+    let alias = root.appendingPathComponent("alias.json")
+    try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: definition)
+    #expect(throws: (any Error).self) { try ExternalImageTool.load(from: alias) }
+    bytes.append(0x20)
+    try bytes.write(to: definition)
+    #expect(throws: ProcessingServiceError.self) { try ExternalImageTool.load(from: definition) }
+}
+
 @Test func externalImageToolStagesPositionalOutputAndRejectsExistingResult() async throws {
     let (root, executable) = try externalFixture("cp \"$1\" \"$2\"\nprintf '%s' \"$PWD\" > cwd.txt\n")
     defer { try? FileManager.default.removeItem(at: root) }

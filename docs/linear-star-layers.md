@@ -4,6 +4,8 @@
 
 `star-layers linear-split --input original.fits --starless starless.fits --output-dir layers`
 
+两份输入都声明 FITS 像素单位（`BUNIT`）时，分层前会核对单位及大小写。星点层、无星层和调整后重组的 FITS 均沿用原始母片声明的单位。
+
 `star-layers linear-render --layers layers --stars-ev -1 --output-dir result`
 
 ## 外部去星工具

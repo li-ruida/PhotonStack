@@ -50,7 +50,7 @@ struct DeepSkyRecipeSheet: View {
         let settings = model.project.deepSkySettings ?? DeepSkySettings()
         let reportIsCurrent = model.journeyAnalysisIsCurrent
         let resultIsCurrent = model.journeyResultIsCurrent
-        let canReview = reportIsCurrent || DeepSkyReview.canRecoverSelection(report, recipe: try? model.deepSkyRecipeText())
+        let canReview = reportIsCurrent || DeepSkyReview.canRecoverSelection(report, recipe: model.displayedDeepSkyRecipe())
         let plannedCount = canReview ? DeepSkyReview.keptCount(report?.frames ?? [], settings: settings) : lightCount
         let minimumKept = DeepSkyReview.minimumKept(settings: settings, count: lightCount)
         let tooFew = plannedCount < minimumKept
@@ -239,7 +239,7 @@ struct DeepSkyRecipeSheet: View {
                         Label(status, systemImage: "arrow.clockwise.circle")
                             .font(.caption).foregroundStyle(.orange)
                     } else if report.success, !report.analysisOnly,
-                              !DeepSkyReview.sameResultRecipe(try? model.deepSkyRecipeText(), report.recipe) {
+                              !DeepSkyReview.sameResultRecipe(model.displayedDeepSkyRecipe(), report.recipe) {
                         Label(model.canRefinishDeepSkyMaster
                             ? (chinese ? "修整参数已变化；筛片仍有效。点击“从母片重新显影”生成新成片，当前显示仍是上次结果。" : "Finishing settings changed; frame review is still valid. Reprocess the master to update the displayed result.")
                             : (chinese ? "当前选择或参数尚未生成成片，显示的仍是上次结果。" : "Current decisions have not been rendered; the displayed image is the previous result."), systemImage: "photo.badge.arrow.down")
@@ -290,7 +290,7 @@ struct DeepSkyRecipeSheet: View {
     private func importRecipe() {
         guard !model.isProcessing else { return }
         let panel = NSOpenPanel(); panel.allowedContentTypes = [.plainText]; panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url { Task { await model.importDeepSkyRecipe(from: url) } }
+        if panel.runModal() == .OK, let url = panel.url { model.startImportDeepSkyRecipe(from: url) }
     }
     private func exportRecipe() {
         guard !model.isProcessing else { return }

@@ -3,6 +3,7 @@
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/SensorCalibration.hpp"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <csignal>
@@ -262,11 +263,14 @@ void bind(Job& job, bool saved) {
     std::set<std::string> hashes;
     std::size_t checked = 0;
     const auto total = job.masters.size() + job.lights.size() + (job.options.badPixels ? 1 : 0);
+    std::map<fs::path, CalibrationAcquisition> measurements;
     const auto snapshot = [&](SensorMasterSource& source) {
         check();
         source.path = fs::canonical(source.path);
         regular(source.path);
-        const auto sha = fileSHA256(source.path);
+        auto verified = inspectVerifiedAcquisition(source.path);
+        const auto& sha = verified.sha;
+        measurements.emplace(source.path, std::move(verified.metadata));
         require(source.sha.empty() || source.sha == sha, "Calibration input changed: " + source.path.string());
         source.sha = sha;
         require(paths.insert(source.path).second && hashes.insert(sha).second, "Duplicate job source path or content");
@@ -279,8 +283,9 @@ void bind(Job& job, bool saved) {
     std::vector<CalibrationAcquisition> acquisitions;
     for (auto& light : job.lights) {
         snapshot(light.source);
-        validateSensorCalibration(light.source.path, selection(job, light));
-        acquisitions.push_back(inspectCalibrationAcquisition(light.source.path));
+        const auto options = selection(job, light);
+        acquisitions.push_back(measurements.at(light.source.path));
+        validateSensorCalibration(acquisitions.back(), options, measurements);
     }
     const auto groups = groupCalibrationAcquisitions(acquisitions);
     for (std::size_t g = 0; g < groups.size(); ++g)
@@ -350,13 +355,45 @@ std::map<std::string, std::string> inspectFrame(const fs::path& dir, const std::
     return files;
 }
 using ProductDigests = std::map<std::string, std::string>;
+struct ProductStamp {
+    dev_t device;
+    ino_t inode;
+    off_t size;
+    time_t modified, changed;
+    long modifiedNanos, changedNanos;
+    bool operator==(const ProductStamp&) const = default;
+};
+using FrameStamps = std::array<ProductStamp, 4>;
+
+FrameStamps frameStamps(const fs::path& dir) {
+    directory(dir);
+    FrameStamps stamps{};
+    std::size_t i = 0;
+    for (const char* name : {"receipt.txt", "calibrated.fits", "valid.fits", "report.json"}) {
+        struct stat st{};
+        require(lstat((dir / name).c_str(), &st) == 0 && S_ISREG(st.st_mode), "Expected regular calibrated product");
+#ifdef __APPLE__
+        const auto mt = st.st_mtimespec, ct = st.st_ctimespec;
+#else
+        const auto mt = st.st_mtim, ct = st.st_ctim;
+#endif
+        stamps[i++] = {st.st_dev, st.st_ino, st.st_size, mt.tv_sec, ct.tv_sec, mt.tv_nsec, ct.tv_nsec};
+    }
+    return stamps;
+}
 std::vector<bool> inspectFrames(const fs::path& root, const Job& job, const std::string& sha,
-                                std::vector<ProductDigests>& files) {
+                                std::vector<ProductDigests>& files, std::vector<std::optional<FrameStamps>>& verified) {
     std::vector<bool> completed(job.lights.size());
     for (std::size_t i = 0; i < job.lights.size(); ++i) {
         const auto path = root / frameName(i);
         if (fs::exists(path) || fs::is_symlink(path)) {
-            files[i] = inspectFrame(path, sha, i, job.lights[i]);
+            check();
+            const auto before = frameStamps(path);
+            if (!verified[i] || before != *verified[i]) {
+                files[i] = inspectFrame(path, sha, i, job.lights[i]);
+                require(before == frameStamps(path), "Completed frame changed during verification");
+                verified[i] = before;
+            }
             completed[i] = true;
         }
     }
@@ -448,6 +485,7 @@ int runCalibrationJob(const std::vector<std::string>& args) {
         bind(job, false);
         require(fileSHA256(manifest) == before, "Manifest changed during preflight");
         root = fs::absolute(options.at("--output-dir")).lexically_normal();
+        if (root.filename().empty()) root = root.parent_path();
         directory(root.parent_path());
         require(!fs::exists(root) && !fs::is_symlink(root), "Choose a new calibration job directory");
         Stage stage(root.parent_path());
@@ -467,7 +505,8 @@ int runCalibrationJob(const std::vector<std::string>& args) {
     job = parse(root / "job.txt", true);
     require(canonical(job) == readText(root / "job.txt", 2 * 1024 * 1024), "Saved job is not canonical");
     std::vector<ProductDigests> files(job.lights.size());
-    auto completed = inspectFrames(root, job, sha, files);
+    std::vector<std::optional<FrameStamps>> verified(job.lights.size());
+    auto completed = inspectFrames(root, job, sha, files, verified);
     if (!inspect) {
         if (!fresh)
             bind(job, true);
@@ -514,7 +553,7 @@ int runCalibrationJob(const std::vector<std::string>& args) {
             check();
             require(fileSHA256(light.source.path) == light.source.sha, "Light changed during the job");
         }
-        completed = inspectFrames(root, job, sha, files);
+        completed = inspectFrames(root, job, sha, files, verified);
     }
     // The filesystem's committed per-frame receipts are the journal. A crash
     // needs no mutable global completion bit to recover correctly.

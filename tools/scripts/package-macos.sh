@@ -72,19 +72,19 @@ cp "$ROOT_DIR/third_party/zstd-LICENSE.txt" "$RESOURCES_DIR/ThirdPartyNotices/"
 cp "$EXECUTABLE" "$MACOS_DIR/PhotonStackMac"
 cp "$CLI_EXECUTABLE" "$MACOS_DIR/photonstack"
 
-if [[ -f "$ICON_SOURCE" ]] && command -v python3 >/dev/null 2>&1; then
-  python3 - <<PY
-from PIL import Image
-
-source_path = r"$ICON_SOURCE"
-output_path = r"$ICNS_PATH"
-icon = Image.open(source_path).convert("RGBA")
-icon.save(
-    output_path,
-    format="ICNS",
-    sizes=[(16, 16), (32, 32), (128, 128), (256, 256), (512, 512), (1024, 1024)],
-)
-PY
+if [[ -f "$ICON_SOURCE" ]]; then
+  icon_work_dir="$(mktemp -d "${TMPDIR:-/tmp}/PhotonStackIcon.XXXXXXXX")"
+  trap 'rm -rf -- "$icon_work_dir"' EXIT
+  iconset="$icon_work_dir/AppIcon.iconset"
+  mkdir -p "$iconset"
+  for size in 16 32 128 256 512; do
+    /usr/bin/sips -z "$size" "$size" "$ICON_SOURCE" --out "$iconset/icon_${size}x${size}.png" >/dev/null
+    retina_size=$((size * 2))
+    /usr/bin/sips -z "$retina_size" "$retina_size" "$ICON_SOURCE" --out "$iconset/icon_${size}x${size}@2x.png" >/dev/null
+  done
+  /usr/bin/iconutil -c icns "$iconset" -o "$ICNS_PATH"
+  rm -rf -- "$icon_work_dir"
+  trap - EXIT
 fi
 
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST

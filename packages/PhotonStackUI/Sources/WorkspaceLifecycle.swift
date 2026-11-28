@@ -15,12 +15,8 @@ struct ApplicationStateSynchronizationModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .onAppear {
-                updateDocumentEditedState()
                 PhotonStackApplicationActivity.update(hasActiveProcessing: model.hasActiveProcessing)
                 commandState.update(model.applicationCommandSnapshot)
-            }
-            .onChange(of: model.hasUnsavedChanges) { _, _ in
-                updateDocumentEditedState()
             }
             .onChange(of: model.hasActiveProcessing) { _, hasActiveProcessing in
                 PhotonStackApplicationActivity.update(hasActiveProcessing: hasActiveProcessing)
@@ -41,13 +37,6 @@ struct ApplicationStateSynchronizationModifier: ViewModifier {
             }
     }
 
-    private func updateDocumentEditedState() {
-        #if os(macOS)
-        for window in NSApp.windows where (window is NSPanel) == false {
-            window.isDocumentEdited = model.hasUnsavedChanges
-        }
-        #endif
-    }
 }
 
 struct PerformanceSettingsNotificationModifier: ViewModifier {
@@ -230,6 +219,7 @@ struct WindowCloseGuard: NSViewRepresentable {
 
         func attach(to window: NSWindow?) {
             guard attachedWindow !== window else {
+                window?.isDocumentEdited = hasUnsavedChanges
                 return
             }
             detach()
@@ -237,6 +227,7 @@ struct WindowCloseGuard: NSViewRepresentable {
                 return
             }
             attachedWindow = window
+            window.isDocumentEdited = hasUnsavedChanges
             originalDelegate = window.delegate
             window.delegate = self
             NotificationCenter.default.addObserver(
@@ -253,6 +244,7 @@ struct WindowCloseGuard: NSViewRepresentable {
                 name: .photonStackCloseWindowWithoutPrompt,
                 object: nil
             )
+            attachedWindow?.isDocumentEdited = false
             if attachedWindow?.delegate === self {
                 attachedWindow?.delegate = originalDelegate
             }
@@ -271,6 +263,13 @@ struct WindowCloseGuard: NSViewRepresentable {
             }
             onRequestClose()
             return false
+        }
+
+        func windowWillClose(_ notification: Notification) {
+            // Closed windows can remain in NSApp.windows. They no longer have
+            // a workspace that can answer a deferred termination request.
+            attachedWindow?.isDocumentEdited = false
+            originalDelegate?.windowWillClose?(notification)
         }
 
         override func responds(to selector: Selector!) -> Bool {

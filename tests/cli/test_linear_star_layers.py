@@ -36,6 +36,25 @@ class LinearLayers(unittest.TestCase):
             data=bytearray((r/'layers/stars.fits').read_bytes());data[2900]^=1;(r/'layers/stars.fits').write_bytes(data)
             run('star-layers','linear-render','--layers',r/'layers','--output-dir',r/'tampered',ok=False)
 
+    def test_declared_pixel_units_are_checked_and_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, removed = root / 'source.fits', root / 'removed.fits'
+            values = [1 + i / 10 for i in range(480)]
+            write(source, values, 24, 20, WCS | {'BUNIT': "'mJy'"})
+            write(removed, [v / 2 for v in values], 24, 20, WCS | {'BUNIT': "'MJy'"})
+            def split(output, ok=True):
+                return run('star-layers', 'linear-split', '--input', source, '--starless', removed,
+                           '--output-dir', output, ok=ok)
+            split(root / 'mismatched', ok=False)
+            self.assertFalse((root / 'mismatched').exists())
+            write(removed, [v / 2 for v in values], 24, 20, WCS | {'BUNIT': "'mJy'"})
+            layers = root / 'layers'
+            split(layers)
+            run('star-layers', 'linear-render', '--layers', layers, '--stars-ev', -1, '--output-dir', root / 'adjusted')
+            for product in [layers / 'starless.fits', layers / 'stars.fits', root / 'adjusted/combined.fits']:
+                self.assertEqual(read(product)[0]['BUNIT'].strip("' "), 'mJy')
+
     def test_normalized_inference_adapter_restores_units_and_original_mask(self):
         with tempfile.TemporaryDirectory() as d:
             r=Path(d);values=[-300+200*x+300*y for y in range(20) for x in range(24)];values[0]=math.nan

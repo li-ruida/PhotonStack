@@ -44,7 +44,7 @@ frame "/absolute/frame2.fits"
 frame "/absolute/frame3.fits" "2026-09-10T00:02:00Z" 60
 ```
 
-Coordinates are zero-based from the top left. Explicit frame UTC start and duration override header timing together; this is recorded in the report. Strings use C++ quoted-string escaping. Files, star IDs and exposure midpoints must be unique. The output directory must not already exist. Missing, contradictory or unsupported per-frame metadata produces a rejected row rather than a fabricated time or zero flux.
+Coordinates are zero-based from the top left. The report records any explicit UTC start and duration used in place of header timing. Strings use C++ quoted-string escaping. Files and star IDs must be unique. At each exposure midpoint, the first frame that passes measurement supplies the light-curve point. Each rejected frame retains its reason in the report. Choose a new output directory.
 
 Outputs are `lightcurve.csv`, `measurements.csv`, the exact `recipe.txt`, `report.json` and `report.sha256`. App runs also save `session.json`, whose generated recipe must match the report. Input, recipe and product SHA-256 digests are verified on reopening. Digests detect accidental changes; they are not digital signatures. Sources stay read-only.
 

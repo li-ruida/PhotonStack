@@ -1,5 +1,7 @@
 #include "DeepSkyPreflight.hpp"
 #include "photonstack/ImageInspector.hpp"
+#include "photonstack/WorkerPool.hpp"
+#include <thread>
 #include "photonstack/CalibrationMetadata.hpp"
 #include "photonstack/FitsCodec.hpp"
 
@@ -65,45 +67,68 @@ DeepSkyPreflight inspectDeepSkyPlan(const photonstack::DeepSkyRecipe& recipe, co
     std::uint64_t largestFrame = 0;
     std::set<fs::path> identities;
     const auto inspect = [&](const std::vector<fs::path>& paths, bool lights) {
-        for (const auto& path : paths) {
+        struct Header {
+            fs::path canonical;
+            std::uintmax_t bytes = 0;
+            std::uint32_t width = 0, height = 0;
+            std::optional<DeepSkyPreflightIssue> issue;
+        };
+        std::vector<Header> headers(paths.size());
+        std::vector<std::size_t> pending;
+        for (std::size_t i = 0; i < paths.size(); ++i) {
+            const auto& path = paths[i];
+            auto& h = headers[i];
             std::error_code ec;
             if (!fs::is_regular_file(path, ec) || ec) {
-                complete = false;
-                result.issues.push_back({"InputUnavailable", path.string(), "Input is not a readable regular file"});
+                h.issue = {"InputUnavailable", path.string(), "Input is not a readable regular file"};
                 continue;
             }
-            const auto canonical = fs::canonical(path, ec);
-            if (ec || !identities.insert(canonical).second) {
-                complete = false;
-                result.issues.push_back({"DuplicateInput", path.string(), "An input path is repeated across light or calibration groups"});
+            h.canonical = fs::canonical(path, ec);
+            if (ec || !identities.insert(h.canonical).second) {
+                h.issue = {"DuplicateInput", path.string(), "An input path is repeated across light or calibration groups"};
                 continue;
             }
-            const auto bytes = fs::file_size(path, ec);
-            if (ec) { complete = false; result.issues.push_back({"InputUnavailable", path.string(), ec.message()}); continue; }
-            result.sourceBytes = add(result.sourceBytes, bytes);
-            const auto inspected = ImageInspector().inspect(path);
-            if (!inspected.ok || inspected.metadata.width == 0 || inspected.metadata.height == 0) {
-                complete = false;
-                result.issues.push_back({"HeaderUnavailable", path.string(), inspected.message});
-                continue;
-            }
-            ++result.inspectedCount;
-            if (lights && o.cfaDrizzle) {
-                try { photonstack::detail::validateDrizzleSource(path,recipe.inputs.front()); }
-                catch(const std::exception& e) { complete=false; result.issues.push_back({"CfaSourceInvalid",path.string(),e.what()}); }
-            }
-            if (lights && (result.calibrationCount || o.sensorPattern) && isFitsPath(path)) {
-                try {
-                    if (inspectCalibrationAcquisition(path).text.contains("calibration")) {
-                        complete = false;
-                        result.issues.push_back({"AlreadyCalibrated", path.string(), "Disable calibration masters and sensor pattern correction for calibrated lights"});
+            h.bytes = fs::file_size(path, ec);
+            if (ec) { h.bytes = 0; h.issue = {"InputUnavailable", path.string(), ec.message()}; }
+            else pending.push_back(i);
+        }
+        const auto workers = std::max<std::size_t>(1, std::min<std::size_t>({4, pending.size(), std::thread::hardware_concurrency()}));
+        detail::runWorkers(workers, [&](std::size_t worker) {
+            for (auto index = worker; index < pending.size(); index += workers) {
+                const auto i = pending[index];
+                const auto& path = paths[i];
+                auto& h = headers[i];
+                if (lights && o.cfaDrizzle) {
+                    try {
+                        detail::validateDrizzleSource(path, recipe.inputs.front());
+                    } catch (const std::exception& e) {
+                        h.issue = {"CfaSourceInvalid", path.string(), e.what()};
+                        continue;
                     }
-                } catch (const std::exception& e) {
-                    complete = false;
-                    result.issues.push_back({"HeaderUnavailable", path.string(), e.what()});
                 }
+                if (lights && (result.calibrationCount || o.sensorPattern) && isFitsPath(path)) {
+                    try {
+                        const auto meta = inspectCalibrationAcquisition(path);
+                        h.width = meta.width; h.height = meta.height;
+                        if (meta.text.contains("calibration"))
+                            h.issue = {"AlreadyCalibrated", path.string(), "Disable calibration masters and sensor pattern correction for calibrated lights"};
+                        continue;
+                    } catch (const std::exception& e) {
+                        h.issue = {"HeaderUnavailable", path.string(), e.what()};
+                    }
+                }
+                const auto info = ImageInspector().inspect(path);
+                if (info.ok) { h.width = info.metadata.width; h.height = info.metadata.height; }
+                if (!h.width || !h.height) h.issue = {"HeaderUnavailable", path.string(), info.message};
             }
-            const auto& m = inspected.metadata;
+        });
+        for (std::size_t i = 0; i < paths.size(); ++i) {
+            const auto& m = headers[i];
+            const auto& path = paths[i];
+            result.sourceBytes = add(result.sourceBytes, m.bytes);
+            if (m.issue) { complete = false; result.issues.push_back(*m.issue); }
+            if (!m.width || !m.height) continue;
+            ++result.inspectedCount;
             // Scientific intermediates are float RGBA even for a mono/CFA source.
             largestFrame = std::max(largestFrame, multiply(multiply(m.width, m.height), 16));
             if (lights && !result.width) { result.width = m.width; result.height = m.height; }

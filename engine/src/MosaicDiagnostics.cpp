@@ -1,13 +1,21 @@
 #include "photonstack/MosaicDiagnostics.hpp"
 #include <algorithm>
 #include <cmath>
+#include <span>
 
 namespace photonstack::detail {
 namespace {
-double median(std::vector<double> values) {
-    const auto middle = values.begin() + values.size() / 2;
-    std::nth_element(values.begin(), middle, values.end());
-    return *middle;
+double rankedValue(std::span<double> values, std::size_t rank) {
+    const auto selected = values.begin() + rank;
+    std::nth_element(values.begin(), selected, values.end());
+    return *selected;
+}
+double median(std::span<double> values) {
+    return rankedValue(values, values.size() / 2);
+}
+double quantile(std::span<double> values, double fraction) {
+    if (values.empty()) return 0;
+    return rankedValue(values, static_cast<std::size_t>(fraction * (values.size() - 1)));
 }
 using Samples = std::vector<MosaicSeamSample>;
 std::optional<MosaicSeamStatistics> statistics(const Samples& samples, unsigned offset, unsigned channels) {
@@ -27,8 +35,7 @@ std::optional<MosaicSeamStatistics> statistics(const Samples& samples, unsigned 
         result.rmsDifference[c] = std::sqrt(squares / samples.size());
         for (auto& d : differences) d = std::abs(d - result.medianDifference[c]);
         result.madDifference[c] = median(differences);
-        std::sort(absolute.begin(), absolute.end());
-        result.p95Absolute[c] = absolute[std::size_t(std::ceil(.95 * absolute.size())) - 1];
+        result.p95Absolute[c] = rankedValue(absolute, std::size_t(std::ceil(.95 * absolute.size())) - 1);
     }
     return result;
 }
@@ -46,8 +53,10 @@ MosaicFinalSeamStatistics measureFinalMosaicSeam(const std::array<double,4>& bou
     struct Point {double brightness=0,structure=0;std::array<double,3> gradient{},detail{},range{},noise{},scale{};};
     std::vector<Point> points;std::vector<double> brightness,structure;
     const auto excess=[](double v,double a,double b){return std::max({0.,std::min(a,b)-v,v-std::max(a,b)});};
-    const auto quantile=[](std::vector<double> a,double q){if(a.empty())return 0.;std::sort(a.begin(),a.end());return a[std::min(a.size()-1,std::size_t(q*(a.size()-1)))];};
     const int nx=std::min(48,width),ny=std::min(48,height);
+    points.reserve(nx * ny);
+    brightness.reserve(nx * ny);
+    structure.reserve(nx * ny);
     for(int gy=0;gy<ny;++gy)for(int gx=0;gx<nx;++gx){
         const double x=int(bounds[0])+int((gx+.5)*width/nx),y=int(bounds[1])+int((gy+.5)*height/ny);
         std::array<MosaicFinalSample,5> patch;bool valid=true;
@@ -105,7 +114,7 @@ MosaicSeamPair measureMosaicSeam(std::size_t first, std::size_t second,
     MosaicSeamPair result;
     result.first = first; result.second = second; result.summary.bounds = bounds;
     const int width = int(bounds[2] - bounds[0]), height = int(bounds[3] - bounds[1]);
-    if (width <= 0 || height <= 0) return result;
+    if (width <= 0 || height <= 0 || channels < 1 || channels > 3) return result;
     result.cells.resize(16);
     std::array<Samples, 16> cells;
     Samples all;
@@ -131,8 +140,8 @@ MosaicSeamPair measureMosaicSeam(std::size_t first, std::size_t second,
         if (!valid) continue;
         MosaicSeamSample medians{};
         for (int k = 0; k < 4; ++k) for (unsigned c = 0; c < channels; ++c) {
-            std::vector<double> values;
-            for (const auto& p : patch) values.push_back(p[k][c]);
+            std::array<double, 9> values;
+            for (std::size_t i = 0; i < patch.size(); ++i) values[i] = patch[i][k][c];
             medians[k][c] = median(values);
         }
         all.push_back(medians); cells[cell].push_back(medians);

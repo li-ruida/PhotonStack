@@ -45,7 +45,7 @@ public struct MosaicPanelFolder: Codable, Equatable, Sendable {
         }
 
         var groups: [Self] = []
-        var seen = Set<URL>()
+        var seen = Set<String>()
         for root in roots {
             let directory = root.resolvingSymlinksInPath().standardizedFileURL
             let contents = try entries(directory)
@@ -70,7 +70,7 @@ public struct MosaicPanelFolder: Codable, Equatable, Sendable {
             guard !found.isEmpty else {
                 throw WorkflowError("没有找到天区照片 / No sky panel images\n\(directory.path)")
             }
-            groups += found.filter { seen.insert($0.directory).inserted }
+            groups += found.filter { seen.insert($0.directory.path).inserted }
         }
 
         // Seestar exports a Stacked_* product beside its matching <target>_sub lights.
@@ -157,7 +157,7 @@ extension PhotonStackProject {
         }
         guard !members.isEmpty else { return }
         // Keep every source asset and its ID for existing layers, sequences and edits.
-        for index in assets.indices where members.contains(assets[index].id) { assets[index].role = .light }
+        updateRoles(for: members, role: .light)
         mosaicPanelOrder.removeAll { members.contains($0) }
     }
 }

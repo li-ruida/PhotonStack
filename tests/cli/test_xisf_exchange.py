@@ -93,6 +93,22 @@ class Xisf(unittest.TestCase):
                         self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(),before)
                         manifest=json.loads((out/'exchange.json').read_text());self.assertEqual(manifest['sourceSHA256'],before)
                         self.assertEqual(manifest['productSHA256'],hashlib.sha256((out/'image.fits').read_bytes()).hexdigest())
+    def test_fits_commentary_cards_round_trip_all_72_columns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            history = 'HISTORY ' + '0123456789ABCDEF' * 4 + '01234567'
+            comment = 'COMMENT ' + '  observer / note'.ljust(72)
+            header = ''.join((f'{key:<8}= {value:>20}').ljust(80)
+                             for key, value in [('SIMPLE', 'T'), ('BITPIX', 8), ('NAXIS', 2), ('NAXIS1', 1), ('NAXIS2', 1)])
+            source = root / 'commentary.fits'
+            source.write_bytes((header + history + comment + 'END').ljust(2880).encode() + bytes(2880))
+            run('xisf-export', source, root / 'exported', '--compression', 'none')
+            run('xisf-import', root / 'exported/image.xisf', root / 'imported')
+            result = (root / 'imported/image.fits').read_bytes()[:2880]
+            cards = [result[i:i + 80].decode() for i in range(0, len(result), 80)]
+            self.assertIn(history, cards)
+            self.assertIn(comment, cards)
+
     def test_compression_shuffle_subblocks_and_checksums(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)

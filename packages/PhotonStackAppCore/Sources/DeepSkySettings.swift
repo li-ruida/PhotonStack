@@ -75,6 +75,62 @@ public struct DeepSkySettings: Codable, Equatable, Sendable {
         lastReport = nil
     }
 
+    /// Keep explicitly selected external masters while removing a changed asset's references.
+    public mutating func updateAssetRole(url: URL, newRole: CalibrationFrameRole?) {
+        updateAssetRoles(urls: [url], newRole: newRole)
+    }
+
+    mutating func updateAssetRoles(urls: [URL], newRole: CalibrationFrameRole?) {
+        guard !urls.isEmpty else { return }
+        var identities = Set<String>()
+        let ordered = urls.map(PhotonStackProject.assetIdentityPath(for:)).filter { identities.insert($0).inserted }
+        overrides = overrides.filter { !identities.contains(PhotonStackProject.assetIdentityPath(for: URL(fileURLWithPath: $0.key))) }
+        let destination: String? = switch newRole {
+        case .dark: "calibration.darks"
+        case .flat: "calibration.flats"
+        case .bias: "calibration.biases"
+        default: nil
+        }
+        for key in ["calibration.darks", "calibration.biases", "calibration.flats"] {
+            // An absent value is filled from project membership by the workspace.
+            guard let list = values[key], let paths = Self.calibrationPaths(list) else { continue }
+            var remaining = paths.filter { !identities.contains(PhotonStackProject.assetIdentityPath(for: URL(fileURLWithPath: $0))) }
+            if key == destination { remaining.append(contentsOf: ordered) }
+            values[key] = remaining.map(Self.quoted).joined(separator: " ")
+        }
+        lastReport = nil
+    }
+
+    /// Positional recipe controls must follow the same assets as membership changes.
+    mutating func updateLightSequence(from previous: [UUID], to current: [UUID]) {
+        guard previous != current else { return }
+        lastReport = nil
+        if let text = values["registration.reference"], let reference = Int(text),
+           previous.indices.contains(reference) {
+            values["registration.reference"] = String(current.firstIndex(of: previous[reference]) ?? -1)
+        }
+        guard let text = values["stack.weights"], !text.isEmpty else { return }
+        let weights = text.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        // Do not guess associations for an already malformed list; keep it for validation.
+        guard weights.count == previous.count else { return }
+        let byAsset = Dictionary(uniqueKeysWithValues: zip(previous, weights))
+        values["stack.weights"] = current.map { byAsset[$0] ?? "1" }.joined(separator: ",")
+    }
+
+    private static func calibrationPaths(_ text: String) -> [String]? {
+        var paths: [String] = [], path = "", inQuote = false, escaped = false
+        for character in text {
+            if escaped { path.append(character); escaped = false }
+            else if inQuote {
+                if character == "\\" { escaped = true }
+                else if character == "\"" { paths.append(path); path = ""; inQuote = false }
+                else { path.append(character) }
+            } else if character == "\"" { inQuote = true }
+            else if !character.isWhitespace { return nil }
+        }
+        return inQuote || escaped ? nil : paths
+    }
+
     public func recipe(schema: DeepSkySchema, inputs: [URL]) throws -> String {
         guard schema.version == version, version == 1 else { throw DeepSkyRecipeError.unsupportedVersion }
         guard Set(values.keys).isSubset(of: Set(schema.fields.map(\.key))) else { throw DeepSkyRecipeError.unknownSetting }

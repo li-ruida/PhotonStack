@@ -47,8 +47,13 @@ struct DeepSkyWorkflowOverview: View {
         if let report = model.project.deepSkySettings?.lastReport, !report.success {
             return chinese ? "上次处理未完成，请查看错误后重试。" : "The previous run failed. Check the error and retry."
         }
+        if let report = model.project.deepSkySettings?.lastReport,
+           report.success, !report.analysisOnly, model.latestDeepSkyResultURL != nil,
+           DeepSkyReview.sameResultRecipe(model.displayedDeepSkyRecipe(), report.recipe) {
+            return chinese ? "已处理 \(report.selectedCount) 张亮场，请检查成片。" : "Result ready from \(report.selectedCount) lights. Review the image."
+        }
         if reportIsCurrent, model.canRefinishDeepSkyMaster {
-            return chinese ? "后期参数已变化，请从母片重新显影。" : "Finishing settings changed. Reprocess the master."
+            return chinese ? "可使用已有母片重新显影。" : "Reprocess the existing master to update the result."
         }
         if !reportIsCurrent, model.project.deepSkySettings?.lastReport != nil {
             return chinese ? "素材或参数已变化，请重新分析。" : "Inputs or settings changed. Analyze again."

@@ -37,14 +37,15 @@ final class CalibrationLibrarySession: ObservableObject {
         lights = Array(Set(urls)).sorted { $0.path < $1.path }; invalidate()
     }
     func cancel() {
-        generation = UUID(); task?.cancel(); task = nil; busy = false
+        // Keep the session locked until the cancelled work has actually unwound.
+        task?.cancel()
     }
     func perform(_ work: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }
         let id = UUID(); generation = id; busy = true; error = nil
         task = Task { [weak self] in
             guard let self else { return }
-            do { try await work(); try Task.checkCancellation() }
+            do { try Task.checkCancellation(); try await work(); try Task.checkCancellation() }
             catch { if !Task.isCancelled && generation == id { self.error = error.localizedDescription } }
             if generation == id { busy = false; task = nil }
         }

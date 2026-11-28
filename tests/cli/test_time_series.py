@@ -102,4 +102,23 @@ class TimeSeries(unittest.TestCase):
             config.write_text(original);out=root/'exposure';run(config,out)
             report=json.loads((out/'report.json').read_text());self.assertEqual(report['accepted'],2);self.assertIn('disagree',report['points'][0]['detail'])
 
+    def test_rejected_frame_does_not_reserve_a_valid_frames_midpoint(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            frames = [root / f'f{i}.fits' for i in range(3)]
+            for path, index in zip(frames, [0, 0, 1]):
+                image(path, index)
+            frames[0].write_bytes(frames[0].read_bytes().replace(b"'Test'", b"'Blue'", 1))
+            duration = f'{"EXPTIME":<8}= {11:>20}'.encode()
+            fits_double = f'{"EXPTIME":<8}= {"1.1D+01":>20}'.encode()
+            frames[2].write_bytes(frames[2].read_bytes().replace(duration, fits_double, 1))
+            config = root / 'sequence.txt'
+            recipe(config, frames)
+            out = root / 'measured'
+            run(config, out)
+            report = json.loads((out / 'report.json').read_text())
+            self.assertEqual([p['status'] for p in report['points']], ['frame-rejected', 'measured', 'measured'])
+            self.assertIn('filter', report['points'][0]['detail'])
+            self.assertEqual(report['accepted'], 2)
+
 if __name__=='__main__':unittest.main()

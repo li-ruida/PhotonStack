@@ -20,8 +20,8 @@ struct GeneralizedStretchView: View {
     @StateObject private var session: GeneralizedStretchSession
     @Environment(\.dismiss) private var dismiss
     @State private var saving = false
-    @State private var openingTask: Task<Void, Never>?
-    private var locked: Bool { session.busy || saving || openingTask != nil }
+    @State private var operation: Task<Void, Never>?
+    private var locked: Bool { session.busy || saving || operation != nil }
     private var zh: Bool { model.language == .simplifiedChinese }
     init(model: PhotonStackWorkspaceModel, source: URL) {
         self.model = model; _session = StateObject(wrappedValue: GeneralizedStretchSession(source: source))
@@ -123,14 +123,14 @@ struct GeneralizedStretchView: View {
             ToolActionBar {
                 if locked {
                     ToolTaskStatus(title: saving ? (zh ? "正在保存…" : "Saving…") : (zh ? "正在处理…" : "Processing…"), chinese: zh,
-                                   cancel: saving ? nil : { session.cancel(); openingTask?.cancel() })
+                                   cancel: saving ? nil : { operation?.cancel(); session.cancel() })
                 }
                 Spacer()
                 Button(zh ? "保存并使用…" : "Save & use result…") { save() }
                     .disabled(!session.isCurrent || locked).toolPrimaryAction().accessibilityIdentifier("ghs.save")
             }
         }.padding(18).frame(minWidth: 940, idealWidth: 1100, minHeight: 700, idealHeight: 780)
-            .interactiveDismissDisabled(locked).task { session.begin() }.onDisappear { openingTask?.cancel(); session.close() }
+            .interactiveDismissDisabled(locked).task { session.begin() }.onDisappear { operation?.cancel(); session.close(after: operation) }
     }
     private func control(_ title: String, _ key: WritableKeyPath<GeneralizedStretchSettings, Double>, _ range: ClosedRange<Double>, _ id: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -156,19 +156,24 @@ struct GeneralizedStretchView: View {
     }
     private func openResult() {
         guard let folder = folder() else { return }
-        openingTask = Task {
-            defer { openingTask = nil }
-            do { try await session.open(folder); session.error = nil } catch is CancellationError {} catch { session.error = error.localizedDescription }
+        operation = Task {
+            defer { operation = nil }
+            do { try await session.open(folder); session.error = nil }
+            catch is CancellationError { }
+            catch { if !Task.isCancelled { session.error = error.localizedDescription } }
         }
     }
     private func save() {
         guard let folder = folder() else { return }; saving = true
-        Task {
-            defer { saving = false }
+        let projectID = model.project.id
+        operation = Task {
+            defer { saving = false; operation = nil }
             do {
                 let image = try await session.saveResult(to: folder.appendingPathComponent("GHS-"+UUID().uuidString.prefix(8)))
+                try Task.checkCancellation()
+                guard model.project.id == projectID else { return }
                 model.showDerivedImage(image); dismiss()
-            } catch { session.error = error.localizedDescription }
+            } catch is CancellationError { } catch { if !Task.isCancelled { session.error = error.localizedDescription } }
         }
     }
 }

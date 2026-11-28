@@ -3,6 +3,7 @@
 #include "NewProductDirectory.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/StellarPhotometry.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iostream>
@@ -51,6 +52,11 @@ Recipe recipe(const fs::path& path){
     return r;
 }
 std::string value(const std::map<std::string,std::string>& h,const std::string& key){const auto i=h.find(key);return i==h.end()?std::string():i->second;}
+double fitsNumber(std::string text) {
+    std::replace(text.begin(), text.end(), 'D', 'E');
+    std::replace(text.begin(), text.end(), 'd', 'e');
+    return number(text);
+}
 double utcJD(std::string text){
     if(text.ends_with("Z"))text.pop_back();require(text.size()>=19&&text[4]=='-'&&text[7]=='-'&&text[10]=='T'&&text[13]==':'&&text[16]==':',"Use UTC YYYY-MM-DDThh:mm:ss[.fraction][Z]");
     auto integer=[&](std::size_t p,std::size_t n){const auto s=text.substr(p,n);require(s.find_first_not_of("0123456789")==s.npos,"Invalid UTC timestamp");return unsigned(std::stoul(s));};
@@ -71,15 +77,19 @@ void validateUTCInterval(double start,double duration){
 std::pair<double,double> timing(const Frame& f,const std::map<std::string,std::string>& h){
     if(!f.time.empty()){const auto start=utcJD(f.time);validateUTCInterval(start,f.exposure);return {start+f.exposure/172800.,f.exposure};}
     require(value(h,"TIMESYS").empty()||value(h,"TIMESYS")=="UTC","Non-UTC FITS timestamps need explicit UTC conversion");
-    auto exposure=value(h,"EXPTIME");if(exposure.empty())exposure=value(h,"EXPOSURE");require(!exposure.empty(),"Missing exposure duration");const auto duration=number(exposure);if(!value(h,"EXPTIME").empty()&&!value(h,"EXPOSURE").empty())require(std::abs(number(value(h,"EXPTIME"))-number(value(h,"EXPOSURE")))<1e-6,"EXPTIME and EXPOSURE disagree");
+    const auto exptime = value(h, "EXPTIME"), exposure = value(h, "EXPOSURE");
+    require(!exptime.empty() || !exposure.empty(), "Missing exposure duration");
+    const double duration = fitsNumber(exptime.empty() ? exposure : exptime);
+    if (!exptime.empty() && !exposure.empty())
+        require(std::abs(duration - fitsNumber(exposure)) < 1e-6, "EXPTIME and EXPOSURE disagree");
     auto stamp=value(h,"DATE-OBS"),mjd=value(h,"MJD-OBS");require(!stamp.empty()||!mjd.empty(),"Missing UTC exposure start");
-    const auto start=stamp.empty()?number(mjd)+2400000.5:utcJD(stamp);
-    if(!stamp.empty()&&!mjd.empty())require(std::abs(start-number(mjd)-2400000.5)*86400<.1,"DATE-OBS and MJD-OBS disagree");
+    const auto start=stamp.empty()?fitsNumber(mjd)+2400000.5:utcJD(stamp);
+    if(!stamp.empty()&&!mjd.empty())require(std::abs(start-(fitsNumber(mjd)+2400000.5))*86400<.1,"DATE-OBS and MJD-OBS disagree");
     validateUTCInterval(start,duration);return {start+duration/172800.,duration};
 }
 double median(std::vector<double> values){require(!values.empty(),"Empty photometry sample");std::sort(values.begin(),values.end());const auto n=values.size();return n%2?values[n/2]:(values[n/2-1]+values[n/2])*.5;}
 struct Measurement {StellarApertureResult aperture;double error=0;};
-struct Row {std::size_t index;std::optional<double> jd;double exposure=0,ratio=0,ratioError=0,ensemble=0;std::string status="measured",detail;std::vector<Measurement> stars;};
+struct Row {std::optional<double> jd;double exposure=0,ratio=0,ratioError=0,ensemble=0;std::string status="measured",detail;std::vector<Measurement> stars;};
 std::string csv(const std::string& text){std::string out="\"";for(char c:text){out+=c;if(c=='"')out+=c;}return out+'"';}
 void validateGrid(const LinearScienceImage& ref,const LinearScienceImage& image){
     require(ref.image.width==image.image.width&&ref.image.height==image.image.height&&bool(ref.sky)==bool(image.sky),"Sequence grid differs from first frame");
@@ -95,10 +105,12 @@ int runTimeSeries(const std::vector<std::string>& args){
     // Validate aperture options once, before any staged publication.
     (void)measureStellarAperture(reference.image,r.stars[0].x,r.stars[0].y,r.aperture);
     std::vector<Row> rows;std::vector<double> ratios;std::set<double> times;
-    for(std::size_t i=0;i<r.frames.size();++i){auto& frame=r.frames[i];frame.sha=fileSHA256(frame.path);Row row{i};
+    for(std::size_t i=0;i<r.frames.size();++i){auto& frame=r.frames[i];frame.sha=fileSHA256(frame.path);Row row;
         try {
             const auto header=readFitsPrimaryValues(frame.path);const auto [jd,exposure]=timing(frame,header);row.jd=jd;row.exposure=exposure;
-            require(times.insert(jd).second,"Duplicate exposure midpoint");const auto filter=value(header,"FILTER");require(filter.empty()||filter==r.filter,"Frame filter differs from declared sequence filter");
+            require(!times.contains(jd), "Duplicate exposure midpoint");
+            const auto filter = value(header, "FILTER");
+            require(filter.empty() || filter == r.filter, "Frame filter differs from declared sequence filter");
             auto image=readLinearScienceImage(frame.path);const auto metadata=FitsCodec().inspect(frame.path);require(metadata.ok&&metadata.metadata.channels==refMetadata.metadata.channels,"Sequence channel count changed");validateGrid(reference,image);
             // Photometry of one declared channel: no hidden luminance mixing.
             for(std::size_t pixel=0;pixel<image.image.pixelCount();++pixel){const auto v=image.image.pixels[pixel*4+r.channel];for(unsigned c=0;c<3;++c)image.image.pixels[pixel*4+c]=v;}
@@ -106,7 +118,9 @@ int runTimeSeries(const std::vector<std::string>& args){
             if(row.status=="measured"){
                 double variance=0;for(std::size_t s=1;s<row.stars.size();++s){row.ensemble+=row.stars[s].aperture.flux[0];variance+=row.stars[s].error*row.stars[s].error;}
                 const auto target=row.stars[0].aperture.flux[0];row.ratio=target/row.ensemble;row.ratioError=row.ratio*std::sqrt(std::pow(row.stars[0].error/target,2)+variance/(row.ensemble*row.ensemble));
-                require(std::isfinite(row.ratio)&&std::isfinite(row.ratioError)&&row.ratio>0,"Invalid differential flux");ratios.push_back(row.ratio);
+                require(std::isfinite(row.ratio)&&std::isfinite(row.ratioError)&&row.ratio>0,"Invalid differential flux");
+                times.insert(jd);
+                ratios.push_back(row.ratio);
             }
         }catch(const std::exception& error){row.status="frame-rejected";row.detail=error.what();}
         require(fileSHA256(frame.path)==frame.sha,"Source changed during photometry");rows.push_back(std::move(row));std::cerr<<"Photometry frame "<<i+1<<" / "<<r.frames.size()<<'\n';

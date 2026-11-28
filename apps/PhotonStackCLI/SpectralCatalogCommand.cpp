@@ -25,14 +25,7 @@ int runSpectralCatalog(const std::vector<std::string>& args) {
     out << std::setprecision(17) << "{\"type\":\"complete\",\"schema\":1,\"command\":" << channelJSON(args[0])
         << ",\"sha\":" << channelJSON(sha);
     if (field) {
-        const auto metadata = FitsCodec().inspect(path);
-        if (!metadata.ok || (metadata.metadata.channels != 3 && metadata.metadata.channels != 4))
-            throw std::invalid_argument("Choose a solved linear RGB FITS master");
-        const auto source = readLinearScienceImage(path);
-        if (!source.sky)
-            throw std::invalid_argument("A solved ICRS WCS is required to query Gaia");
-        const auto& sky = *source.sky;
-        const auto width = source.image.width, height = source.image.height;
+        const auto [width, height, sky] = inspectSolvedRGBField(path);
         validateAstrometricGrid(sky, width, height);
         // A conservative bound around CRVAL, including all polynomial SIP terms
         // and half-pixel edges. Four corner samples alone are not sufficient.

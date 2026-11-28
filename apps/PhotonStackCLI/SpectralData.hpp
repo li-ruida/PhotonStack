@@ -1,4 +1,6 @@
 #pragma once
+#include <charconv>
+#include <cstdlib>
 #include "ChannelRecipe.hpp"
 #include "SpectralNarrowband.hpp"
 #include "photonstack/SpectralCalibrator.hpp"
@@ -104,6 +106,21 @@ inline SpectralProfile readSpectralProfile(const std::filesystem::path& path) {
             throw std::invalid_argument("White reference must give positive signal in each channel");
     return p;
 }
+template<class Number>
+bool spectralNumber(std::istream& in, std::string& token, Number& value) {
+    if (!(in >> token)) return false;
+    const auto* first = token.data() + (token[0] == '+');
+    const auto* last = token.data() + token.size();
+    if constexpr (requires { std::from_chars(first, last, value, std::chars_format::general); }) {
+        const auto parsed = std::from_chars(first, last, value, std::chars_format::general);
+        return parsed.ec == std::errc{} && parsed.ptr == last;
+    } else {
+        char* end = nullptr;
+        value = std::strtod(token.c_str(), &end);
+        return end != token.c_str() && end == last;
+    }
+}
+
 inline SpectralCatalog readSpectralCatalog(const std::filesystem::path& path) {
     if (std::filesystem::file_size(path) > 256 * 1024 * 1024)
         throw std::invalid_argument("Spectral catalog is too large");
@@ -119,6 +136,7 @@ inline SpectralCatalog readSpectralCatalog(const std::filesystem::path& path) {
     for (const auto& s : {catalog.name, catalog.provenance, catalog.license})
         spectralText(s);
     std::set<std::string> ids;
+    std::string token;
     std::size_t total = 0;
     for (unsigned i = 0; i < count; ++i) {
         SpectralReferenceStar s;
@@ -135,7 +153,8 @@ inline SpectralCatalog readSpectralCatalog(const std::filesystem::path& path) {
         f.flux.value.resize(n);
         f.error.resize(n);
         for (unsigned j = 0; j < n; ++j)
-            if (!(in >> f.flux.wavelength[j] >> f.flux.value[j] >> f.error[j]) ||
+            if (!spectralNumber(in, token, f.flux.wavelength[j]) || !spectralNumber(in, token, f.flux.value[j]) ||
+                !spectralNumber(in, token, f.error[j]) ||
                 !std::isfinite(f.flux.wavelength[j]) || f.flux.wavelength[j] <= 0 || f.flux.wavelength[j] > 1e6 ||
                 !std::isfinite(f.flux.value[j]) || !std::isfinite(f.error[j]) || f.error[j] < 0 ||
                 (j && f.flux.wavelength[j] <= f.flux.wavelength[j - 1]))

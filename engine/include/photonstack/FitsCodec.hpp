@@ -42,6 +42,7 @@ std::optional<SolvedPanel> readOptionalFitsWcs(const std::filesystem::path& path
 struct DevelopableFitsImage {
     ImageBuffer image;
     std::optional<SolvedPanel> sky;
+    std::string unit;
 };
 // Validates mono/RGB/RGBA masters, rejects CFA and unsupported color encodings.
 // readWcs=false is reserved for solving independently of missing/stale WCS.
@@ -56,6 +57,11 @@ void copyFitsWithAcquisition(const std::filesystem::path& source, const std::fil
 // Astrometry.net writes EQUINOX=2000 regardless of the index reference frame.
 // Only call with explicitly declared ICRS indices. No FK5 conversion is implied.
 SolvedPanel readAstrometryICRSPanel(const std::filesystem::path& path);
+struct SolvedFitsField {
+    std::uint32_t width, height;
+    SolvedPanel sky;
+};
+SolvedFitsField inspectSolvedRGBField(const std::filesystem::path& path);
 using LinearScienceImage = DevelopableFitsImage;
 
 // Linear mono/RGB/RGBA FITS, decoded to RGBA with nonfinite colors masked.
@@ -88,7 +94,8 @@ class FitsCodec {
     ImageWriteResult write(const ImageBuffer& image, const std::filesystem::path& path,
                            const TanGrid* sky = nullptr,
                            const std::vector<SipTerm>* distortion = nullptr,
-                           FitsOutputDomain domain = FitsOutputDomain::LinearScience) const;
+                           FitsOutputDomain domain = FitsOutputDomain::LinearScience,
+                           const std::string& unit = {}) const;
 };
 
 // Bounded primary-header values (unquoted), rejecting duplicate value cards.

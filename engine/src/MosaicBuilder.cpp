@@ -4,6 +4,8 @@
 #include <atomic>
 #include <array>
 #include <cmath>
+#include <deque>
+#include <memory>
 #include <limits>
 #include <new>
 #include <optional>
@@ -20,6 +22,7 @@
 #include "photonstack/ParallelRanges.hpp"
 #include "photonstack/Registration.hpp"
 #include "photonstack/StarDetector.hpp"
+#include "photonstack/WorkingMemory.hpp"
 
 #include "StraightAlphaSampling.hpp"
 
@@ -493,6 +496,13 @@ struct MosaicRegistrationStrip {
     float originY = 0.0F;
 };
 
+struct PreparedMosaicStrip {
+    std::size_t panel;
+    bool horizontal, forward;
+    float originX, originY;
+    PreparedRegistrationReference reference;
+};
+
 MosaicRegistrationStrip registrationStrip(
     const ImageBuffer& image,
     const ImageBuffer& fullResolutionImage,
@@ -543,7 +553,7 @@ MosaicRegistrationStrip registrationStrip(
 
 AffineTransform restoreRegistrationStripTransform(
     const AffineTransform& transform,
-    const MosaicRegistrationStrip& reference,
+    const PreparedMosaicStrip& reference,
     const MosaicRegistrationStrip& moving
 ) {
     auto restored = transform;
@@ -760,15 +770,32 @@ std::vector<MosaicPlacement> automaticPlacements(
         bool horizontal;
     };
     std::set<std::pair<std::size_t, std::size_t>> tried;
+    std::deque<std::shared_ptr<const PreparedMosaicStrip>> referenceStrips;
+    const auto stripBudget = std::min<std::uint64_t>(24U << 20, detail::workingMemoryBudget() / 64);
+    const auto prepareStrip = [&](std::size_t panel, bool horizontal, bool forward)
+        -> std::shared_ptr<const PreparedMosaicStrip> {
+        for (const auto& strip : referenceStrips) {
+            if (strip->panel == panel && strip->horizontal == horizontal && strip->forward == forward)
+                return strip;
+        }
+        const auto& image = usedCoarseAlignment ? registrationImages[panel].image : images[panel];
+        auto strip = registrationStrip(image, images[panel], options.overlapPixels, horizontal, forward);
+        const auto bytes = strip.image.pixels.size() * sizeof(float) +
+            std::min(registrationOptions.starDetection.maxStars, strip.image.pixelCount()) * sizeof(Star);
+        auto prepared = std::make_shared<PreparedMosaicStrip>(PreparedMosaicStrip{panel, horizontal, forward,
+            strip.originX, strip.originY, registration.prepareReference(std::move(strip.image), registrationOptions)});
+        if (images.size() > 2 && bytes <= stripBudget) {
+            if (referenceStrips.size() == 4) referenceStrips.pop_front();
+            referenceStrips.push_back(prepared);
+        }
+        return prepared;
+    };
     connected = {0};
     auto attach = [&](std::size_t index, const std::vector<Neighbor>& neighbors, bool layoutNeighbor) {
         std::vector<MosaicAlignmentCandidate> candidates;
         candidates.reserve(neighbors.size());
         for (const auto& neighbor : neighbors) {
             if (placements[neighbor.index].usedFallback || !tried.emplace(neighbor.index, index).second) continue;
-            const auto& registrationReferenceImage = usedCoarseAlignment
-                ? registrationImages[neighbor.index].image
-                : images[neighbor.index];
             const auto& registrationMovingImage = usedCoarseAlignment
                 ? registrationImages[index].image
                 : images[index];
@@ -778,12 +805,7 @@ std::vector<MosaicPlacement> automaticPlacements(
             for (unsigned attempt = 0; attempt < 4; ++attempt) {
                 const bool horizontal = attempt < 2 ? neighbor.horizontal : !neighbor.horizontal;
                 const bool forward = attempt % 2 == 0;
-                const auto registrationReference = registrationStrip(
-                    registrationReferenceImage,
-                    images[neighbor.index],
-                    options.overlapPixels,
-                    horizontal,
-                    forward);
+                const auto registrationReference = prepareStrip(neighbor.index, horizontal, forward);
                 const auto registrationMoving = registrationStrip(
                     registrationMovingImage,
                     images[index],
@@ -791,12 +813,12 @@ std::vector<MosaicPlacement> automaticPlacements(
                     horizontal,
                     !forward);
                 const auto registrationResult = registration.estimateAffine(
-                    registrationReference.image, registrationMoving.image, registrationOptions);
+                    registrationReference->reference, registrationMoving.image);
                 if (!registrationResult.ok) {
                     continue;
                 }
                 const auto registrationTransform = restoreRegistrationStripTransform(
-                    registrationResult.affine, registrationReference, registrationMoving);
+                    registrationResult.affine, *registrationReference, registrationMoving);
                 const auto fullTransform = usedCoarseAlignment
                     ? liftAlignmentTransform(
                           registrationTransform,
@@ -813,11 +835,12 @@ std::vector<MosaicPlacement> automaticPlacements(
                 const float modelWeight = registrationResult.usedFallback ? 0.85F : 1.0F;
                 const float score = static_cast<float>(registrationResult.matches) *
                                     std::max(0.05F, registrationResult.inlierRatio) * modelWeight;
-                const double correlation = overlapCorrelation(registrationReference.image, registrationMoving.image,
+                const auto& referenceImage = registrationReference->reference.image();
+                const double correlation = overlapCorrelation(referenceImage, registrationMoving.image,
                                                               registrationResult.affine);
                 // Tiny synthetic or thumbnail panels have too few interior samples for a contrast test.
                 const bool small = std::min({registrationMoving.image.width, registrationMoving.image.height,
-                                             registrationReference.image.width, registrationReference.image.height}) < 32;
+                                             referenceImage.width, referenceImage.height}) < 32;
                 // Cylindrical resampling changes the local shape of stars. Prefer the
                 // configured direction when its star geometry is verified.
                 const bool preferredCylinder = layoutNeighbor && attempt == 0 && options.projection == MosaicProjection::Cylindrical;
@@ -1444,7 +1467,7 @@ MosaicResult composeMultiband(
                 static_cast<double>(levels.size());
             const double levelEnd = 0.88 + 0.04 * static_cast<double>(levelIndex + 1) /
                 static_cast<double>(levels.size());
-            for (std::uint32_t y = 0; y < level.image.height; ++y) {
+            const bool valid = blendRows(0, level.image.height, level.image.width, [&](int y) {
                 for (std::uint32_t x = 0; x < level.image.width; ++x) {
                     const auto pixel = static_cast<std::size_t>(y) * level.image.width + x;
                     const auto offset = pixel * level.image.channels;
@@ -1459,7 +1482,7 @@ MosaicResult composeMultiband(
                             continue;
                         }
                         if (!std::isfinite(level.image.pixels[offset + channel])) {
-                            return mosaicError("ImageValueInvalid", "Multiband mosaic contains non-finite values");
+                            return false;
                         }
                     }
                     if (hasAlpha(level.image)) {
@@ -1467,9 +1490,12 @@ MosaicResult composeMultiband(
                             std::clamp(colorWeight / level.weights[pixel], 0.0F, 1.0F);
                     }
                 }
-                progress.reportRow(MosaicProgressStage::Normalizing, y + 1, level.image.height,
+                return true;
+            }, [&](std::uint32_t completed) {
+                progress.reportRow(MosaicProgressStage::Normalizing, completed, level.image.height,
                                    levelStart, levelEnd, 0, levelIndex + 1, levels.size());
-            }
+            });
+            if (!valid) return mosaicError("ImageValueInvalid", "Multiband mosaic contains non-finite values");
             std::vector<float>().swap(level.weights);
         }
 
@@ -1478,7 +1504,7 @@ MosaicResult composeMultiband(
             auto& detail = levels[levelIndex].image;
             const float scaleX = static_cast<float>(reconstructed.width) / static_cast<float>(detail.width);
             const float scaleY = static_cast<float>(reconstructed.height) / static_cast<float>(detail.height);
-            for (std::uint32_t y = 0; y < detail.height; ++y) {
+            const bool valid = blendRows(0, detail.height, detail.width, [&](int y) {
                 const float sourceY = (static_cast<float>(y) + 0.5F) * scaleY - 0.5F;
                 for (std::uint32_t x = 0; x < detail.width; ++x) {
                     const float sourceX = (static_cast<float>(x) + 0.5F) * scaleX - 0.5F;
@@ -1489,14 +1515,15 @@ MosaicResult composeMultiband(
                                 static_cast<double>(detail.pixels[offset + channel]) +
                                 sampleBilinearClamped(reconstructed, sourceX, sourceY, channel);
                             if (!representableFloat(reconstructedValue)) {
-                                return mosaicError(
-                                    "ImageValueInvalid", "Multiband reconstruction exceeds the Float32 range");
+                                return false;
                             }
                             detail.pixels[offset + channel] = static_cast<float>(reconstructedValue);
                         }
                     }
                 }
-            }
+                return true;
+            }, [](std::uint32_t) {});
+            if (!valid) return mosaicError("ImageValueInvalid", "Multiband reconstruction exceeds the Float32 range");
             reconstructed = std::move(detail);
             const auto completed = levels.size() - 1 - levelIndex;
             const auto total = std::max<std::size_t>(1, levels.size() - 1);

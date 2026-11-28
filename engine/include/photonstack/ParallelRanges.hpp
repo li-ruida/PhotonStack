@@ -34,4 +34,12 @@ void parallelRanges(std::size_t count, std::size_t minimumPerWorker, Callback ca
     });
 }
 
+template <typename Callback>
+void parallelRows(int width, int height, Callback row) {
+    static_assert(std::is_nothrow_invocable_v<Callback&, int>);
+    parallelRanges(height, std::max(1, 65536 / std::max(1, width)), [&](std::size_t first, std::size_t last) noexcept {
+        for (int y = int(first); y < int(last); ++y) row(y);
+    });
+}
+
 } // namespace photonstack::detail

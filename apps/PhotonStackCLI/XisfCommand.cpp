@@ -8,6 +8,7 @@
 #include <cstring>
 #include <iostream>
 #include <memory>
+#include <utility>
 #ifdef PHOTONSTACK_XISF_LZ4
 #include <lz4.h>
 #endif
@@ -67,7 +68,7 @@ void validateKeywords(const Raster& r){std::set<std::string> names;for(const aut
     if(k.name=="BAYERPAT"&&!r.cfa.empty())require(unquote(k.value)==r.cfa,"XISF CFA and FITS Bayer pattern disagree");
     if((k.name=="XBAYROFF"||k.name=="YBAYROFF")&&!r.cfa.empty())require(k.value=="0","XISF CFA conflicts with nonzero FITS Bayer offset");
 }}
-Bytes decompress(xmlNode* image,const Bytes& encoded,std::size_t expected){
+Bytes decompress(xmlNode* image,Bytes encoded,std::size_t expected){
     const auto text=attribute(image,"compression");if(text.empty()){require(attribute(image,"subblocks").empty(),"Subblocks require compression");require(encoded.size()==expected,"XISF block length mismatch");return encoded;}
     const auto parts=split(text,':');require(parts.size()==2||parts.size()==3,"Invalid XISF compression");require(number(parts[1])==expected,"XISF uncompressed size mismatch");
     auto codec=parts[0];const bool shuffled=codec.ends_with("+sh");if(shuffled)codec.resize(codec.size()-3);
@@ -110,7 +111,7 @@ Raster readXisf(const fs::path& path,std::size_t index){
     const auto offset=number(location[1]),stored=number(location[2]),size=fs::file_size(path);
     require(offset>=16+length&&offset<=size&&stored<=size-offset,"XISF pixel block outside file");auto encoded=read(in,offset,stored);
     auto checksum=attribute(image,"checksum");if(!checksum.empty()){auto fields=split(checksum,':');require(fields.size()==2&&digest(encoded,fields[0])==fields[1],"XISF pixel checksum mismatch");}
-    r.pixels=decompress(image,encoded,r.width*r.height*r.channels*r.bytes);
+    r.pixels=decompress(image,std::move(encoded),r.width*r.height*r.channels*r.bytes);
     const auto endian=attribute(image,"byteOrder","little");require(endian=="little"||endian=="big","Invalid XISF byte order");
     if(endian=="big"&&r.bytes>1)for(std::size_t p=0;p<r.pixels.size();p+=r.bytes)std::reverse(r.pixels.begin()+p,r.pixels.begin()+p+r.bytes);
     auto storage=attribute(image,"pixelStorage","Planar");
@@ -125,10 +126,14 @@ Raster readXisf(const fs::path& path,std::size_t index){
 std::string quote(const std::string& s){std::string out="'";for(char c:s){out+=c;if(c=='\'')out+=c;}return out+"'";}
 std::string card(const Keyword& k){
     require(k.name.size()<=8,"FITS keyword too long");std::string result=k.name;result.resize(8,' ');
-    if(k.name=="HISTORY"||k.name=="COMMENT")result+="  "+k.value;
+    const bool commentary = k.name == "HISTORY" || k.name == "COMMENT";
+    if (commentary) {
+        result += k.value;
+        if (!k.comment.empty()) result += (k.value.empty() ? "" : " / ") + k.comment;
+    }
     else {result+="= ";if(!k.value.starts_with("'")&&k.value.size()<20)result+=std::string(20-k.value.size(),' ');result+=k.value;}
     require(result.size()<=80,"FITS value exceeds one card; retained XISF XML can be used by other readers");
-    if(!k.comment.empty()&&result.size()+3<80)result+=" / "+k.comment.substr(0,80-result.size()-3);
+    if(!commentary&&!k.comment.empty()&&result.size()+3<80)result+=" / "+k.comment.substr(0,80-result.size()-3);
     require(std::all_of(result.begin(),result.end(),[](unsigned char c){return c>=32&&c<=126;}),"FITS header requires ASCII; source metadata is retained in XML");result.resize(80,' ');return result;
 }
 void writeFits(const fs::path& path,const Raster& r){
@@ -150,7 +155,13 @@ Raster readFits(const fs::path& path){
     std::ifstream in(path,std::ios::binary);Raster r;std::map<std::string,std::string> values;bool ended=false;std::size_t offset=0;
     while(!ended){require(offset<maxXML,"FITS header exceeds 4 MiB");const auto block=read(in,offset,2880);offset+=2880;
         for(std::size_t i=0;i<2880;i+=80){const std::string text(block.begin()+i,block.begin()+i+80);auto name=trim(text.substr(0,8));if(name=="END"){ended=true;break;}if(name.empty())continue;
-            if(text[8]!='='){if(name=="COMMENT"||name=="HISTORY")r.keywords.push_back({name,trim(text.substr(10)),{}});continue;}
+            if (name == "COMMENT" || name == "HISTORY") {
+                auto body = text.substr(8);
+                while (!body.empty() && body.back() == ' ') body.pop_back();
+                r.keywords.push_back({name, std::move(body), {}});
+                continue;
+            }
+            if (text[8] != '=') continue;
             bool quoted=false;std::size_t slash=80;for(std::size_t j=10;j<80;++j){if(text[j]=='\''){if(quoted&&j+1<80&&text[j+1]=='\''){++j;continue;}quoted=!quoted;}if(text[j]=='/'&&!quoted){slash=j;break;}}
             auto value=trim(text.substr(10,slash-10));require(values.emplace(name,value).second,"Duplicate FITS header keyword");r.keywords.push_back({name,value,slash<80?trim(text.substr(slash+1)):""});
         }
@@ -173,8 +184,18 @@ Raster readFits(const fs::path& path){
 }
 std::string escape(const std::string& text){std::string out;for(unsigned char c:text){require(c>=32||c=='\n'||c=='\t',"Invalid XML metadata character");switch(c){case '&':out+="&amp;";break;case '<':out+="&lt;";break;case '>':out+="&gt;";break;case '"':out+="&quot;";break;default:out+=c;}}return out;}
 void writeXisf(const fs::path& path,Raster& r,bool compressed){
-    Bytes encoded=r.pixels;std::string compression;
-    if(compressed){uLongf size=compressBound(r.pixels.size());encoded.resize(size);require(compress2(encoded.data(),&size,r.pixels.data(),r.pixels.size(),6)==Z_OK,"Cannot compress XISF");encoded.resize(size);compression=" compression=\"zlib:"+std::to_string(r.pixels.size())+"\"";}
+    Bytes encoded;
+    std::string compression;
+    if (compressed) {
+        const auto rawSize = r.pixels.size();
+        uLongf size = compressBound(rawSize);
+        encoded.resize(size);
+        require(compress2(encoded.data(), &size, r.pixels.data(), rawSize, 6) == Z_OK, "Cannot compress XISF");
+        encoded.resize(size);
+        compression = " compression=\"zlib:" + std::to_string(rawSize) + "\"";
+    } else {
+        encoded = std::move(r.pixels);
+    }
     const auto checksum=digest(encoded,"sha256");std::size_t offset=4096;
     for(int pass=0;pass<8;++pass){std::ostringstream xml;xml<<"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<xisf version=\"1.0\" xmlns=\"http://www.pixinsight.com/xisf\"><Image geometry=\""<<r.width<<':'<<r.height<<':'<<r.channels<<"\" sampleFormat=\""<<r.format<<"\" colorSpace=\""<<r.color<<"\" pixelStorage=\"Planar\" byteOrder=\"little\" location=\"attachment:"<<offset<<':'<<encoded.size()<<"\" checksum=\"sha-256:"<<checksum<<"\""<<compression;
         if(r.format.starts_with("Float"))xml<<" bounds=\"0:1\"";xml<<">";

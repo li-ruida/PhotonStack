@@ -1,3 +1,4 @@
+#include "photonstack/FileDigest.hpp"
 #include "photonstack/StageProfile.hpp"
 #include "photonstack/ImageCodec.hpp"
 
@@ -494,7 +495,7 @@ template <typename Callback> void parallelForPixels(const ImageBuffer& image, Ca
 
     const unsigned int workerCount = std::max(1U, std::min<unsigned int>(std::thread::hardware_concurrency(), 8U));
     const std::size_t blockSize = (pixels + workerCount - 1) / workerCount;
-    std::vector<std::thread> workers;
+    std::vector<std::jthread> workers;
     workers.reserve(workerCount);
     for (unsigned int worker = 0; worker < workerCount; ++worker) {
         const std::size_t begin = std::min<std::size_t>(pixels, static_cast<std::size_t>(worker) * blockSize);
@@ -1028,7 +1029,8 @@ ImageWriteResult ImageCodec::write(const ImageBuffer& image, const std::filesyst
     return write(image, path, options);
 }
 
-ImageWriteResult ImageCodec::write(const ImageBuffer& image, const std::filesystem::path& path, const ImageWriteOptions& options) const {
+static ImageWriteResult encodeImage(const ImageBuffer& image, const std::filesystem::path& path,
+                                    const ImageWriteOptions& options, std::string* digest) {
     if (!validImageWriteOptions(path, options)) {
         return writeError("ArgumentInvalid", "Image write options are invalid");
     }
@@ -1077,13 +1079,13 @@ ImageWriteResult ImageCodec::write(const ImageBuffer& image, const std::filesyst
         return writeError("ImageEncodeFailed", "Could not create output image");
     }
 
+    CFRef<CFMutableDataRef> bytes(digest ? CFDataCreateMutable(nullptr, 0) : nullptr);
     auto url = createFileUrl(path);
-    if (url.get() == nullptr) {
-        return writeError("OutputPathInvalid", "Could not create file URL for output");
-    }
-
-    CFRef<CGImageDestinationRef> destination(
-        CGImageDestinationCreateWithURL(url.get(), outputTypeForPath(path), 1, nullptr));
+    if ((!digest && !url.get()) || (digest && !bytes.get()))
+        return writeError("ImageEncodeFailed", "Could not create image output");
+    CFRef<CGImageDestinationRef> destination(digest
+        ? CGImageDestinationCreateWithData(bytes.get(), outputTypeForPath(path), 1, nullptr)
+        : CGImageDestinationCreateWithURL(url.get(), outputTypeForPath(path), 1, nullptr));
     if (destination.get() == nullptr) {
         return writeError("ImageEncodeFailed", "Could not create image destination");
     }
@@ -1094,10 +1096,21 @@ ImageWriteResult ImageCodec::write(const ImageBuffer& image, const std::filesyst
         return writeError("ImageEncodeFailed", "ImageIO failed to write output image");
     }
 
+    if (digest) *digest = bytesSHA256({CFDataGetBytePtr(bytes.get()), std::size_t(CFDataGetLength(bytes.get()))});
     ImageWriteResult result;
     result.ok = true;
     return result;
 #endif
+}
+
+ImageWriteResult ImageCodec::write(const ImageBuffer& image, const std::filesystem::path& path,
+                                  const ImageWriteOptions& options) const {
+    return encodeImage(image, path, options, nullptr);
+}
+
+ImageWriteResult ImageCodec::encodedTIFFSHA256(const ImageBuffer& image, const ImageWriteOptions& options,
+                                             std::string& digest) const {
+    return encodeImage(image, "preview.tiff", options, &digest);
 }
 
 ImageWriteResult ImageCodec::writeRows(const ImageBuffer& prototype, const std::filesystem::path& path,

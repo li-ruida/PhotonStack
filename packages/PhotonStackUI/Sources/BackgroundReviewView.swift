@@ -7,6 +7,7 @@ struct BackgroundReviewView: View {
     @StateObject var session: BackgroundReviewSession
     @Environment(\.dismiss) private var dismiss
     @State private var saving = false
+    @State private var operation: Task<Void, Never>?
     private var zh: Bool { model.language == .simplifiedChinese }
     init(model: PhotonStackWorkspaceModel, input: URL) {
         self.model = model
@@ -127,7 +128,7 @@ struct BackgroundReviewView: View {
         .padding(18).frame(minWidth: 920, idealWidth: 1100, minHeight: 640, idealHeight: 760)
         .interactiveDismissDisabled(session.busy || saving)
         .task { session.begin(inspect: true) }
-        .onDisappear { session.close() }
+        .onDisappear { operation?.cancel(); session.close(after: operation) }
     }
     private func field<Value>(_ key: WritableKeyPath<BackgroundReviewRecipe, Value>, fallback: Value) -> Binding<Value> {
         Binding(get: { session.recipe?[keyPath: key] ?? fallback },
@@ -211,7 +212,10 @@ struct BackgroundReviewView: View {
     private func saveRecipe() {
         let panel = NSSavePanel(); panel.allowedContentTypes = [.json]; panel.nameFieldStringValue = "background-recipe.json"
         guard panel.runModal() == .OK, let file = panel.url else { return }
-        do { try session.saveRecipe(to: file); session.error = nil }
+        do {
+            try model.validateExportDestination(file, additionalSource: session.source, includesSidecar: false)
+            try session.saveRecipe(to: file); session.error = nil
+        }
         catch { session.error = error.localizedDescription }
     }
     private func openRecipe() {
@@ -225,13 +229,16 @@ struct BackgroundReviewView: View {
         panel.message = zh ? "选择校正结果的保存目录" : "Choose where to save the correction"
         guard panel.runModal() == .OK, let folder = panel.url else { return }
         saving = true
-        Task {
-            defer { saving = false }
+        let projectID = model.project.id
+        operation = Task {
+            defer { saving = false; operation = nil }
             do {
                 let output = try await session.saveResult(to: folder.appendingPathComponent("Background-\(UUID().uuidString.prefix(8))"))
+                try Task.checkCancellation()
+                guard model.project.id == projectID else { return }
                 model.showDerivedImage(output)
                 dismiss()
-            } catch { session.error = error.localizedDescription }
+            } catch is CancellationError { } catch { if !Task.isCancelled { session.error = error.localizedDescription } }
         }
     }
 }

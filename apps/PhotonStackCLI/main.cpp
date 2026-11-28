@@ -304,7 +304,7 @@ void printUsage() {
               << "  photonstack stretch --input <image> --output <image> [--auto] [--black 0] [--mid 0.5] "
                  "[--white 1] [--arcsinh 0] [--target-background 0.25] [--shadows-sigma 2.8]\n"
               << "  photonstack curves --input <image> --output <image> [--points 0:0,0.5:0.6,1:1] "
-                 "[--channel rgb|red|green|blue|luminance] [--preserve-gamut on|off]\n"
+                 "[--channel rgb|red|green|blue|luminance] [--preserve-gamut on|off] [RAW decode options as for convert; default --raw-linear off]\n"
               << "  photonstack local-contrast --input <image> --output <image> [--amount 0.25] [--radius 8] [--protect-structure on|off] [--fine-radius 6] [--star-chroma 1] [--continuum-curve 0:0,0.5:0.6,1:1]\n"
               << "  photonstack protect-reconstruction --input <linear.fits> --reference <direct.fits> --mask <weights.fits> --output <protected.fits> [--background-sigma 8] [--amount 1]\n"
               << "  photonstack channel-match --aligned --reference Ha=<mono.fits> --input OIII=<mono.fits> [--low 0.02 --high 0.98] --output-dir <new-directory>\n"
@@ -1834,6 +1834,8 @@ int applyCurves(const std::vector<std::string>& args) {
     std::optional<std::filesystem::path> inputPath;
     std::optional<std::filesystem::path> outputPath;
     photonstack::CurvesOptions options;
+    photonstack::ImageReadOptions displayReadOptions;
+    displayReadOptions.raw.linearOutput = false;
 
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& arg = args[i];
@@ -1882,6 +1884,8 @@ int applyCurves(const std::vector<std::string>& args) {
                 return 1;
             }
             options.preserveLuminanceGamut = value == "on";
+        } else if (arg.starts_with("--raw-")) {
+            if (!parseRawDecodeArgument(args, i, displayReadOptions.raw)) return 1;
         } else {
             printError("ArgumentInvalid", "Unknown curves argument: " + arg);
             return 1;
@@ -1893,8 +1897,6 @@ int applyCurves(const std::vector<std::string>& args) {
         return 1;
     }
 
-    photonstack::ImageReadOptions displayReadOptions;
-    displayReadOptions.raw.linearOutput = false;
     displayReadOptions.fits.maskNonFinitePixels = true;
     const photonstack::ImageCodec codec;
     const auto displayRead = codec.read(*inputPath, displayReadOptions);
@@ -2922,7 +2924,8 @@ int buildMosaic(const std::vector<std::string>& args) {
                 return 1;
             }
             try {
-                options.columns = std::max<std::uint32_t>(1U, parseUnsignedInteger<std::uint32_t>(args[++i]));
+                options.columns = parseUnsignedInteger<std::uint32_t>(args[++i]);
+                if (options.columns == 0) throw std::invalid_argument("Expected a positive integer");
             } catch (const std::exception&) {
                 printError("ArgumentInvalid", "--columns must be a positive integer");
                 return 1;
@@ -2982,13 +2985,13 @@ int buildMosaic(const std::vector<std::string>& args) {
             }
         } else if (arg == "--preview-width") {
             if (i + 1 >= args.size()) {
-                printError("ArgumentMissing", "--preview-width requires a positive integer");
+                printError("ArgumentMissing", "--preview-width requires a non-negative integer (0 for full resolution)");
                 return 1;
             }
             try {
-                options.previewWidth = std::max<std::uint32_t>(1U, parseUnsignedInteger<std::uint32_t>(args[++i]));
+                options.previewWidth = parseUnsignedInteger<std::uint32_t>(args[++i]);
             } catch (const std::exception&) {
-                printError("ArgumentInvalid", "--preview-width must be a positive integer");
+                printError("ArgumentInvalid", "--preview-width must be a non-negative integer (0 for full resolution)");
                 return 1;
             }
         } else if (arg == "--alignment-width") {
@@ -2997,7 +3000,8 @@ int buildMosaic(const std::vector<std::string>& args) {
                 return 1;
             }
             try {
-                options.alignmentWidth = std::max<std::uint32_t>(1U, parseUnsignedInteger<std::uint32_t>(args[++i]));
+                options.alignmentWidth = parseUnsignedInteger<std::uint32_t>(args[++i]);
+                if (options.alignmentWidth == 0) throw std::invalid_argument("Expected a positive integer");
             } catch (const std::exception&) {
                 printError("ArgumentInvalid", "--alignment-width must be a positive integer");
                 return 1;
@@ -3224,7 +3228,14 @@ std::string jsonEscape(const std::string& value) {
             escaped += "\\t";
             break;
         default:
-            escaped += c;
+            if (static_cast<unsigned char>(c) < 0x20) {
+                constexpr char hex[] = "0123456789abcdef";
+                escaped += "\\u00";
+                escaped += hex[(static_cast<unsigned char>(c) >> 4) & 15];
+                escaped += hex[static_cast<unsigned char>(c) & 15];
+            } else {
+                escaped += c;
+            }
             break;
         }
     }
@@ -5914,6 +5925,10 @@ int processClouds(const std::string& mode, const std::vector<std::string>& args)
     }
     const bool temporalMode = mode == "temporal-detect" || mode == "temporal-remove";
     const bool removalMode = mode == "remove" || mode == "temporal-remove";
+    if (!removalMode && outputPath.has_value()) {
+        printError("ArgumentInvalid", "Cloud detection does not write an image; omit --output");
+        return 1;
+    }
     if (removalMode && !outputPath.has_value()) {
         printError("ArgumentMissing", "clouds " + mode + " requires --output <image>");
         return 1;
@@ -6959,6 +6974,7 @@ std::vector<std::string> splitWorkflowLine(const std::string& line) {
         }
         current.push_back(c);
     }
+    if (inQuote) throw std::invalid_argument("Unterminated quote in workflow line");
     if (!current.empty()) {
         args.push_back(current);
     }
@@ -6975,7 +6991,12 @@ int runWorkflow(const std::filesystem::path& path) {
     std::vector<std::vector<std::string>> workflowSteps;
     std::string line;
     while (std::getline(file, line)) {
-        auto args = splitWorkflowLine(line);
+        std::vector<std::string> args;
+        try { args = splitWorkflowLine(line); }
+        catch (const std::invalid_argument& error) {
+            printError("ArgumentInvalid", error.what());
+            return 1;
+        }
         if (args.empty()) {
             continue;
         }
@@ -7389,7 +7410,26 @@ int runCommand(const std::vector<std::string>& args) {
     printProgressEvent(command, command, "start", 0.0);
     int status = 1;
     try {
-        status = runCommandImpl(args);
+        auto normalized = args;
+        // A terminal slash (or /.) can make symlink_status follow a directory
+        // link on macOS. Normalize before any command can create or clean up it.
+        for (std::size_t i = 1; i + 1 < normalized.size(); ++i) {
+            if (normalized[i] != "--output-dir" &&
+                !(normalized[i] == "--job" && normalized.front().starts_with("calibration-"))) continue;
+            std::filesystem::path directory(normalized[++i]);
+            while (!directory.empty() && directory != "." && directory != directory.root_path() &&
+                   (directory.filename().empty() || directory.filename() == ".")) {
+                directory = directory.parent_path();
+            }
+            std::error_code error;
+            const auto state = std::filesystem::symlink_status(directory, error);
+            if (std::filesystem::is_symlink(state)) {
+                printError("PathInvalid", "Directory arguments must not name a symbolic link: " + directory.string());
+                return 1;
+            }
+            normalized[i] = directory.string();
+        }
+        status = runCommandImpl(normalized);
     } catch (const std::bad_alloc&) {
         printError("MemoryAllocationFailed", "The command could not allocate enough memory");
     } catch (const std::exception& error) {

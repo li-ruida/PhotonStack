@@ -27,6 +27,8 @@ struct SensorCalibrationResult {
 // Strict metadata and preparation-state preflight; no pixel quality claim.
 // Source digests are bound and checked separately by the executing operation.
 void validateSensorCalibration(const std::filesystem::path& input, const SensorCalibrationOptions& options);
+void validateSensorCalibration(const CalibrationAcquisition& light, const SensorCalibrationOptions& options,
+                               const std::map<std::filesystem::path, CalibrationAcquisition>& masters);
 SensorCalibrationResult calibrateSensorFrame(SensorMasterSource input, const SensorCalibrationOptions& options);
 // Same pixel geometry: preserve source acquisition/WCS cards, replace storage
 // scaling and stale statistics, and mark calibrated sensor-domain output.

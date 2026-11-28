@@ -29,8 +29,9 @@ void settings(const SensorCalibrationOptions& o) {
     require(!o.dark || o.dark->biasState != "removed" || o.bias, "A bias-removed dark requires a bias master");
     require(!o.flat || o.flat->biasState != "included" || o.bias, "A bias-included flat requires a bias master");
 }
-void metadata(const CalibrationAcquisition& input, const SensorCalibrationOptions& o) {
-    if (o.badPixels) validateSensorDefectMap(input, inspectCalibrationAcquisition(o.badPixels->path));
+template <class Lookup>
+void metadata(const CalibrationAcquisition& input, const SensorCalibrationOptions& o, Lookup masterMetadata) {
+    if (o.badPixels) validateSensorDefectMap(input, masterMetadata(o.badPixels->path));
     require(input.issues.empty() && calibrationFrameType(input) == "light" && input.channels == 1 &&
                 input.text.contains("sampling") && input.text.contains("domain") && input.text.at("domain") == "linear",
             "Calibration requires a verified raw linear CFA or mono light");
@@ -45,7 +46,7 @@ void metadata(const CalibrationAcquisition& input, const SensorCalibrationOption
          {&o.flat, CalibrationMasterRole::Flat}}};
     for (const auto& [selected, role] : masters)
         if (*selected) {
-            const auto m = inspectCalibrationAcquisition((*selected)->source.path);
+            const auto& m = masterMetadata((*selected)->source.path);
             const auto match = matchCalibrationAcquisition(input, m, role, o.temperatureTolerance);
             if (match.status != "compatible") {
                 std::string why = "Unverified calibration master:";
@@ -63,7 +64,7 @@ void metadata(const CalibrationAcquisition& input, const SensorCalibrationOption
             // Bias for an uncorrected flat must also match that flat's measured
             // temperature, not only the light's temperature.
             if (role == CalibrationMasterRole::Flat && (*selected)->biasState == "included") {
-                const auto bias = inspectCalibrationAcquisition(o.bias->source.path);
+                const auto& bias = masterMetadata(o.bias->source.path);
                 require(
                     matchCalibrationAcquisition(m, bias, CalibrationMasterRole::Bias, o.temperatureTolerance).status ==
                         "compatible",
@@ -74,7 +75,12 @@ void metadata(const CalibrationAcquisition& input, const SensorCalibrationOption
 } // namespace
 void validateSensorCalibration(const std::filesystem::path& input, const SensorCalibrationOptions& o) {
     settings(o);
-    metadata(inspectCalibrationAcquisition(input), o);
+    metadata(inspectCalibrationAcquisition(input), o, inspectCalibrationAcquisition);
+}
+void validateSensorCalibration(const CalibrationAcquisition& light, const SensorCalibrationOptions& options,
+                               const std::map<std::filesystem::path, CalibrationAcquisition>& masters) {
+    settings(options);
+    metadata(light, options, [&](const auto& path) -> const auto& { return masters.at(path); });
 }
 SensorCalibrationResult calibrateSensorFrame(SensorMasterSource input, const SensorCalibrationOptions& options) {
     settings(options);
@@ -103,13 +109,23 @@ SensorCalibrationResult calibrateSensorFrame(SensorMasterSource input, const Sen
     for (auto* m : {&o.bias, &o.dark, &o.flat})
         if (*m)
             bind((*m)->source);
-    SensorFitsReader light(input.path);
+    SensorFitsReader light(input.path, true);
+    std::map<std::filesystem::path, SensorFitsReader> masters;
+    const auto openMaster = [&](const std::optional<SensorCalibrationMaster>& master) -> SensorFitsReader* {
+        if (!master) return nullptr;
+        const auto& path = master->source.path;
+        return &masters.try_emplace(path, path, true).first->second;
+    };
+    auto* bias = openMaster(o.bias);
+    auto* dark = openMaster(o.dark);
+    auto* flat = openMaster(o.flat);
+    auto* bad = o.badPixels ? &masters.try_emplace(o.badPixels->path, o.badPixels->path, true).first->second : nullptr;
     result.acquisition = light.metadata();
-    metadata(result.acquisition, o);
+    metadata(result.acquisition, o, [&](const auto& path) -> const auto& { return masters.at(path).metadata(); });
     const auto& a = result.acquisition;
     const std::size_t count = std::size_t(a.width) * a.height;
     require(count <= o.memoryBytes / 8, "Calibration output planes exceed memory budget");
-    const std::size_t fixed = count * 8 + 4 * 65536 + o.workers * 4096 + 1048576;
+    const std::size_t fixed = count * 8 + (1 + masters.size()) * 65536 + o.workers * 4096 + 1048576;
     require(fixed < o.memoryBytes, "Calibration outputs exceed memory budget");
     const auto tileBytes = o.badPixels ? 20 : 16;
     const auto tile = std::min({o.tilePixels, count, (o.memoryBytes - fixed) / tileBytes});
@@ -129,14 +145,6 @@ SensorCalibrationResult calibrateSensorFrame(SensorMasterSource input, const Sen
     };
     result.calibrated = plane();
     result.valid = plane();
-    std::unique_ptr<SensorFitsReader> bias, dark, flat, bad;
-    if (o.badPixels) bad = std::make_unique<SensorFitsReader>(o.badPixels->path);
-    if (o.bias)
-        bias = std::make_unique<SensorFitsReader>(o.bias->source.path);
-    if (o.dark)
-        dark = std::make_unique<SensorFitsReader>(o.dark->source.path);
-    if (o.flat)
-        flat = std::make_unique<SensorFitsReader>(o.flat->source.path);
     result.biasOnLight = bool(bias) && (!o.dark || o.dark->biasState == "removed");
     result.biasOnFlat = o.flat && o.flat->biasState == "included";
     std::vector<float> l(tile), b(tile), d(tile), f(tile);
@@ -208,15 +216,15 @@ SensorCalibrationResult calibrateSensorFrame(SensorMasterSource input, const Sen
             ++result.negativePixels;
     }
     require(result.invalidPixels < count, "No valid calibrated light pixels");
-    const auto unchanged = [&](const SensorMasterSource& s) {
+    const auto unchanged = [&](const SensorMasterSource& s, SensorFitsReader& reader) {
         cancel();
-        require(fileSHA256(s.path) == s.sha, "Calibration source changed during computation");
+        require(reader.sourceSHA256() == s.sha, "Calibration source changed during computation");
     };
-    unchanged(result.input);
-    if (o.badPixels) unchanged(*o.badPixels);
+    unchanged(result.input, light);
+    if (bad) unchanged(*o.badPixels, *bad);
     for (const auto* m : {&o.bias, &o.dark, &o.flat})
         if (*m)
-            unchanged((*m)->source);
+            unchanged((*m)->source, masters.at((*m)->source.path));
     return result;
 }
 } // namespace photonstack

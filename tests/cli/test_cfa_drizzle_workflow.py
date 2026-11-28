@@ -59,6 +59,24 @@ def fixtures(root, calibrated=False, same_phase=False):
 
 
 class Drizzle(unittest.TestCase):
+    def test_preflight_checks_each_bayer_header_without_creating_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = fixtures(root)
+            output = root / 'planned'
+            command = [CLI, 'deep-sky', '--preflight', '--recipe', recipe(root, paths), '--output-dir', output]
+            plan = json.loads(subprocess.check_output(command, text=True))
+            self.assertEqual(plan['issues'], [])
+            self.assertEqual(plan['inspectedCount'], len(paths))
+            self.assertIsNotNone(plan['stackBufferBytes'])
+            header, planes = read(paths[1])
+            header['PSCOLOR'] = "'SRGB-DISPLAY'"
+            write(paths[1], planes[0], 40, 32, header)
+            plan = json.loads(subprocess.check_output(command, text=True))
+            self.assertEqual([(i['code'], i['path']) for i in plan['issues']], [('CfaSourceInvalid', str(paths[1]))])
+            self.assertIsNone(plan['stackBufferBytes'])
+            self.assertFalse(output.exists())
+
     def test_color_phase_signed_samples_scaled_wcs_and_no_source_changes(self):
         for calibrated in (False,True):
             with tempfile.TemporaryDirectory() as d:

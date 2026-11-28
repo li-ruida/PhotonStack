@@ -102,6 +102,8 @@ Per-band noise measurement and processing before display stretching are also dis
 
 The App exposes all fields returned by the recipe schema. Color/development controls, interpolation, normalization, rejection thresholds, frame weights, calibration paths and target-exclusion ellipses therefore use the same values on both entry points. Specialized standalone CLI operations and the legacy editor are separate from this recipe; their settings are not implicitly appended to its result.
 
+When light frames are added, removed, or assigned another role in the App, an explicit reference and custom frame weights follow the remaining assets. Removing the reference returns reference selection to automatic. Newly added lights receive weight 1 in an existing custom weight list; an empty weight list continues to mean equal weights. An already mismatched weight list is left unchanged because the App cannot infer its original frame associations.
+
 ## Interpreting assessment
 
 Scientific noise is measured with a local diagonal high-pass MAD estimator in input units. It rejects a planar gradient and is not a scene-wide min/max-normalized brightness spread. Stellar detection for assessment uses median/MAD thresholds so an isolated bright trail does not suppress stars throughout the image. Detection counts all separated candidates on a bounded image, retaining the brightest candidates for native-pixel shape fitting (up to 512 attempts and 128 accepted fits). Stellar widths and shapes are comparative quality metrics, not a calibrated optical PSF measurement or a full star catalog. Older reports may contain the capped count and older shape estimator; see the estimator identifiers and native stellar shape section below.

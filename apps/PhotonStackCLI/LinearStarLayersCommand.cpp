@@ -33,8 +33,8 @@ void mask(ImageBuffer& im,std::size_t p) {
     for(unsigned c=0;c<3;++c) im.pixels[p*4+c]=std::numeric_limits<float>::quiet_NaN();
     im.pixels[p*4+3]=0;
 }
-void write(const ImageBuffer& im,const fs::path& p,const std::optional<SolvedPanel>& sky) {
-    const auto r=FitsCodec().write(im,p,sky?&sky->grid:nullptr,sky?&sky->distortion:nullptr);
+void write(const ImageBuffer& im,const fs::path& p,const std::optional<SolvedPanel>& sky,const std::string& unit = {}) {
+    const auto r=FitsCodec().write(im,p,sky?&sky->grid:nullptr,sky?&sky->distortion:nullptr,FitsOutputDomain::LinearScience,unit);
     if(!r.ok) throw std::runtime_error(r.message);
 }
 void text(const fs::path& p,const std::string& value) {
@@ -134,6 +134,8 @@ void split(const Args& a,bool restore) {
     const auto originalSha=fileSHA256(input),removedSha=fileSHA256(removed);
     auto original=readLinearScienceImage(input),starless=readLinearScienceImage(removed);
     compatible(original,starless);
+    if (!restore && !original.unit.empty() && !starless.unit.empty())
+        require(original.unit == starless.unit, "Linear source and starless image declare different FITS pixel units (BUNIT)");
     auto stars=original.image;auto& nebula=starless.image;
     double error=0;std::size_t negative=0,invalid=0;
     for(std::size_t p=0;p<stars.pixelCount();++p) {
@@ -153,7 +155,7 @@ void split(const Args& a,bool restore) {
     }
     cli::NewProductDirectory out(required(a,"--output-dir"));
     fs::copy_file(input,out.stage/"original.fits");verify(out.stage/"original.fits",originalSha);
-    write(stars,out.stage/"stars.fits",original.sky);write(nebula,out.stage/"starless.fits",original.sky);
+    write(stars,out.stage/"stars.fits",original.sky,original.unit);write(nebula,out.stage/"starless.fits",original.sky,original.unit);
     preview(stars,stars,out.stage/"stars-preview.tiff");preview(nebula,original.image,out.stage/"starless-preview.tiff");
     text(out.stage/"layers.txt","PhotonStack-StarLayers-2\nlinear\n"+originalSha+"\n"+
         fileSHA256(out.stage/"stars.fits")+"\n"+fileSHA256(out.stage/"starless.fits")+"\n"+removedSha+"\n");
@@ -198,7 +200,7 @@ void render(const Args& a) {
     }
     cli::NewProductDirectory out(required(a,"--output-dir"));
     if(identity) fs::copy_file(root/"original.fits",out.stage/"combined.fits");
-    else write(combined,out.stage/"combined.fits",original.sky);
+    else write(combined,out.stage/"combined.fits",original.sky,original.unit);
     preview(combined,original.image,out.stage/"combined.tiff");
     preview(stars.image,stars.image,out.stage/"stars-preview.tiff");
     preview(nebula.image,original.image,out.stage/"starless-preview.tiff");

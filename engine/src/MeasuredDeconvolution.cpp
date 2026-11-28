@@ -142,6 +142,9 @@ MeasuredDeconvolutionResult restoreMeasuredPsf(const ImageBuffer& source,const I
     if(!o.iterations||o.iterations>100||!o.threads||o.threads>16||!std::isfinite(o.amount)||o.amount<0||o.amount>1||
        !std::isfinite(o.pedestal)||o.pedestal<0||!std::isfinite(o.noiseSigma)||o.noiseSigma<0||!std::isfinite(o.protectAbove)||o.protectAbove<0)
         throw std::invalid_argument("Invalid measured PSF restoration options");
+    const double baseNoise = o.noiseModel == PsfNoiseModel::PoissonGaussian
+        ? std::hypot(o.noiseSigma, o.readNoiseElectrons / o.electronsPerUnit) : o.noiseSigma;
+    const double sqrtGain = std::sqrt(o.electronsPerUnit);
     const auto n=source.pixelCount();const auto colors=detail::colorChannelCount(source);
     MeasuredDeconvolutionResult result;result.image=source;result.difference=source;result.residual=source;
     result.protection.width=source.width;result.protection.height=source.height;result.protection.channels=1;
@@ -193,10 +196,19 @@ MeasuredDeconvolutionResult restoreMeasuredPsf(const ImageBuffer& source,const I
             for(std::size_t p=0;p<n;++p){
                 if(!coverage[p]){work[p]=0;continue;}
                 const double predicted=std::max(model[p],floor),residual=observed[p]-predicted;
-                double variance=o.noiseSigma*o.noiseSigma;
-                if(o.noiseModel!=PsfNoiseModel::Constant)variance+=std::max(0.,predicted-o.pedestal)/o.electronsPerUnit;
-                if(o.noiseModel==PsfNoiseModel::PoissonGaussian)variance+=std::pow(o.readNoiseElectrons/o.electronsPerUnit,2);
-                const double damp=variance>0?std::pow(residual/std::hypot(residual,std::sqrt(variance)),2):1;
+                const double noise = o.noiseModel == PsfNoiseModel::Constant ? baseNoise
+                    : std::hypot(baseNoise, std::sqrt(std::max(0., predicted - o.pedestal)) / sqrtGain);
+                double damp = 1;
+                if (noise > 0) {
+                    const auto magnitude = std::abs(residual);
+                    if (magnitude > noise) {
+                        const auto q = noise / magnitude;
+                        damp = 1 / (1 + q * q);
+                    } else {
+                        const auto q = magnitude / noise;
+                        damp = q * q / (1 + q * q);
+                    }
+                }
                 const double ratio=std::max(0.,1+damp*residual/predicted);
                 work[p]=coverage[p]*ratio/support[p];
             }

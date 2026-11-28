@@ -1,8 +1,10 @@
+#include "FrameReadAhead.hpp"
+#include "WeightedQuantile.hpp"
 #ifdef __APPLE__
 #include "MetalCompute.hpp"
 #endif
 #include "RegisteredStackCache.hpp"
-#include "WorkingMemory.hpp"
+#include "photonstack/WorkingMemory.hpp"
 #include <cstring>
 #include "photonstack/WorkerPool.hpp"
 #include "photonstack/StageProfile.hpp"
@@ -256,7 +258,7 @@ struct AlignmentPlan {
     DistortionTransform distortion;
 };
 
-StackResult estimateStreamingAlignment(const ImageBuffer& reference, const ImageBuffer& moving,
+StackResult estimateStreamingAlignment(const PreparedRegistrationReference& reference, const ImageBuffer& moving,
                                        const StackOptions& options, std::size_t frameIndex, AlignmentPlan& plan) {
     plan.interpolation = options.interpolation;
     const Registration registration;
@@ -264,7 +266,7 @@ StackResult estimateStreamingAlignment(const ImageBuffer& reference, const Image
     result.ok = true;
     if (options.alignDistortion) {
         const auto registrationResult =
-            registration.estimateDistortion(reference, moving, plan.distortion, options.registration);
+            registration.estimateDistortion(reference, moving, plan.distortion);
         if (!registrationResult.ok) {
             return stackError(registrationResult.errorCode, "Failed to align frame " + std::to_string(frameIndex) +
                                                                 ": " + registrationResult.message);
@@ -273,7 +275,7 @@ StackResult estimateStreamingAlignment(const ImageBuffer& reference, const Image
         result.alignmentFallbacks = registrationResult.usedFallback ? 1 : 0;
         result.minimumAlignmentMatches = registrationResult.matches;
     } else if (options.alignAffine) {
-        const auto registrationResult = registration.estimateAffine(reference, moving, options.registration);
+        const auto registrationResult = registration.estimateAffine(reference, moving);
         if (!registrationResult.ok) {
             return stackError(registrationResult.errorCode, "Failed to align frame " + std::to_string(frameIndex) +
                                                                 ": " + registrationResult.message);
@@ -289,7 +291,7 @@ StackResult estimateStreamingAlignment(const ImageBuffer& reference, const Image
                                                  !registrationResult.usedCentroidAffine ? 1 : 0;
         result.minimumAlignmentMatches = registrationResult.matches;
     } else if (options.alignSimilarity) {
-        const auto registrationResult = registration.estimateSimilarity(reference, moving, options.registration);
+        const auto registrationResult = registration.estimateSimilarity(reference, moving);
         if (!registrationResult.ok) {
             return stackError(registrationResult.errorCode, "Failed to align frame " + std::to_string(frameIndex) +
                                                                 ": " + registrationResult.message);
@@ -302,7 +304,7 @@ StackResult estimateStreamingAlignment(const ImageBuffer& reference, const Image
                                             !registrationResult.usedCentroidRefinement ? 1 : 0;
         result.minimumAlignmentMatches = registrationResult.matches;
     } else if (options.alignTranslation) {
-        const auto registrationResult = registration.estimateTranslation(reference, moving, options.registration);
+        const auto registrationResult = registration.estimateTranslation(reference, moving);
         if (!registrationResult.ok) {
             return stackError(registrationResult.errorCode, "Failed to align frame " + std::to_string(frameIndex) +
                                                                 ": " + registrationResult.message);
@@ -473,13 +475,16 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
         const auto released = notifyInputConsumed(options, referenceIndex);
         if (!released.ok) return released;
     }
-    if (!requiresAlignment) {
+    std::optional<PreparedRegistrationReference> prepared;
+    if (requiresAlignment && (externalReference || inputs.size() > 1))
+        prepared.emplace(Registration().prepareReference(std::move(reference), options.registration, options.alignDistortion));
+    else
         std::vector<float>().swap(reference.pixels);
-    }
     StackResult metrics;
     metrics.ok = true;
     std::size_t processedFrames = externalReference ? 0 : 1;
 
+    detail::FrameReadAhead ahead(referenceWidth, referenceHeight, !options.readFrame && !options.inputConsumed);
     for (std::size_t index = 0; index < inputs.size(); ++index) {
         if (!externalReference && index == referenceIndex) {
             continue;
@@ -490,7 +495,10 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
         const double readEnd = frameStart + frameSpan * 0.08;
         const double alignmentEnd = frameStart + frameSpan * 0.45;
         progress.report(StackProgressStage::Reading, frameStart, processedFrames);
-        auto readResult = readFrame(inputs[index]);
+        auto readResult = ahead.read(inputs[index], readFrame);
+        auto next = index + 1;
+        if (!externalReference && next == referenceIndex) ++next;
+        if (readResult.ok && next < inputs.size()) ahead.schedule(inputs[next], readFrame);
         if (!readResult.ok) {
             return stackError(readResult.errorCode,
                               "Failed to read " + inputs[index].string() + ": " + readResult.message);
@@ -509,7 +517,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
         alignment.ok = true;
         if (requiresAlignment) {
             progress.report(StackProgressStage::Aligning, readEnd, processedFrames);
-            alignment = estimateStreamingAlignment(reference, readResult.image, options, index, alignmentPlan);
+            alignment = estimateStreamingAlignment(*prepared, readResult.image, options, index, alignmentPlan);
             progress.report(StackProgressStage::Aligning, alignmentEnd, processedFrames);
         }
         if (!alignment.ok) {
@@ -581,7 +589,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
     }
     // Alignment no longer needs its reference. Release it before allocating
     // the Float32 output alongside the double-precision accumulator.
-    std::vector<float>().swap(reference.pixels);
+    prepared.reset();
     finalizeStreamingAccumulator(accumulator, totalWeight, progress, framePhaseEnd, 1.0);
     metrics.image = accumulator.takeImage();
     return metrics;
@@ -815,31 +823,7 @@ float weightedMean(const std::vector<WeightedValue>& values) {
 }
 
 float weightedQuantile(std::vector<WeightedValue>& values, float quantile) {
-    std::sort(values.begin(), values.end(), [](const WeightedValue& left, const WeightedValue& right) {
-        return left.value < right.value;
-    });
-    const double total = totalValueWeight(values);
-    const double target = std::clamp(static_cast<double>(quantile), 0.0, 1.0);
-    double cumulative = 0.0;
-    double previousPosition = 0.0;
-    float previousValue = values.front().value;
-    bool hasPrevious = false;
-    for (const auto& value : values) {
-        cumulative += value.weight;
-        const double position = (cumulative - static_cast<double>(value.weight) * 0.5) / total;
-        if (position >= target) {
-            if (!hasPrevious || position <= previousPosition) {
-                return value.value;
-            }
-            const double fraction = std::clamp((target - previousPosition) / (position - previousPosition), 0.0, 1.0);
-            return static_cast<float>(static_cast<double>(previousValue) +
-                                      (static_cast<double>(value.value) - previousValue) * fraction);
-        }
-        previousPosition = position;
-        previousValue = value.value;
-        hasPrevious = true;
-    }
-    return values.back().value;
+    return detail::weightedSampleQuantile(values, quantile).value();
 }
 
 // Equal unit weights are common in fully covered scientific frames. Only the
@@ -1531,10 +1515,13 @@ StackResult streamRobustFiles(const std::vector<std::filesystem::path>& inputs, 
 
     StackResult metrics;
     metrics.ok = true;
-    if (!requiresAlignment) {
+    std::optional<PreparedRegistrationReference> prepared;
+    if (requiresAlignment && (externalReference || inputs.size() > 1))
+        prepared.emplace(Registration().prepareReference(std::move(reference), options.registration, options.alignDistortion));
+    else
         std::vector<float>().swap(reference.pixels);
-    }
 
+    detail::FrameReadAhead ahead(referenceWidth, referenceHeight, !options.readFrame && !options.inputConsumed);
     for (std::size_t position = externalReference ? 0 : 1; position < inputOrder.size(); ++position) {
         const auto inputIndex = inputOrder[position];
         const auto frameNumber = position + 1;
@@ -1543,7 +1530,9 @@ StackResult streamRobustFiles(const std::vector<std::filesystem::path>& inputs, 
         const double readEnd = frameStart + frameSpan * 0.08;
         const double alignmentEnd = frameStart + frameSpan * 0.45;
         progress.report(StackProgressStage::Reading, frameStart, frameNumber);
-        auto readResult = readFrame(inputs[inputIndex]);
+        auto readResult = ahead.read(inputs[inputIndex], readFrame);
+        if (readResult.ok && position + 1 < inputOrder.size())
+            ahead.schedule(inputs[inputOrder[position + 1]], readFrame);
         if (!readResult.ok) {
             return stackError(readResult.errorCode,
                               "Failed to read " + inputs[inputIndex].string() + ": " + readResult.message);
@@ -1562,7 +1551,7 @@ StackResult streamRobustFiles(const std::vector<std::filesystem::path>& inputs, 
         alignment.ok = true;
         if (requiresAlignment) {
             progress.report(StackProgressStage::Aligning, readEnd, frameNumber);
-            alignment = estimateStreamingAlignment(reference, readResult.image, options, position, alignmentPlan);
+            alignment = estimateStreamingAlignment(*prepared, readResult.image, options, position, alignmentPlan);
             progress.report(StackProgressStage::Aligning, alignmentEnd, frameNumber);
         }
         if (!alignment.ok) {
@@ -1600,7 +1589,7 @@ StackResult streamRobustFiles(const std::vector<std::filesystem::path>& inputs, 
         }
     }
 
-    std::vector<float>().swap(reference.pixels);
+    prepared.reset();
     ImageBuffer output;
     output.width = referenceWidth;
     output.height = referenceHeight;

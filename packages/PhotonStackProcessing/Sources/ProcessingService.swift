@@ -57,6 +57,7 @@ public protocol ProcessingService: Sendable {
     func removeClouds(input: URL, output: URL, selectedIndices: [Int]?, strength: Double) async throws -> ProcessingCommandResult
     func normalize(input: URL, output: URL, targetBackground: Double, targetScale: Double) async throws -> ProcessingCommandResult
     func curves(input: URL, output: URL, points: [(Double, Double)], channel: CurveChannel) async throws -> ProcessingCommandResult
+    func curves(input: URL, output: URL, points: [(Double, Double)], channel: CurveChannel, rawOptions: RawProcessingOptions) async throws -> ProcessingCommandResult
     func autoStretch(input: URL, output: URL, targetBackground: Double) async throws -> ProcessingCommandResult
     func localContrast(input: URL, output: URL, amount: Double, radius: Int) async throws -> ProcessingCommandResult
     func denoise(input: URL, output: URL, amount: Double, chromaAmount: Double, radius: Int) async throws -> ProcessingCommandResult
@@ -80,6 +81,10 @@ public protocol ProcessingService: Sendable {
 }
 
 public extension ProcessingService {
+    func curves(input: URL, output: URL, points: [(Double, Double)], channel: CurveChannel, rawOptions: RawProcessingOptions) async throws -> ProcessingCommandResult {
+        try await curves(input: input, output: output, points: points, channel: channel)
+    }
+
     var requiresExistingInputFiles: Bool {
         true
     }

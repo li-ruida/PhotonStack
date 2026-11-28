@@ -1,4 +1,5 @@
 #include "PsfRestorationCommand.hpp"
+#include "OutputPath.hpp"
 #include "PsfMeasurementRecipe.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/MeasuredDeconvolution.hpp"
@@ -106,9 +107,9 @@ int runPsfRestoration(const std::vector<std::string>& args){
             }else if(key=="--amount")o.amount=v;else if(key=="--pedestal")o.pedestal=v;else if(key=="--noise-sigma")o.noiseSigma=v;else if(key=="--electrons-per-unit")o.electronsPerUnit=v;else if(key=="--read-noise-electrons")o.readNoiseElectrons=v;else o.protectAbove=v;
         }else throw std::invalid_argument("Unknown PSF restoration option: "+key);
     }
+    if (!inspect) photonstack::cli::requireNewOutputPath(output);
     if(!fresh){if(recipe.empty())throw std::invalid_argument("Specify --recipe");r=read(recipe,inspect);if(inspect){print(r,recipe.parent_path());return 0;}}
     else{if(r.measurement.empty())throw std::invalid_argument("Specify --measurement recipe.txt");r.sha=fileSHA256(r.measurement);}
-    if(output.empty()||fs::exists(output))throw std::invalid_argument("Choose a new PSF restoration output directory");
     const auto measured=verify(r);auto source=readLinearScienceImage(measured.source);
     const auto& channel=measured.options.channel;
     if(source.image.width!=measured.measurement.width||source.image.height!=measured.measurement.height)throw std::invalid_argument("PSF measurement geometry changed");

@@ -23,7 +23,7 @@
 #include <set>
 #include <stdexcept>
 #include <optional>
-#include "WorkingMemory.hpp"
+#include "photonstack/WorkingMemory.hpp"
 
 namespace photonstack {
 namespace fs = std::filesystem;
@@ -383,6 +383,8 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         calibration.dark = masterDark.empty() ? nullptr : &masterDark;
         calibration.bias = masterBias.empty() ? nullptr : &masterBias;
         calibration.flat = masterFlat.empty() ? nullptr : &masterFlat;
+        const auto flatMeans = Calibrator::measureFlat(calibration);
+        if (calibration.flat) calibration.flatMeans = &flatMeans;
         const bool calibrated = calibration.dark || calibration.bias || calibration.flat;
         const bool alignFrames = o.stack.alignTranslation || o.stack.alignSimilarity ||
                                  o.stack.alignAffine || o.stack.alignDistortion;
@@ -417,13 +419,17 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         std::vector<SequenceFrameSample> samples(inputs.size());
         std::size_t reference = 0;
         double best = -1;
-        const bool eligible = !calibrated && !o.sensorPattern && !o.stack.alignDistortion &&
-            o.stack.registration.starDetection.maxStars <= 1000 && o.stack.fitsDemosaic != FitsDemosaic::Menon &&
-            o.stack.fitsDemosaic != FitsDemosaic::Ratio;
         const auto cpuLimit = std::min<std::size_t>(std::thread::hardware_concurrency(),
             o.analysisWorkers == 0 ? 4 : o.analysisWorkers);
-        const auto available = eligible && cpuLimit > 1 ? detail::workingMemoryBudget() : 0;
-        const auto reserved = guardReplay.empty() ? 0 : replayBudget;
+        const auto available = cpuLimit > 1 ? detail::workingMemoryBudget() : 0;
+        const auto masterBytes = (masterDark.pixels.size() + masterBias.pixels.size() + masterFlat.pixels.size()) * sizeof(float);
+        const auto reserved = masterBytes + (guardReplay.empty() ? 0 : replayBudget);
+        // Include simultaneous RGBA, interpolation planes, warp, and calibrated intermediates.
+        const std::uint64_t pixelBytes = 64 + (calibrated ? 32 : 0) + (o.sensorPattern ? 32 : 0) +
+            (o.stack.fitsDemosaic == FitsDemosaic::Menon || o.stack.fitsDemosaic == FitsDemosaic::Ratio ? 64 : 0);
+        const auto stars = std::uint64_t(o.stack.registration.starDetection.maxStars);
+        // The translation vote tie path can retain a hash bin for every pair.
+        const auto matchingBytes = stars > 8192 ? available : std::max<std::uint64_t>(128ULL << 20, 128 * stars * stars);
         const auto memoryBudget = available > reserved ? available - reserved : 0;
         const auto frameCapacity = [&](std::size_t i, std::uint64_t referencePixels) -> std::size_t {
             const auto& f = result.frames[i];
@@ -432,7 +438,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                     detail::currentStage.profile->admissionReason = reason;
                 return n;
             };
-            if (!eligible || !isFitsPath(f.input)) return admitted(1, "serial decoder or analysis mode");
+            if (!isFitsPath(f.input)) return admitted(1, "serial decoder or analysis mode");
             if (!memoryBudget) return admitted(1, cpuLimit <= 1 ? "CPU limit" : "memory budget unavailable");
             auto width = f.native.width, height = f.native.height;
             if (!width || !height) {
@@ -447,7 +453,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             // minimum proxy width. Their scratch use is outside this estimate.
             if (width < 16 || height < 16) return admitted(1, "small or narrow frame");
             return admitted(detail::analysisFrameCapacity(std::uint64_t(width) * height, referencePixels, inputs.size(), o.quality.sampleSide,
-                                                  memoryBudget, cpuLimit), "frame size, CPU and memory admission");
+                                                  memoryBudget, cpuLimit, pixelBytes, matchingBytes), "frame size, CPU and memory admission");
         };
         const auto prepareMeasurement = [&](std::size_t i) {
             auto& f = result.frames[i];

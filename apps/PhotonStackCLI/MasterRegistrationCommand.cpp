@@ -1,4 +1,5 @@
 #include "MasterRegistrationCommand.hpp"
+#include "OutputPath.hpp"
 #include "MasterRegistrationRecipe.hpp"
 #include <iostream>
 #include <algorithm>
@@ -21,13 +22,13 @@ int runMasterRegistration(const std::vector<std::string>& args){
             r.sources.push_back({value.substr(0,split),fs::canonical(value.substr(split+1)),{}});
         }else throw std::invalid_argument("Unknown master registration option: "+key);
     }
+    if (!inspect) photonstack::cli::requireNewOutputPath(directory);
     if(!fresh){
         if(recipePath.empty())throw std::invalid_argument("Specify --recipe");
         r=readMasterRegistration(recipePath,inspect);
         if(inspect){printMasterRegistration(std::cout,r,recipePath.parent_path());return 0;}
     }else for(auto& s:r.sources)s.sha=fileSHA256(s.path);
     validateMasterRegistration(r,!fresh);verifyMasterSources(r);
-    if(directory.empty()||fs::exists(directory))throw std::invalid_argument("Choose a new output directory");
     const auto ref=std::find_if(r.sources.begin(),r.sources.end(),[&](const auto& s){return s.name==r.reference;});
     const auto reference=readLinearMonoMaster(ref->path);
     const auto mode=r.mode=="stars"?MasterRegistrationMode::Stars:MasterRegistrationMode::Wcs;

@@ -29,6 +29,39 @@ class SequentialIngestTests(unittest.TestCase):
         (RUN.SOURCE/'M 2'/'.DS_Store').write_bytes(b'not a photograph')
         (RUN.SOURCE/'M 10'/'next.fit').write_bytes(b'next target')
 
+    def test_resume_after_publish_and_torn_receipt(self):
+        RUN.inventory()
+        with patch.object(RUN, 'append_copy_receipt', side_effect=InterruptedError):
+            with self.assertRaises(InterruptedError):
+                RUN.copy_next()
+        work = RUN.ROOT / '工作区' / 'M 2'
+        journal = work / 'copy-manifest.jsonl'
+        with journal.open('ab') as stream:
+            stream.write(b'{"interrupted":')
+        RUN.copy_next()
+        manifest = json.loads((work / 'copy-manifest.json').read_text())
+        self.assertEqual(manifest['files'][0]['sha256'], RUN.digest(self.source))
+        self.assertEqual(len(journal.read_text().splitlines()), 2)
+        self.assertEqual((work / 'inputs' / self.source.relative_to(RUN.SOURCE)).read_bytes(), self.source.read_bytes())
+
+    def test_resume_legacy_manifest_and_partial_prefix(self):
+        RUN.inventory()
+        with patch.object(RUN, 'append_copy_receipt', side_effect=InterruptedError):
+            with self.assertRaises(InterruptedError):
+                RUN.copy_next()
+        work = RUN.ROOT / '工作区' / 'M 2'
+        journal = work / 'copy-manifest.jsonl'
+        RUN.save(work / 'copy-manifest.json', json.loads(journal.read_text()))
+        journal.unlink()
+        output = work / 'inputs' / self.source.relative_to(RUN.SOURCE)
+        partial = output.with_suffix(output.suffix + '.partial')
+        output.rename(partial)
+        with partial.open('r+b') as stream: stream.truncate(5)
+        RUN.copy_next()
+        self.assertEqual(output.read_bytes(), self.source.read_bytes())
+        self.assertFalse(partial.exists())
+        self.assertEqual(len(journal.read_text().splitlines()), 2)
+
     def test_one_target_interlock_and_hash(self):
         original = RUN.digest(self.source)
         RUN.inventory()

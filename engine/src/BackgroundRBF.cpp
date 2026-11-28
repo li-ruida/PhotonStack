@@ -79,7 +79,12 @@ struct Fit {
     std::vector<double> weights, loo;
     std::array<double, 3> plane{};
 };
-Fit fit(const std::vector<Point>& points, const std::vector<bool>& kept, int channel, double smoothing) {
+struct Geometry {
+    std::vector<std::size_t> selected;
+    Factor factor;
+    std::vector<double> diagonal;
+};
+Geometry makeGeometry(const std::vector<Point>& points, const std::vector<bool>& kept, double smoothing) {
     std::vector<std::size_t> selected;
     for (std::size_t i = 0; i < points.size(); ++i)
         if (kept[i])
@@ -87,10 +92,9 @@ Fit fit(const std::vector<Point>& points, const std::vector<bool>& kept, int cha
     const auto n = selected.size(), size = n + 3;
     if (n < 12)
         throw std::runtime_error("RBF background needs at least twelve retained sky samples");
-    std::vector<double> matrix(size * size), rhs(size);
+    std::vector<double> matrix(size * size);
     for (std::size_t i = 0; i < n; ++i) {
         const auto& p = points[selected[i]];
-        rhs[i] = p.color[channel];
         for (std::size_t j = 0; j < n; ++j) {
             const auto& q = points[selected[j]];
             matrix[i * size + j] = kernel(p.x - q.x, p.y - q.y) + (i == j ? smoothing : 0);
@@ -100,8 +104,17 @@ Fit fit(const std::vector<Point>& points, const std::vector<bool>& kept, int cha
             matrix[i * size + n + j] = matrix[(n + j) * size + i] = terms[j];
     }
     Factor factor(size, std::move(matrix));
+    auto diagonal = factor.inverseDiagonal(n);
+    return {std::move(selected), std::move(factor), std::move(diagonal)};
+}
+
+Fit fit(const std::vector<Point>& points, const Geometry& geometry, int channel) {
+    const auto& [selected, factor, diagonal] = geometry;
+    const auto n = selected.size();
+    std::vector<double> rhs(n + 3);
+    for (std::size_t i = 0; i < n; ++i)
+        rhs[i] = points[selected[i]].color[channel];
     const auto coefficients = factor.solve(std::move(rhs));
-    const auto diagonal = factor.inverseDiagonal(n);
     Fit out;
     out.weights.resize(points.size());
     out.loo.resize(points.size());
@@ -138,10 +151,12 @@ BackgroundExtractionResult BackgroundExtractor::extractRBF(const ImageBuffer& im
     std::array<Fit, 3> fits;
     std::array<std::vector<bool>, 3> kept;
     try {
+        const auto initial = makeGeometry(points, std::vector<bool>(points.size(), true), options.smoothing);
         for (int c = 0; c < channels; ++c) {
             kept[c].assign(points.size(), true);
             for (int iteration = 0; iteration < 4; ++iteration) {
-                fits[c] = fit(points, kept[c], c, options.smoothing);
+                fits[c] = iteration == 0 ? fit(points, initial, c)
+                                         : fit(points, makeGeometry(points, kept[c], options.smoothing), c);
                 if (!options.rejectOutliers || iteration == 3)
                     break;
                 std::vector<double> errors, values;

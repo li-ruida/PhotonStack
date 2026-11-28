@@ -1,3 +1,4 @@
+#include "photonstack/ParallelRanges.hpp"
 #include "photonstack/StarReducer.hpp"
 
 #include <algorithm>
@@ -20,10 +21,9 @@ StarReductionResult reductionError(std::string code, std::string message) {
 }
 
 float localMinimum(const ImageBuffer& image, std::uint32_t x, std::uint32_t y, std::uint16_t channel,
-                   std::uint32_t radius) {
+                   std::uint32_t radius, std::vector<detail::WeightedValue>& samples) {
     const auto centerPixel = static_cast<std::size_t>(y) * image.width + x;
-    std::vector<detail::WeightedValue> samples;
-    samples.reserve(static_cast<std::size_t>(radius * 2 + 1) * (radius * 2 + 1));
+    samples.clear();
     const auto searchRadius = static_cast<int>(radius);
     for (int dy = -searchRadius; dy <= searchRadius; ++dy) {
         for (int dx = -searchRadius; dx <= searchRadius; ++dx) {
@@ -47,7 +47,7 @@ float localMinimum(const ImageBuffer& image, std::uint32_t x, std::uint32_t y, s
     }
     return samples.empty()
                ? image.pixels[centerPixel * image.channels + channel]
-               : static_cast<float>(detail::weightedPercentile(std::move(samples), 0.05));
+               : static_cast<float>(detail::weightedPercentileInPlace(samples, 0.05));
 }
 
 float localMean(const ImageBuffer& image, std::uint32_t x, std::uint32_t y, std::uint16_t channel,
@@ -356,7 +356,9 @@ StarReductionResult StarReducer::reduceUsingDetectionImage(
     const float imageCenterY = static_cast<float>(image.height - 1) * 0.5F;
     const float maxCenterDistance =
         std::max(1.0F, std::sqrt(imageCenterX * imageCenterX + imageCenterY * imageCenterY));
-    for (std::uint32_t y = 0; y < image.height; ++y) {
+    detail::parallelRanges(image.height, std::max(1U, 8192 / image.width), [&](std::size_t first, std::size_t last) {
+        std::vector<detail::WeightedValue> samples;
+        for (auto y = first; y < last; ++y) {
         for (std::uint32_t x = 0; x < image.width; ++x) {
             const auto pixel = static_cast<std::size_t>(y) * image.width + x;
             const auto pixelOffset = pixel * image.channels;
@@ -387,7 +389,7 @@ StarReductionResult StarReducer::reduceUsingDetectionImage(
             );
             for (std::uint16_t channel = 0; channel < std::min<std::uint16_t>(3, image.channels); ++channel) {
                 const auto offset = pixelOffset + channel;
-                const float reduced = localMinimum(image, x, y, channel, localRadius);
+                const float reduced = localMinimum(image, x, y, channel, localRadius, samples);
                 float target = reduced;
                 float channelBlend = blend;
                 if (options.profileAware) {
@@ -402,7 +404,8 @@ StarReductionResult StarReducer::reduceUsingDetectionImage(
                 output.pixels[offset] = image.pixels[offset] * (1.0F - channelBlend) + target * channelBlend;
             }
         }
-    }
+        }
+    });
 
     if (options.edgeAware) {
         reduceEdgeProfiles(image, detectionImage, output, options);

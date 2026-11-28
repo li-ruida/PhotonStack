@@ -238,19 +238,25 @@ AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelop
     // a local pedestal before scaling preserves the galaxy beneath each star.
     // Broad nuclei fail the radial compactness check; overlapping masks use max,
     // so crowded stars are not repeatedly attenuated.
-    ImageBuffer working = im;
+    ImageBuffer edited;
+    const ImageBuffer* working = &im;
     if (opt.starExposure < 1) {
+        edited = im;
+        working = &edited;
         const bool selectiveBrightStars = opt.starPeakThreshold > 0;
         const int backgroundRadius = selectiveBrightStars ? 18 : 8;
         std::vector<float> detectionLuminance(im.pixelCount(), 0);
-        for (std::size_t p = 0; p < im.pixelCount(); ++p)
-            if (covered(im, p)) {
-                double l = 0;
-                const double weights[] = {.2126, .7152, .0722};
-                for (int c = 0; c < 3; ++c)
-                    l += (im.pixels[p * im.channels + c] - result.sky[c]) * result.gains[c] * weights[c];
-                detectionLuminance[p] = static_cast<float>(std::max(0.0, l) / (result.toneScale + std::max(0.0, l)));
-            }
+        detail::parallelRanges(im.pixelCount(), 32768, [&](std::size_t first, std::size_t last) noexcept {
+            for (auto p = first; p < last; ++p)
+                if (covered(im, p)) {
+                    double l = 0;
+                    const double weights[] = {.2126, .7152, .0722};
+                    for (int c = 0; c < 3; ++c)
+                        l += (im.pixels[p * im.channels + c] - result.sky[c]) * result.gains[c] * weights[c];
+                    detectionLuminance[p] =
+                        static_cast<float>(std::max(0.0, l) / (result.toneScale + std::max(0.0, l)));
+                }
+        });
         StarDetectionOptions d;
         d.minPeak = .05F;
         d.sigmaThreshold = .7F;
@@ -344,17 +350,17 @@ AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelop
                         strongest[p] = weight;
                         for (int c = 0; c < 3; ++c) {
                             const auto o = p * im.channels + c;
-                            working.pixels[o] =
-                                im.pixels[o] - std::max(0.0F, im.pixels[o] - bg[c]) * weight;
+                            edited.pixels[o] = im.pixels[o] - std::max(0.0F, im.pixels[o] - bg[c]) * weight;
                         }
                     }
             }
     }
     if (opt.starColorCleanup > 0) {
-        auto cleaned = StarColorCleanup().apply(working, result.gains, opt.starColorCleanup);
+        auto cleaned = StarColorCleanup().apply(*working, result.gains, opt.starColorCleanup);
         if (!cleaned.ok) return error(cleaned.errorCode.c_str(), cleaned.message.c_str());
         result.colorCleanedStars = cleaned.correctedStars;
-        working = std::move(cleaned.image);
+        edited = std::move(cleaned.image);
+        working = &edited;
     }
     result.image = im;
     const bool useAsinh = opt.toneCurve == AstroToneCurve::Asinh;
@@ -375,7 +381,7 @@ AstroDevelopResult AstroDevelop::apply(const ImageBuffer& im, const AstroDevelop
             }
             std::array<double, 3> color;
             for (int c = 0; c < 3; ++c)
-                color[c] = (static_cast<double>(working.pixels[o + c]) - result.sky[c]) * result.gains[c];
+                color[c] = (static_cast<double>(working->pixels[o + c]) - result.sky[c]) * result.gains[c];
             const double lum = color[0] * .2126 + color[1] * .7152 + color[2] * .0722;
             double mapped;
             if (lum >= 0) {

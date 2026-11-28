@@ -13,7 +13,8 @@ namespace photonstack::detail {
 // Interpolate between sample weight centers. All callers supply finite values
 // and positive weights. Return an empty value for an empty or invalid population.
 template <class Sample>
-std::optional<float> weightedSampleQuantile(std::vector<Sample>& samples, double q) {
+std::optional<float> weightedSampleQuantile(std::vector<Sample>& samples, double q,
+                                            std::vector<std::uint32_t>& indices) {
     if (samples.empty()) return {};
     q = std::clamp(q, 0., 1.);
     const auto less = [](const auto& a, const auto& b) { return a.value < b.value; };
@@ -39,7 +40,7 @@ std::optional<float> weightedSampleQuantile(std::vector<Sample>& samples, double
     if (n >= 128 && n <= std::numeric_limits<std::uint32_t>::max()) {
         // Partition indices to preserve the original ordering for the sorted
         // fallback when equal-valued neighbors have different weights.
-        std::vector<std::uint32_t> indices(n);
+        indices.resize(n);
         std::iota(indices.begin(), indices.end(), std::uint32_t{0});
         auto begin = indices.begin(), end = indices.end();
         double before = 0;
@@ -92,5 +93,10 @@ std::optional<float> weightedSampleQuantile(std::vector<Sample>& samples, double
         previous = position;
     }
     return samples.back().value;
+}
+template <class Sample>
+std::optional<float> weightedSampleQuantile(std::vector<Sample>& samples, double q) {
+    std::vector<std::uint32_t> indices;
+    return weightedSampleQuantile(samples, q, indices);
 }
 } // namespace photonstack::detail

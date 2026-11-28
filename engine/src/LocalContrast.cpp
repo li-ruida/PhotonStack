@@ -1,3 +1,4 @@
+#include "photonstack/ParallelRanges.hpp"
 #include "photonstack/LocalContrast.hpp"
 
 #include <algorithm>
@@ -5,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -39,7 +41,8 @@ std::vector<float> gaussianKernel(std::uint32_t radius) {
     return kernel;
 }
 
-ImageBuffer gaussianBlur(const ImageBuffer& image, std::uint32_t radius, bool fillMasked = false) {
+ImageBuffer gaussianBlur(const ImageBuffer& image, std::uint32_t radius, bool fillMasked = false,
+                         std::span<const float> coverageMask = {}) {
     const auto kernel = gaussianKernel(radius);
     ImageBuffer temp = image;
     ImageBuffer output = image;
@@ -47,63 +50,69 @@ ImageBuffer gaussianBlur(const ImageBuffer& image, std::uint32_t radius, bool fi
     const auto colorChannels = detail::colorChannelCount(image);
     std::vector<float> horizontalCoverage(image.pixelCount(), 0.0F);
 
-    for (std::uint32_t y = 0; y < image.height; ++y) {
-        for (std::uint32_t x = 0; x < image.width; ++x) {
-            const auto pixel = static_cast<std::size_t>(y) * image.width + x;
-            const auto offset = pixel * image.channels;
-            double sums[3] = {0.0, 0.0, 0.0};
-            double weightSum = 0.0;
-            for (int k = -r; k <= r; ++k) {
-                const auto samplePixel = detail::clampedPixelIndex(image, static_cast<int>(x) + k, static_cast<int>(y));
-                const float coverage = detail::pixelCoverage(image, samplePixel);
-                if (!detail::pixelHasValidColor(image, samplePixel) || coverage <= 1.0e-6F) {
-                    continue;
-                }
-                const double weight = kernel[static_cast<std::size_t>(k + r)] * coverage;
-                const auto sampleOffset = samplePixel * image.channels;
-                for (std::uint16_t c = 0; c < colorChannels; ++c) {
-                    sums[c] += static_cast<double>(image.pixels[sampleOffset + c]) * weight;
-                }
-                weightSum += weight;
+    constexpr std::size_t block = 64;
+    detail::parallelRanges(image.height, std::max(1U, 65536 / image.width), [&](std::size_t first, std::size_t last) {
+        std::vector<float> validCoverage(coverageMask.empty() ? image.width : 0);
+        for (auto y = first; y < last; ++y) {
+            const auto row = y * image.width;
+            if (coverageMask.empty()) for (std::uint32_t x = 0; x < image.width; ++x) {
+                const auto pixel = row + x;
+                validCoverage[x] = detail::pixelHasValidColor(image, pixel) ? detail::pixelCoverage(image, pixel) : 0;
             }
-            if (weightSum > 0.0F) {
-                horizontalCoverage[pixel] = static_cast<float>(weightSum);
-                for (std::uint16_t c = 0; c < colorChannels; ++c) {
-                    temp.pixels[offset + c] = static_cast<float>(sums[c] / weightSum);
+            const auto* coverage = coverageMask.empty() ? validCoverage.data() : coverageMask.data() + row;
+            for (std::size_t begin = 0; begin < image.width; begin += block) {
+                const auto count = std::min(block, image.width - begin);
+                double sums[3][block] = {}, weights[block] = {};
+                // Keep a small contiguous block in L1. Tap order for each pixel
+                // is unchanged, so vectorization is across independent pixels.
+                for (int k = -r; k <= r; ++k) for (std::size_t i = 0; i < count; ++i) {
+                    const auto x = std::clamp(std::int64_t(begin + i) + k, std::int64_t(0), std::int64_t(image.width - 1));
+                    if (coverage[x] <= 1.e-6F) continue;
+                    const double weight = kernel[std::size_t(k + r)] * coverage[x];
+                    const auto sampleOffset = (row + x) * image.channels;
+                    for (std::uint16_t c = 0; c < colorChannels; ++c)
+                        sums[c][i] += double(image.pixels[sampleOffset + c]) * weight;
+                    weights[i] += weight;
                 }
-            }
-        }
-    }
-
-    for (std::uint32_t y = 0; y < image.height; ++y) {
-        for (std::uint32_t x = 0; x < image.width; ++x) {
-            const auto pixel = static_cast<std::size_t>(y) * image.width + x;
-            const auto offset = pixel * image.channels;
-            if (!fillMasked && !detail::pixelHasValidColor(image, pixel)) {
-                detail::clearMaskedPixel(output, pixel);
-                continue;
-            }
-
-            double sums[3] = {0.0, 0.0, 0.0};
-            double weightSum = 0.0;
-            for (int k = -r; k <= r; ++k) {
-                const auto samplePixel = detail::clampedPixelIndex(temp, static_cast<int>(x), static_cast<int>(y) + k);
-                if (horizontalCoverage[samplePixel] <= 1.0e-6F) {
-                    continue;
+                for (std::size_t i = 0; i < count; ++i) if (weights[i] > 0) {
+                    const auto pixel = row + begin + i;
+                    horizontalCoverage[pixel] = float(weights[i]);
+                    for (std::uint16_t c = 0; c < colorChannels; ++c)
+                        temp.pixels[pixel * image.channels + c] = float(sums[c][i] / weights[i]);
                 }
-                const double weight = kernel[static_cast<std::size_t>(k + r)] * horizontalCoverage[samplePixel];
-                const auto sampleOffset = samplePixel * temp.channels;
-                for (std::uint16_t c = 0; c < colorChannels; ++c) {
-                    sums[c] += static_cast<double>(temp.pixels[sampleOffset + c]) * weight;
-                }
-                weightSum += weight;
-            }
-            for (std::uint16_t c = 0; c < colorChannels; ++c) {
-                output.pixels[offset + c] =
-                    weightSum > 0.0 ? static_cast<float>(sums[c] / weightSum) : image.pixels[offset + c];
             }
         }
-    }
+    });
+
+    detail::parallelRows(image.width, image.height, [&](int y) noexcept {
+        const auto row = std::size_t(y) * image.width;
+        for (std::size_t begin = 0; begin < image.width; begin += block) {
+            const auto count = std::min(block, image.width - begin);
+            double sums[3][block] = {}, weights[block] = {};
+            for (int k = -r; k <= r; ++k) {
+                const auto sampleRow = std::size_t(std::clamp(y + k, 0, int(image.height) - 1)) * image.width;
+                for (std::size_t i = 0; i < count; ++i) {
+                    const auto pixel = sampleRow + begin + i;
+                    if (horizontalCoverage[pixel] <= 1.e-6F) continue;
+                    const double weight = kernel[std::size_t(k + r)] * horizontalCoverage[pixel];
+                    const auto sampleOffset = pixel * image.channels;
+                    for (std::uint16_t c = 0; c < colorChannels; ++c)
+                        sums[c][i] += double(temp.pixels[sampleOffset + c]) * weight;
+                    weights[i] += weight;
+                }
+            }
+            for (std::size_t i = 0; i < count; ++i) {
+                const auto pixel = row + begin + i, offset = pixel * image.channels;
+                if (!fillMasked && (coverageMask.empty() ? !detail::pixelHasValidColor(image, pixel)
+                                                        : coverageMask[pixel] <= 1.e-6F)) {
+                    detail::clearMaskedPixel(output, pixel);
+                    continue;
+                }
+                for (std::uint16_t c = 0; c < colorChannels; ++c)
+                    output.pixels[offset + c] = weights[i] > 0 ? float(sums[c][i] / weights[i]) : image.pixels[offset + c];
+            }
+        }
+    });
     return output;
 }
 
@@ -117,7 +126,7 @@ LocalContrastResult coolFromContinuum(const ImageBuffer& image, const ImageBuffe
             continue;
         }
         const auto offset = p * image.channels;
-        const double base = coarse.pixels[p * 4];
+        const double base = coarse.pixels[p];
         double low = std::clamp((base - .12) / .13, 0., 1.);
         low = low * low * (3 - 2 * low);
         double high = std::clamp((1 - base) / .2, 0., 1.);
@@ -157,10 +166,8 @@ LocalContrastResult protectedStructure(const ImageBuffer& image, const LocalCont
         const auto o = p * image.channels;
         luma[p] = image.pixels[o] * .2126F + image.pixels[o + 1] * .7152F + image.pixels[o + 2] * .0722F;
     }
-    ImageBuffer broad = image;
-    broad.channels = 4;
-    broad.format = PixelFormat::Float32RGBA;
-    broad.pixels.assign(broad.sampleCount(), 0);
+    ImageBuffer broad{image.width, image.height, 1, PixelFormat::Float32Gray, image.colorEncoding, image.sourceBitsPerChannel, {}};
+    broad.pixels.resize(count);
     if (coolingOptions && coolingOptions->estimator == CoolingContinuumEstimator::Opening) {
         // A fixed grayscale opening removes positive compact peaks without
         // introducing a source/no-source decision into the continuum map.
@@ -185,11 +192,8 @@ LocalContrastResult protectedStructure(const ImageBuffer& image, const LocalCont
         opened=extremum(opened,true,true);
         opened=extremum(opened,false,false);
         opened=extremum(opened,true,false);
-        for(std::size_t p=0;p<count;++p) {
-            for(int c=0;c<3;++c) broad.pixels[p*4+c]=opened[p];
-            broad.pixels[p*4+3]=coverage[p];
-        }
-        const auto coarse=gaussianBlur(broad,options.radius);
+        broad.pixels.assign(opened.begin(), opened.end());
+        const auto coarse = gaussianBlur(broad, options.radius, false, coverage);
         return coolFromContinuum(image, coarse, coverage, coolingOptions->amount);
     }
     // A small median suppresses compact peaks in the structure estimate only.
@@ -211,9 +215,7 @@ LocalContrastResult protectedStructure(const ImageBuffer& image, const LocalCont
                 }
             std::nth_element(values, values + n / 2, values + n);
             const float middle = values[n / 2];
-            for (int c = 0; c < 3; ++c)
-                broad.pixels[p * 4 + c] = middle;
-            broad.pixels[p * 4 + 3] = coverage[p];
+            broad.pixels[p] = middle;
             residual[p] = luma[p] - middle;
         }
     }
@@ -292,17 +294,18 @@ LocalContrastResult protectedStructure(const ImageBuffer& image, const LocalCont
     }
     // Exclude compact sources from both structure estimates; protection alone
     // can leave a ring where a source's blurred contribution meets the mask.
+    auto backgroundCoverage = coverage;
     for (std::size_t p = 0; p < count; ++p)
-        broad.pixels[p * 4 + 3] *= 1 - protection[p];
+        backgroundCoverage[p] *= 1 - protection[p];
     // Fill only the structure-estimation layer with a common smooth continuum.
     // Independently normalizing two scales around dense holes can create false
     // spots in a smooth galaxy. Neither this estimate nor an inpainted star is
     // copied into the output image: the original samples remain the base.
-    const auto continuum = gaussianBlur(broad, options.radius, true);
+    const auto continuum = gaussianBlur(broad, options.radius, true, backgroundCoverage);
     std::vector<float> filled(count), next(count);
     std::vector<std::size_t> holes;
     for (std::size_t p = 0; p < count; ++p) {
-        filled[p] = broad.pixels[p * 4] + (continuum.pixels[p * 4] - broad.pixels[p * 4]) * protection[p];
+        filled[p] = broad.pixels[p] + (continuum.pixels[p] - broad.pixels[p]) * protection[p];
         if (protection[p] > 0 && coverage[p] > 1e-6F)
             holes.push_back(p);
     }
@@ -323,20 +326,16 @@ LocalContrastResult protectedStructure(const ImageBuffer& image, const LocalCont
                     weight += coverage[q];
                 }
             const float value = weight > 0 ? static_cast<float>(sum / weight) : filled[p];
-            next[p] = broad.pixels[p * 4] * (1 - protection[p]) + value * protection[p];
+            next[p] = broad.pixels[p] * (1 - protection[p]) + value * protection[p];
             largest = std::max(largest, std::abs(next[p] - filled[p]));
         }
         filled.swap(next);
         if (largest < 1e-5F)
             break;
     }
-    for (std::size_t p = 0; p < count; ++p) {
-        for (int c = 0; c < 3; ++c)
-            broad.pixels[p * 4 + c] = filled[p];
-        broad.pixels[p * 4 + 3] = coverage[p];
-    }
-    const auto fine = gaussianBlur(broad, options.fineRadius);
-    const auto coarse = gaussianBlur(broad, options.radius);
+    broad.pixels.assign(filled.begin(), filled.end());
+    const auto fine = gaussianBlur(broad, options.fineRadius, false, coverage);
+    const auto coarse = gaussianBlur(broad, options.radius, false, coverage);
     if (coolingOptions)
         return coolFromContinuum(image, coarse, coverage, coolingOptions->amount);
     ImageBuffer mappedContinuum;
@@ -344,10 +343,10 @@ LocalContrastResult protectedStructure(const ImageBuffer& image, const LocalCont
                     [](const auto& point) { return point.input != point.output; })) {
         CurvesOptions curveOptions;
         curveOptions.points = options.continuumCurvePoints;
-        const auto curve = Curves{}.apply(coarse, curveOptions);
+        auto curve = Curves{}.apply(coarse, curveOptions);
         if (!curve.ok)
             return localContrastError(curve.errorCode, curve.message);
-        mappedContinuum = curve.image;
+        mappedContinuum = std::move(curve.image);
     }
     ImageBuffer output = image;
     for (std::size_t p = 0; p < count; ++p) {
@@ -356,8 +355,8 @@ LocalContrastResult protectedStructure(const ImageBuffer& image, const LocalCont
             continue;
         }
         const auto o = p * image.channels;
-        const double detailValue = fine.pixels[p * 4] - coarse.pixels[p * 4];
-        const double base = coarse.pixels[p * 4];
+        const double detailValue = fine.pixels[p] - coarse.pixels[p];
+        const double base = coarse.pixels[p];
         double skyGate = std::clamp((base - .12) / .13, 0., 1.);
         skyGate = skyGate * skyGate * (3 - 2 * skyGate);
         const double highlightGate = std::clamp((.95 - luma[p]) / .2, 0., 1.);
@@ -375,8 +374,8 @@ LocalContrastResult protectedStructure(const ImageBuffer& image, const LocalCont
             output.pixels[o + c] = static_cast<float>(
                 image.pixels[o + c] + delta + (static_cast<double>(image.pixels[o + c]) - luma[p]) * (chroma - 1));
         if (!mappedContinuum.empty()) {
-            const double originalBase = std::clamp(static_cast<double>(coarse.pixels[p * 4]), 0., 1.);
-            const double mappedBase = std::clamp(static_cast<double>(mappedContinuum.pixels[p * 4]), 0., 1.);
+            const double originalBase = std::clamp(static_cast<double>(coarse.pixels[p]), 0., 1.);
+            const double mappedBase = std::clamp(static_cast<double>(mappedContinuum.pixels[p]), 0., 1.);
             // Preserve the residual profile on a locally constant continuum.
             // Unlike a per-pixel nonlinear curve, this is affine in the source
             // signal. One scale for all channels also preserves its color

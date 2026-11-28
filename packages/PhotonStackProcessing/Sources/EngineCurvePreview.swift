@@ -1,9 +1,42 @@
 #if os(macOS)
 import Foundation
+import CoreGraphics
 import PhotonStackAppCore
 import PhotonStackEngineBridge
 
 public enum EngineCurvePreview {
+    fileprivate static func makeRequest(width: Int, rawOptions: RawProcessingOptions, points: [(Double, Double)],
+                                        channel: CurveChannel, retainDecodedSource: Bool) throws -> PhotonStackCurvePreviewRequest {
+        let numbers = [rawOptions.manualWhiteBalanceTemperature, rawOptions.manualWhiteBalanceTint,
+                       rawOptions.exposureBias, rawOptions.manualBlackLevel] + points.flatMap { [$0.0, $0.1] }
+        guard width > 0, width <= Int(UInt32.max), numbers.allSatisfy({ $0.isFinite && Float($0).isFinite }) else {
+            throw ProcessingServiceError.invalidArguments("Curve preview dimensions and numeric controls must be finite and valid.")
+        }
+        try Task.checkCancellation()
+        var request = photonstack_default_curve_preview_request()
+        request.width = UInt32(max(width, 1))
+        request.rawWhiteBalanceMode = bridgeRawWhiteBalanceMode(rawOptions.whiteBalanceMode)
+        request.rawManualWhiteBalanceTemperature = Float(rawOptions.manualWhiteBalanceTemperature)
+        request.rawManualWhiteBalanceTint = Float(rawOptions.manualWhiteBalanceTint)
+        request.rawExposureBias = Float(rawOptions.exposureBias)
+        request.rawBlackLevelMode = bridgeRawBlackLevelMode(rawOptions.blackLevelMode)
+        request.rawManualBlackLevel = Float(rawOptions.manualBlackLevel)
+        request.rawDemosaicQuality = bridgeRawDemosaicQuality(rawOptions.demosaicQuality)
+        request.rawLinearOutput = rawOptions.linearOutput ? 1 : 0
+        request.retainDecodedSource = retainDecodedSource ? 1 : 0
+        request.curveChannel = bridgeCurveChannel(channel)
+
+        return request
+    }
+
+    public static func interactiveImage(using service: any ProcessingService, input: URL, width: Int,
+                                        rawOptions: RawProcessingOptions, points: [(Double, Double)],
+                                        channel: CurveChannel) async throws -> CGImage? {
+        guard service is CLIProcessingService else { return nil }
+        return try await EngineCurvePreviewWorker.shared.image(input: input, width: width, rawOptions: rawOptions,
+                                                               points: points, channel: channel)
+    }
+
     public static func clearCachedSourceAsync() async {
         await EngineCurvePreviewWorker.shared.clearCache()
     }
@@ -44,28 +77,11 @@ public enum EngineCurvePreview {
             return nil
         }
 
-        let numbers = [rawOptions.manualWhiteBalanceTemperature, rawOptions.manualWhiteBalanceTint,
-                       rawOptions.exposureBias, rawOptions.manualBlackLevel] + points.flatMap { [$0.0, $0.1] }
-        guard width > 0, width <= Int(UInt32.max), numbers.allSatisfy({ $0.isFinite && Float($0).isFinite }) else {
-            throw ProcessingServiceError.invalidArguments("Curve preview dimensions and numeric controls must be finite and valid.")
-        }
-        try Task.checkCancellation()
+        var request = try makeRequest(width: width, rawOptions: rawOptions, points: points, channel: channel,
+                                      retainDecodedSource: retainDecodedSource)
         let transaction = AtomicOutputTransaction(arguments: ["preview", "--output", output.path],
                                                   workingDirectory: output.deletingLastPathComponent())!
         defer { transaction.cleanUp() }
-        var request = photonstack_default_curve_preview_request()
-        request.width = UInt32(max(width, 1))
-        request.rawWhiteBalanceMode = bridgeRawWhiteBalanceMode(rawOptions.whiteBalanceMode)
-        request.rawManualWhiteBalanceTemperature = Float(rawOptions.manualWhiteBalanceTemperature)
-        request.rawManualWhiteBalanceTint = Float(rawOptions.manualWhiteBalanceTint)
-        request.rawExposureBias = Float(rawOptions.exposureBias)
-        request.rawBlackLevelMode = bridgeRawBlackLevelMode(rawOptions.blackLevelMode)
-        request.rawManualBlackLevel = Float(rawOptions.manualBlackLevel)
-        request.rawDemosaicQuality = bridgeRawDemosaicQuality(rawOptions.demosaicQuality)
-        request.rawLinearOutput = rawOptions.linearOutput ? 1 : 0
-        request.retainDecodedSource = retainDecodedSource ? 1 : 0
-        request.curveChannel = bridgeCurveChannel(channel)
-
         let start = Date()
         let fallbackCodeBufferSize = 256
         let fallbackMessageBufferSize = 1024
@@ -301,6 +317,38 @@ public enum EngineCurvePreview {
 
 private actor EngineCurvePreviewWorker {
     static let shared = EngineCurvePreviewWorker()
+
+    func image(input: URL, width: Int, rawOptions: RawProcessingOptions, points: [(Double, Double)],
+               channel: CurveChannel) throws -> CGImage {
+        var request = try EngineCurvePreview.makeRequest(width: width, rawOptions: rawOptions, points: points,
+                                                         channel: channel, retainDecodedSource: true)
+        let controls = points.map { PhotonStackCurvePoint(input: Float($0.0), output: Float($0.1)) }
+        var pixels = PhotonStackPreviewPixels()
+        var message = [CChar](repeating: 0, count: 1024)
+        let result = controls.withUnsafeBufferPointer { buffer in
+            request.curvePoints = buffer.baseAddress
+            request.curvePointCount = buffer.count
+            return photonstack_curve_preview_pixels(input.path, request, &pixels, &message, 1024)
+        }
+        guard result.ok != 0, let storage = pixels.storage, let data = pixels.data else {
+            throw ProcessingServiceError.commandFailed(exitCode: 1, stderr: String(cString: message))
+        }
+        let w = Int(result.width), h = Int(result.height)
+        guard let provider = CGDataProvider(dataInfo: storage, data: data, size: w * h * 4,
+                                            releaseData: { info, _, _ in photonstack_free_preview_pixels(info) }) else {
+            photonstack_free_preview_pixels(storage)
+            throw ProcessingServiceError.invalidArguments("Could not create curve preview provider.")
+        }
+        try Task.checkCancellation()
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let image = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: w * 4,
+                                  space: space, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue)
+                                    .union(.byteOrder32Big), provider: provider, decode: nil,
+                                  shouldInterpolate: false, intent: .defaultIntent) else {
+            throw ProcessingServiceError.invalidArguments("Could not create curve preview image.")
+        }
+        return image
+    }
 
     func clearCache() {
         photonstack_clear_curve_preview_cache()

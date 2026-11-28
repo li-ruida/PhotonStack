@@ -1,3 +1,4 @@
+#include "photonstack/ParallelRanges.hpp"
 #include "photonstack/MultiscaleDenoiser.hpp"
 #include <algorithm>
 #include <cmath>
@@ -26,28 +27,34 @@ std::vector<float> structureSupport(const std::vector<float>& detail, unsigned w
         }
     }
     std::vector<float> support(detail.size());
-    for(unsigned y=0;y<h;++y)for(unsigned x=0;x<w;++x) {
+    detail::parallelRows(w, h, [&](int y) noexcept {
+        for (unsigned x = 0; x < w; ++x) {
         const auto x0=x>radius?x-radius:0,y0=y>radius?y-radius:0;
         const auto x1=std::min(w,x+radius+1),y1=std::min(h,y+radius+1);
         const double n=summed[std::size_t(y1)*stride+x1]+summed[std::size_t(y0)*stride+x0]-
             summed[std::size_t(y0)*stride+x1]-summed[std::size_t(y1)*stride+x0];
         support[std::size_t(y)*w+x]=float(std::min(1.,8*n/((x1-x0)*(y1-y0))));
-    }
+        }
+    });
     return support;
 }
 std::vector<float> smooth(const std::vector<float>& input, unsigned w, unsigned h, int step) {
     std::vector<float> temporary(input.size()), output(input.size());
     constexpr float k[5] = {1.f/16, 4.f/16, 6.f/16, 4.f/16, 1.f/16};
-    for (unsigned y=0;y<h;++y) for (unsigned x=0;x<w;++x) {
+    detail::parallelRows(w, h, [&](int y) noexcept {
+        for (unsigned x = 0; x < w; ++x) {
         double sum=0;
         for(int i=-2;i<=2;++i) sum+=k[i+2]*input[std::size_t(y)*w+reflect(int(x)+i*step,w)];
         temporary[std::size_t(y)*w+x]=float(sum);
-    }
-    for (unsigned y=0;y<h;++y) for (unsigned x=0;x<w;++x) {
+        }
+    });
+    detail::parallelRows(w, h, [&](int y) noexcept {
+        for (unsigned x = 0; x < w; ++x) {
         double sum=0;
         for(int i=-2;i<=2;++i) sum+=k[i+2]*temporary[std::size_t(reflect(int(y)+i*step,h))*w+x];
         output[std::size_t(y)*w+x]=float(sum);
-    }
+        }
+    });
     return output;
 }
 

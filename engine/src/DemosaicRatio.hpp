@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <span>
 #include <vector>
 
 namespace photonstack::detail {
@@ -10,5 +11,5 @@ namespace photonstack::detail {
 std::vector<float> demosaicRatio(const std::vector<float>& mosaic, int width, int height,
                                 const std::array<int, 4>& colors,
                                 const std::array<float, 3>& gains,
-                                const std::vector<float>& baseline);
+                                std::span<const float> baseline);
 } // namespace photonstack::detail

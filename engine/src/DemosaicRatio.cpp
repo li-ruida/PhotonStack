@@ -21,7 +21,7 @@ int mirror(int x, int size) {
 std::vector<float> demosaicRatio(const std::vector<float>& mosaic, int width, int height,
                                 const std::array<int, 4>& colors,
                                 const std::array<float, 3>& gains,
-                                const std::vector<float>& baseline) {
+                                std::span<const float> baseline) {
     const auto count = mosaic.size();
     const auto color = [&](int x, int y) { return colors[(y % 2) * 2 + x % 2]; };
     const auto index = [&](int x, int y) {
@@ -43,7 +43,6 @@ std::vector<float> demosaicRatio(const std::vector<float>& mosaic, int width, in
         return unitGains ? static_cast<double>(mosaic[p]) : normalized[p];
     };
     std::vector<double> low(count);
-    std::vector<float> rgb(count * 3, std::numeric_limits<float>::quiet_NaN());
     parallelRows(width, height, [&](int y) noexcept {
         for (int x = 0; x < width; ++x) {
             const auto p = static_cast<std::size_t>(y) * width + x;
@@ -80,13 +79,14 @@ std::vector<float> demosaicRatio(const std::vector<float>& mosaic, int width, in
             green[p] = color(x, y) == 1 ? sample(x, y) :
                 ((estimate(x, y, -1, 0) + estimate(x, y, 1, 0)) +
                  (estimate(x, y, 0, -1) + estimate(x, y, 0, 1))) / 4;
-            rgb[p * 3 + 1] = color(x, y) == 1 ? mosaic[p] : static_cast<float>(green[p] / gains[1]);
         }
     });
     std::vector<double>().swap(guide);
+    std::vector<float> rgb(count * 3, std::numeric_limits<float>::quiet_NaN());
     parallelRows(width, height, [&](int y) noexcept {
         for (int x = 0; x < width; ++x) {
             const auto p = static_cast<std::size_t>(y) * width + x;
+            rgb[p * 3 + 1] = color(x, y) == 1 ? mosaic[p] : static_cast<float>(green[p] / gains[1]);
             for (int c : {0, 2}) {
                 if (color(x, y) == c) {
                     rgb[p * 3 + c] = mosaic[p];

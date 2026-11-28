@@ -49,6 +49,7 @@ std::vector<float> demosaicMenon(const std::vector<float>& mosaic, int width, in
             cv[p] = raw[p] - gv[p];
         }
     });
+    std::vector<float>().swap(raw);
     std::vector<float> dh(count), dv(count);
     parallelRows(width, height, [&](int y) noexcept {
         for (int x = 0; x < width; ++x) {
@@ -57,6 +58,8 @@ std::vector<float> demosaicMenon(const std::vector<float>& mosaic, int width, in
             dv[p] = std::abs(cv[p] - at(cv, x, y + 2));
         }
     });
+    std::vector<float>().swap(ch);
+    std::vector<float>().swap(cv);
     const int kernel[5][5] = {{0, 0, 1, 0, 1}, {0, 0, 0, 1, 0}, {0, 0, 3, 0, 3}, {0, 0, 0, 1, 0}, {0, 0, 1, 0, 1}};
     std::vector<std::uint8_t> horizontal(count);
     parallelRows(width, height, [&](int y) noexcept {
@@ -81,7 +84,7 @@ std::vector<float> demosaicMenon(const std::vector<float>& mosaic, int width, in
     });
     // Direction buffers are no longer needed; release them before refinement
     // so a full-resolution stack need not retain all intermediate planes.
-    for (auto* plane : {&raw, &gh, &gv, &ch, &cv, &dh, &dv})
+    for (auto* plane : {&gh, &gv, &dh, &dv})
         std::vector<float>().swap(*plane);
     // Red/blue at green sites use the axis containing measured samples.
     parallelRows(width, height, [&](int y) noexcept {

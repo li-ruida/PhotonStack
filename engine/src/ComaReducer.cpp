@@ -1,4 +1,5 @@
 #include "photonstack/ComaReducer.hpp"
+#include "photonstack/ParallelRanges.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -283,11 +284,11 @@ ComaReductionResult ComaReducer::reduceUsingDetectionImage(
     }
 
     ImageBuffer output = image;
-    for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
-        if (!detail::pixelHasValidColor(image, pixel)) {
-            detail::clearMaskedPixel(output, pixel);
-        }
-    }
+    detail::parallelRanges(image.pixelCount(), 65536, [&](std::size_t first, std::size_t last) noexcept {
+        for (auto pixel = first; pixel < last; ++pixel)
+            if (!detail::pixelHasValidColor(image, pixel))
+                detail::clearMaskedPixel(output, pixel);
+    });
     std::size_t correctedStars = 0;
     std::size_t analyzedStars = 0;
     double eccentricitySum = 0.0;
@@ -295,8 +296,14 @@ ComaReductionResult ComaReducer::reduceUsingDetectionImage(
     const float imageCenterY = static_cast<float>(image.height - 1) * 0.5F;
     const float maxCenterDistance = std::max(1.0F, std::sqrt(imageCenterX * imageCenterX + imageCenterY * imageCenterY));
 
-    for (const auto& star : detected.stars) {
-        const auto shape = analyzeStarShape(image, star, options.radius);
+    std::vector<decltype(analyzeStarShape(image, Star{}, options.radius))> shapes(detected.stars.size());
+    detail::parallelRanges(shapes.size(), 16, [&](std::size_t first, std::size_t last) {
+        for (auto i = first; i < last; ++i)
+            shapes[i] = analyzeStarShape(image, detected.stars[i], options.radius);
+    });
+    // Overlapping corrections read earlier output pixels. Keep this order and
+    // the eccentricity reduction unchanged; only immutable analysis is parallel.
+    for (const auto& shape : shapes) {
         if (!shape.ok) {
             continue;
         }

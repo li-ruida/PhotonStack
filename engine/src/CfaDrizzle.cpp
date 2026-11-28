@@ -105,15 +105,22 @@ void CfaDrizzleAccumulator::add(const CfaDrizzleFrame& f) {
     const auto [x0, x1, y0, y1] = sourceBounds(0., o.height);
     const double area = std::abs(det)*o.scale*o.scale*o.pixfrac*o.pixfrac;
     // Reject calibration overflow before changing any sums. Scientific output is Float32.
-    for (int y=y0; y<y1; ++y) for (int x=x0; x<x1; ++x) {
-        const auto src=std::size_t(y)*f.width+x;
-        const double valid=f.validity.empty()?1:f.validity[src];
-        if (!finite(f.samples[src]) || !finite(valid) || valid<=0 || valid>1) continue;
-        const auto ch=colorAt(f.pattern,x,y,f.xOffset,f.yOffset);
-        const double value=(f.samples[src]-f.background[ch])*f.gain[ch];
-        require(finite(value) && std::abs(value)<=std::numeric_limits<float>::max(),
-                "Calibrated CFA sample exceeds Float32 scientific range");
-    }
+    detail::parallelRanges(y1 - y0, std::max<std::size_t>(1, 65536 / std::max(1, x1 - x0)),
+                           [&](std::size_t first, std::size_t last) {
+                               for (auto row = first; row < last; ++row) {
+                                   const int y = y0 + int(row);
+                                   for (int x = x0; x < x1; ++x) {
+                                       const auto src = std::size_t(y) * f.width + x;
+                                       const double valid = f.validity.empty() ? 1 : f.validity[src];
+                                       if (!finite(f.samples[src]) || !finite(valid) || valid <= 0 || valid > 1)
+                                           continue;
+                                       const auto ch = colorAt(f.pattern, x, y, f.xOffset, f.yOffset);
+                                       const double value = (f.samples[src] - f.background[ch]) * f.gain[ch];
+                                       require(finite(value) && std::abs(value) <= std::numeric_limits<float>::max(),
+                                               "Calibrated CFA sample exceeds Float32 scientific range");
+                                   }
+                               }
+                           });
     // A worker owns complete output rows. Source order within every sum stays unchanged.
     detail::parallelRanges(o.height, std::max<std::size_t>(16, 65536 / o.width),
                            [&](std::size_t first, std::size_t last) noexcept {

@@ -1,3 +1,4 @@
+#include "photonstack/ParallelRanges.hpp"
 #include "photonstack/DisplayGridReducer.hpp"
 
 #include <algorithm>
@@ -73,13 +74,14 @@ DisplayGridReductionResult DisplayGridReducer::apply(
 
     const auto h = halfKernel();
     const std::size_t rowSamples = std::size_t(image.width) * channels;
-    // Only one double-precision row is needed. Filtering never reads its own
-    // output, and auxiliary memory does not grow with the image height.
-    std::vector<double> vertical(rowSamples);
-    std::vector<unsigned char> valid(image.width);
     constexpr float low = 1.0F / 65535.0F;
     constexpr float high = static_cast<float>(1.0 - 1.0 / 65535.0);
-    for (std::uint32_t y = 0; y < image.height; ++y) {
+    // Each worker retains one filter row regardless of image height.
+    detail::parallelRanges(image.height, std::max<std::size_t>(1, 4096 / image.width),
+                           [&](std::size_t first, std::size_t last) {
+        std::vector<double> vertical(rowSamples);
+        std::vector<unsigned char> valid(image.width);
+        for (auto y = first; y < last; ++y) {
         std::fill(vertical.begin(), vertical.end(), 0);
         std::fill(valid.begin(), valid.end(), 1);
         for (int k = -radius; k <= radius; ++k) {
@@ -115,9 +117,10 @@ DisplayGridReductionResult DisplayGridReducer::apply(
                 if (detail::pixelCoverage(image, pixel) <= 1.0e-6F) detail::clearMaskedPixel(result.image, pixel);
                 continue;
             }
+            const bool interior = x >= radius && std::uint64_t(x) + radius < image.width;
             std::array<double, 3> delta{};
             for (int k = -radius; k <= radius; ++k) {
-                const auto source = reflected(std::int64_t(x) + k, image.width) * channels;
+                const auto source = (interior ? std::size_t(std::int64_t(x) + k) : reflected(std::int64_t(x) + k, image.width)) * channels;
                 for (std::uint16_t c = 0; c < channels; ++c) delta[c] += h[std::abs(k)] * vertical[source + c];
             }
             double ratio = 0;
@@ -139,7 +142,8 @@ DisplayGridReductionResult DisplayGridReducer::apply(
             for (std::uint16_t c = 0; c < channels; ++c)
                 result.image.pixels[offset + c] = static_cast<float>(image.pixels[offset + c] + delta[c] * factor);
         }
-    }
+        }
+    });
     return result;
 }
 

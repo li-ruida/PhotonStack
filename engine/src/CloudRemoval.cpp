@@ -467,7 +467,7 @@ float sampleTileField(
 
 } // namespace
 
-CloudRemovalResult CloudRemoval::detect(const ImageBuffer& image, const CloudRemovalOptions& options) const {
+static CloudRemovalResult detectRegions(const ImageBuffer& image, const CloudRemovalOptions& options, bool includeImage) {
     if (!validImage(image)) {
         return cloudError("ImageBufferInvalid", "Input image must be a non-empty RGB/RGBA float image");
     }
@@ -832,7 +832,7 @@ CloudRemovalResult CloudRemoval::detect(const ImageBuffer& image, const CloudRem
     std::vector<std::uint8_t> visited(tiles.size(), 0);
     CloudRemovalResult result;
     result.ok = true;
-    result.image = image;
+    if (includeImage) result.image = image;
     result.usedMajorityFallback = usedMajorityFallback;
 
     for (std::uint32_t row = 0; row < rows; ++row) {
@@ -975,6 +975,10 @@ CloudRemovalResult CloudRemoval::detect(const ImageBuffer& image, const CloudRem
     return result;
 }
 
+CloudRemovalResult CloudRemoval::detect(const ImageBuffer& image, const CloudRemovalOptions& options) const {
+    return detectRegions(image, options, true);
+}
+
 CloudRemovalResult CloudRemoval::detectTemporal(
     const ImageBuffer& image,
     const std::vector<ImageBuffer>& referenceImages,
@@ -998,7 +1002,7 @@ CloudRemovalResult CloudRemoval::detectTemporal(
     std::vector<CloudRemovalResult> referenceDetections;
     referenceDetections.reserve(referenceImages.size());
     for (const auto& reference : referenceImages) {
-        auto detection = detect(reference, temporalOptions);
+        auto detection = detectRegions(reference, temporalOptions, false);
         if (!detection.ok) {
             return detection;
         }
@@ -1033,7 +1037,7 @@ CloudRemovalResult CloudRemoval::detectTemporalFromDetections(
     // to let callers release full-resolution RAW buffers one at a time.
     auto temporalOptions = options;
     temporalOptions.minBrightnessDelta = std::min(temporalOptions.minBrightnessDelta, 0.015F);
-    const auto weakTarget = detect(image, temporalOptions);
+    const auto weakTarget = detectRegions(image, temporalOptions, false);
     if (!weakTarget.ok) {
         return weakTarget;
     }

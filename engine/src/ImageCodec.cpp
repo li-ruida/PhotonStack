@@ -1,3 +1,5 @@
+#include "photonstack/ParallelRanges.hpp"
+#include "photonstack/WorkingMemory.hpp"
 #include "photonstack/FileDigest.hpp"
 #include "photonstack/StageProfile.hpp"
 #include "photonstack/ImageCodec.hpp"
@@ -371,55 +373,72 @@ float colorComponentFlattenedToBlack(
     return outputColorSpace == ImageWriteColorSpace::SRGB ? linearToSRGB(composited) : composited;
 }
 
-std::vector<std::uint8_t> createRgba8(
-    const ImageBuffer& image,
-    ImageWriteColorSpace outputColorSpace,
-    bool flattenToBlack
-) {
-    std::vector<std::uint8_t> rgba(image.sampleCount(), 0);
-    for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
-        const auto offset = pixel * image.channels;
-        const float alpha = finiteUnitValue(image.pixels[offset + 3]);
-        const auto component = [&](std::size_t channel) {
-            return flattenToBlack
-                       ? colorComponentFlattenedToBlack(
-                             image.pixels[offset + channel], alpha, image.colorEncoding, outputColorSpace
-                         )
-                       : colorComponentForOutput(
-                             image.pixels[offset + channel], image.colorEncoding, outputColorSpace
-                         ) * alpha;
+// Quantization thresholds are derived from the scalar transfer itself, including
+// its Float32 rounding. A coarse bucket narrows each lookup to a few thresholds.
+template<unsigned Max> class LinearSRGBCodes {
+    std::array<float, Max + 1> lower_{};
+    std::array<unsigned, 4097> bucket_{};
+
+    static unsigned encode(float x) { return static_cast<unsigned>(linearToSRGB(x) * Max + .5F); }
+public:
+    LinearSRGBCodes() {
+        for (unsigned code = 1; code <= Max; ++code) {
+            const double y = (code - .5) / Max;
+            float x = static_cast<float>(y <= .04045 ? y / 12.92 : std::pow((y + .055) / 1.055, 2.4));
+            while (encode(x) < code) x = std::nextafter(x, 1.F);
+            while (encode(std::nextafter(x, 0.F)) >= code) x = std::nextafter(x, 0.F);
+            lower_[code] = x;
+        }
+        for (unsigned i = 0; i <= 4096; ++i) bucket_[i] = encode(i / 4096.F);
+    }
+    unsigned operator()(float x) const {
+        x = finiteUnitValue(x);
+        const auto i = std::min(4095U, static_cast<unsigned>(4096 * x));
+        const auto lo = lower_.begin() + bucket_[i] + 1, hi = lower_.begin() + bucket_[i + 1] + 1;
+        return static_cast<unsigned>(std::upper_bound(lo, hi, x) - lower_.begin() - 1);
+    }
+};
+
+void encodePixels(const float* src, std::size_t count, std::uint8_t* dst, ColorEncoding encoding,
+                  ImageWriteColorSpace space, bool flatten, bool wide) {
+    const bool transfer = encoding == ColorEncoding::Linear && space == ImageWriteColorSpace::SRGB;
+    for (std::size_t pixel = 0; pixel < count; ++pixel, src += 4, dst += wide ? 8 : 4) {
+        const float alpha = finiteUnitValue(src[3]);
+        const auto put = [&](int c, unsigned code) {
+            if (wide) {
+                dst[c * 2] = static_cast<std::uint8_t>(code >> 8);
+                dst[c * 2 + 1] = static_cast<std::uint8_t>(code);
+            } else dst[c] = static_cast<std::uint8_t>(code);
         };
-        rgba[offset] = floatToByte(component(0));
-        rgba[offset + 1] = floatToByte(component(1));
-        rgba[offset + 2] = floatToByte(component(2));
-        rgba[offset + 3] = floatToByte(flattenToBlack ? 1.0F : alpha);
+        for (int c = 0; c < 3; ++c) {
+            if (transfer && (alpha == 1.F || flatten)) {
+                const float x = flatten ? finiteUnitValue(src[c]) * alpha : src[c];
+                if (wide) {
+                    static const LinearSRGBCodes<65535> codes;
+                    put(c, codes(x));
+                } else {
+                    static const LinearSRGBCodes<255> codes;
+                    put(c, codes(x));
+                }
+            } else {
+                const float v = flatten ? colorComponentFlattenedToBlack(src[c], alpha, encoding, space)
+                                        : colorComponentForOutput(src[c], encoding, space) * alpha;
+                put(c, wide ? floatToUInt16(v) : floatToByte(v));
+            }
+        }
+        const float a = flatten ? 1.F : alpha;
+        put(3, wide ? floatToUInt16(a) : floatToByte(a));
     }
-    return rgba;
 }
-
-std::vector<std::uint8_t> createRgba16BigEndian(
-    const ImageBuffer& image,
-    ImageWriteColorSpace outputColorSpace
-) {
-    std::vector<std::uint8_t> rgba(image.sampleCount() * 2, 0);
-    const auto store = [&](std::size_t sample, float value) {
-        const auto encoded = floatToUInt16(value);
-        rgba[sample * 2] = static_cast<std::uint8_t>((encoded >> 8U) & 0xFFU);
-        rgba[sample * 2 + 1] = static_cast<std::uint8_t>(encoded & 0xFFU);
-    };
-    for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
-        const auto offset = pixel * image.channels;
-        const float alpha = finiteUnitValue(image.pixels[offset + 3]);
-        store(offset, colorComponentForOutput(image.pixels[offset], image.colorEncoding, outputColorSpace) * alpha);
-        store(offset + 1,
-              colorComponentForOutput(image.pixels[offset + 1], image.colorEncoding, outputColorSpace) * alpha);
-        store(offset + 2,
-              colorComponentForOutput(image.pixels[offset + 2], image.colorEncoding, outputColorSpace) * alpha);
-        store(offset + 3, alpha);
-    }
-    return rgba;
+std::vector<std::uint8_t> encodedPixels(const ImageBuffer& image, ImageWriteColorSpace space,
+                                        bool flatten, bool wide) {
+    std::vector<std::uint8_t> bytes(image.sampleCount() * (wide ? 2 : 1));
+    detail::parallelRanges(image.pixelCount(), 16384, [&](std::size_t first, std::size_t last) {
+        encodePixels(image.pixels.data() + first * 4, last - first, bytes.data() + first * (wide ? 8 : 4),
+                     image.colorEncoding, space, flatten, wide);
+    });
+    return bytes;
 }
-
 struct TemporaryImageRowCache {
     std::filesystem::path directory;
 
@@ -485,32 +504,6 @@ ImageWriteResult createTemporaryImageRowCache(TemporaryImageRowCache& cache, std
     return writeError("TemporaryStorageUnavailable", "Unable to allocate a unique image row cache directory");
 }
 #endif
-
-template <typename Callback> void parallelForPixels(const ImageBuffer& image, Callback callback) {
-    const std::size_t pixels = image.pixelCount();
-    if (pixels < 262144) {
-        callback(0, pixels);
-        return;
-    }
-
-    const unsigned int workerCount = std::max(1U, std::min<unsigned int>(std::thread::hardware_concurrency(), 8U));
-    const std::size_t blockSize = (pixels + workerCount - 1) / workerCount;
-    std::vector<std::jthread> workers;
-    workers.reserve(workerCount);
-    for (unsigned int worker = 0; worker < workerCount; ++worker) {
-        const std::size_t begin = std::min<std::size_t>(pixels, static_cast<std::size_t>(worker) * blockSize);
-        const std::size_t end = std::min<std::size_t>(pixels, begin + blockSize);
-        if (begin >= end) {
-            break;
-        }
-        workers.emplace_back([=, &callback]() {
-            callback(begin, end);
-        });
-    }
-    for (auto& worker : workers) {
-        worker.join();
-    }
-}
 
 float pixelCoverage(const ImageBuffer& image, std::size_t offset) {
     if (image.channels != 4) {
@@ -586,7 +579,7 @@ void applyBlackLevel(ImageBuffer& image, const RawDecodeOptions& options) {
                                                    options.manualBlackLevel}
                             : automaticBlackLevel(image);
 
-    parallelForPixels(image, [&](std::size_t begin, std::size_t end) {
+    detail::parallelRanges(image.pixelCount(), 65536, [&](std::size_t begin, std::size_t end) {
         for (std::size_t pixel = begin; pixel < end; ++pixel) {
             const auto offset = pixel * image.channels;
             if (!(pixelCoverage(image, offset) > 0.0F)) {
@@ -645,12 +638,12 @@ std::array<float, 3> manualWhiteBalanceGains(float temperature, float tint) {
     };
 }
 
-void applyWhiteBalance(ImageBuffer& image, const RawDecodeOptions& options) {
+std::array<float, 3> whiteBalanceGains(const ImageBuffer& image, const RawDecodeOptions& options) {
     if (image.channels < 3 || options.whiteBalanceMode == RawWhiteBalanceMode::Camera) {
-        return;
+        return {1, 1, 1};
     }
 
-    float gains[3] = {1.0F, 1.0F, 1.0F};
+    std::array<float, 3> gains = {1.0F, 1.0F, 1.0F};
     if (options.whiteBalanceMode == RawWhiteBalanceMode::Daylight ||
         options.whiteBalanceMode == RawWhiteBalanceMode::Manual) {
         const auto manual = manualWhiteBalanceGains(
@@ -687,46 +680,7 @@ void applyWhiteBalance(ImageBuffer& image, const RawDecodeOptions& options) {
         }
     }
 
-    parallelForPixels(image, [&](std::size_t begin, std::size_t end) {
-        for (std::size_t pixel = begin; pixel < end; ++pixel) {
-            const auto offset = pixel * image.channels;
-            if (!(pixelCoverage(image, offset) > 0.0F)) {
-                image.pixels[offset] = 0.0F;
-                image.pixels[offset + 1] = 0.0F;
-                image.pixels[offset + 2] = 0.0F;
-                continue;
-            }
-            image.pixels[offset] = scaledColorValue(image.pixels[offset], gains[0]);
-            image.pixels[offset + 1] = scaledColorValue(image.pixels[offset + 1], gains[1]);
-            image.pixels[offset + 2] = scaledColorValue(image.pixels[offset + 2], gains[2]);
-        }
-    });
-}
-
-void applyExposureBias(ImageBuffer& image, float exposureBias) {
-    if (!std::isfinite(exposureBias) || std::abs(exposureBias) < 0.0001F || image.channels < 3) {
-        return;
-    }
-
-    const double multiplier = std::exp2(static_cast<double>(exposureBias));
-    const auto scaledValue = [multiplier](float value) {
-        const double scaled = std::max(0.0, static_cast<double>(value) * multiplier);
-        return static_cast<float>(std::min(scaled, static_cast<double>(std::numeric_limits<float>::max())));
-    };
-    parallelForPixels(image, [&](std::size_t begin, std::size_t end) {
-        for (std::size_t pixel = begin; pixel < end; ++pixel) {
-            const auto offset = pixel * image.channels;
-            if (!(pixelCoverage(image, offset) > 0.0F)) {
-                image.pixels[offset] = 0.0F;
-                image.pixels[offset + 1] = 0.0F;
-                image.pixels[offset + 2] = 0.0F;
-                continue;
-            }
-            image.pixels[offset] = scaledValue(image.pixels[offset]);
-            image.pixels[offset + 1] = scaledValue(image.pixels[offset + 1]);
-            image.pixels[offset + 2] = scaledValue(image.pixels[offset + 2]);
-        }
-    });
+    return gains;
 }
 
 float srgbToLinear(float value) {
@@ -742,7 +696,7 @@ void convertSRGBToLinear(ImageBuffer& image) {
         return;
     }
 
-    parallelForPixels(image, [&](std::size_t begin, std::size_t end) {
+    detail::parallelRanges(image.pixelCount(), 65536, [&](std::size_t begin, std::size_t end) {
         for (std::size_t pixel = begin; pixel < end; ++pixel) {
             const auto offset = pixel * image.channels;
             image.pixels[offset] = srgbToLinear(image.pixels[offset]);
@@ -761,57 +715,55 @@ float linearToSRGBForRawOptions(float value) {
     return 1.055F * std::pow(clamped, 1.0F / 2.4F) - 0.055F;
 }
 
-void convertLinearToSRGB(ImageBuffer& image) {
-    if (image.channels < 3 || image.colorEncoding == ColorEncoding::SRGB) {
+void applyRawDecodeOptionsImpl(ImageBuffer& image, const RawDecodeOptions& options) {
+    if (image.channels < 3) {
+        if (options.linearOutput) image.colorEncoding = ColorEncoding::Linear;
         return;
     }
-    parallelForPixels(image, [&](std::size_t begin, std::size_t end) {
-        for (std::size_t pixel = begin; pixel < end; ++pixel) {
-            const auto offset = pixel * image.channels;
-            image.pixels[offset] = linearToSRGBForRawOptions(image.pixels[offset]);
-            image.pixels[offset + 1] = linearToSRGBForRawOptions(image.pixels[offset + 1]);
-            image.pixels[offset + 2] = linearToSRGBForRawOptions(image.pixels[offset + 2]);
-        }
-    });
-    image.colorEncoding = ColorEncoding::SRGB;
-}
-
-void clearHiddenRawColor(ImageBuffer& image) {
-    if (image.channels != 4) {
-        return;
+    const bool fromSRGB = image.colorEncoding == ColorEncoding::SRGB;
+    const bool autoBlack = options.blackLevelMode == RawBlackLevelMode::Auto;
+    const bool autoWhite = options.whiteBalanceMode == RawWhiteBalanceMode::Auto;
+    // Automatic levels need the preceding stage's pixels to compute their statistics.
+    if (autoBlack || autoWhite) {
+        if (fromSRGB) convertSRGBToLinear(image);
+        applyBlackLevel(image, options);
     }
-    parallelForPixels(image, [&](std::size_t begin, std::size_t end) {
-        for (std::size_t pixel = begin; pixel < end; ++pixel) {
-            const auto offset = pixel * image.channels;
-            float& alpha = image.pixels[offset + 3];
-            if (!std::isfinite(alpha) || alpha <= 0.0F) {
-                image.pixels[offset] = 0.0F;
-                image.pixels[offset + 1] = 0.0F;
-                image.pixels[offset + 2] = 0.0F;
-                alpha = 0.0F;
-            } else {
-                alpha = std::min(alpha, 1.0F);
+    const auto gains = whiteBalanceGains(image, options);
+    const bool balance = options.whiteBalanceMode != RawWhiteBalanceMode::Camera;
+    const bool expose = std::isfinite(options.exposureBias) && std::abs(options.exposureBias) >= .0001F;
+    const double multiplier = expose ? std::exp2(static_cast<double>(options.exposureBias)) : 1;
+    detail::parallelRanges(image.pixelCount(), 32768, [&](std::size_t first, std::size_t last) {
+        for (auto p = first; p < last; ++p) {
+            auto* sample = image.pixels.data() + p * image.channels;
+            if (image.channels == 4) {
+                sample[3] = finiteUnitValue(sample[3]);
+                if (sample[3] == 0) { std::fill_n(sample, 3, 0.F); continue; }
+            }
+            for (int c = 0; c < 3; ++c) {
+                float v = sample[c];
+                if (!autoBlack && !autoWhite) {
+                    if (fromSRGB) v = srgbToLinear(v);
+                    if (options.blackLevelMode == RawBlackLevelMode::Manual)
+                        v = std::max(0.F, v - options.manualBlackLevel);
+                }
+                if (balance) v = scaledColorValue(v, gains[c]);
+                if (expose) v = static_cast<float>(std::min(std::max(0., double(v) * multiplier), double(std::numeric_limits<float>::max())));
+                sample[c] = options.linearOutput ? v : linearToSRGBForRawOptions(v);
             }
         }
     });
-}
-
-void applyRawDecodeOptionsImpl(ImageBuffer& image, const RawDecodeOptions& options) {
-    clearHiddenRawColor(image);
-    if (image.colorEncoding == ColorEncoding::SRGB) {
-        convertSRGBToLinear(image);
-    }
-    applyBlackLevel(image, options);
-    applyWhiteBalance(image, options);
-    applyExposureBias(image, options.exposureBias);
-    if (options.linearOutput) {
-        image.colorEncoding = ColorEncoding::Linear;
-    } else {
-        convertLinearToSRGB(image);
-    }
+    image.colorEncoding = options.linearOutput ? ColorEncoding::Linear : ColorEncoding::SRGB;
 }
 
 } // namespace
+
+#ifdef __APPLE__
+std::vector<std::uint8_t> displayRGBA8(const ImageBuffer& image) {
+    if (image.empty() || image.channels != 4 || image.pixels.size() != image.sampleCount())
+        throw std::invalid_argument("Display preview requires RGBA pixels");
+    return encodedPixels(image, ImageWriteColorSpace::SRGB, false, false);
+}
+#endif
 
 const char* imageReadBackendName(ImageReadBackend backend) {
     switch (backend) {
@@ -1058,8 +1010,8 @@ static ImageWriteResult encodeImage(const ImageBuffer& image, const std::filesys
 
     const bool write16 = shouldWrite16Bit(path, options);
     const bool flattenToBlack = isJpegPath(path);
-    const auto rgba = write16 ? createRgba16BigEndian(image, options.colorSpace)
-                              : createRgba8(image, options.colorSpace, flattenToBlack);
+    const auto rgba = write16 ? encodedPixels(image, options.colorSpace, false, true)
+                              : encodedPixels(image, options.colorSpace, flattenToBlack, false);
 
     CFRef<CGDataProviderRef> provider(CGDataProviderCreateWithData(nullptr, rgba.data(), rgba.size(), nullptr));
     if (provider.get() == nullptr) {
@@ -1164,81 +1116,40 @@ ImageWriteResult ImageCodec::writeRows(const ImageBuffer& prototype, const std::
     const auto encodedBytes = width * height * bytesPerPixel;
 
     TemporaryImageRowCache cache;
-    const auto cacheResult = createTemporaryImageRowCache(cache, encodedBytes);
-    if (!cacheResult.ok) {
-        return cacheResult;
+    std::ofstream output;
+    const auto inMemory = encodedBytes <= std::min<std::uint64_t>(128ULL << 20, detail::workingMemoryBudget() / 8);
+    std::vector<std::uint8_t> backing;
+    if (inMemory) {
+        backing.resize(static_cast<std::size_t>(encodedBytes));
+    } else {
+        const auto cacheResult = createTemporaryImageRowCache(cache, encodedBytes);
+        if (!cacheResult.ok) return cacheResult;
+        output.open(cache.pixelPath(), std::ios::binary | std::ios::trunc);
+        if (!output) return writeError("TemporaryStorageWriteFailed", "Unable to open the image row cache");
     }
-    std::ofstream output(cache.pixelPath(), std::ios::binary | std::ios::trunc);
-    if (!output) {
-        return writeError("TemporaryStorageWriteFailed", "Unable to open the image row cache");
-    }
-
-    const auto rowSamples = static_cast<std::size_t>(prototype.width) * prototype.channels;
-    std::vector<std::uint8_t> encodedRow(static_cast<std::size_t>(prototype.width) * bytesPerPixel, 0);
+    const auto rowSamples = static_cast<std::size_t>(prototype.width) * 4;
+    const auto rowBytes = static_cast<std::size_t>(prototype.width) * bytesPerPixel;
+    std::vector<std::uint8_t> encodedRow(inMemory ? 0 : rowBytes);
     std::uint32_t expectedRow = 0;
-    const ImageRowConsumer consumer = [&](std::uint32_t row, const float* samples, std::size_t sampleCount) {
-        if (row != expectedRow || row >= prototype.height || samples == nullptr || sampleCount != rowSamples) {
+    const bool produced = producer([&](std::uint32_t row, const float* samples, std::size_t count) {
+        if (row != expectedRow || row >= prototype.height || !samples || count != rowSamples) return false;
+        auto* dest = inMemory ? backing.data() + row * rowBytes : encodedRow.data();
+        encodePixels(samples, prototype.width, dest, prototype.colorEncoding, options.colorSpace, flattenToBlack, write16);
+        if (!inMemory && !output.write(reinterpret_cast<const char*>(dest), static_cast<std::streamsize>(rowBytes)))
             return false;
-        }
-        for (std::uint32_t x = 0; x < prototype.width; ++x) {
-            const auto sampleOffset = static_cast<std::size_t>(x) * prototype.channels;
-            const float alpha = finiteUnitValue(samples[sampleOffset + 3]);
-            if (write16) {
-                const auto store = [&](std::size_t channel, float value) {
-                    const auto encoded = floatToUInt16(value);
-                    const auto byteOffset = (static_cast<std::size_t>(x) * prototype.channels + channel) * 2;
-                    encodedRow[byteOffset] = static_cast<std::uint8_t>((encoded >> 8U) & 0xFFU);
-                    encodedRow[byteOffset + 1] = static_cast<std::uint8_t>(encoded & 0xFFU);
-                };
-                store(0, colorComponentForOutput(
-                    samples[sampleOffset], prototype.colorEncoding, options.colorSpace
-                ) * alpha);
-                store(1, colorComponentForOutput(
-                    samples[sampleOffset + 1], prototype.colorEncoding, options.colorSpace
-                ) * alpha);
-                store(2, colorComponentForOutput(
-                    samples[sampleOffset + 2], prototype.colorEncoding, options.colorSpace
-                ) * alpha);
-                store(3, alpha);
-            } else {
-                const auto byteOffset = static_cast<std::size_t>(x) * prototype.channels;
-                const auto component = [&](std::size_t channel) {
-                    return flattenToBlack
-                               ? colorComponentFlattenedToBlack(
-                                     samples[sampleOffset + channel], alpha, prototype.colorEncoding, options.colorSpace
-                                 )
-                               : colorComponentForOutput(
-                                     samples[sampleOffset + channel], prototype.colorEncoding, options.colorSpace
-                                 ) * alpha;
-                };
-                encodedRow[byteOffset] = floatToByte(component(0));
-                encodedRow[byteOffset + 1] = floatToByte(component(1));
-                encodedRow[byteOffset + 2] = floatToByte(component(2));
-                encodedRow[byteOffset + 3] = floatToByte(flattenToBlack ? 1.0F : alpha);
-            }
-        }
-        output.write(reinterpret_cast<const char*>(encodedRow.data()),
-                     static_cast<std::streamsize>(encodedRow.size()));
-        if (!output) {
-            return false;
-        }
         ++expectedRow;
         return true;
-    };
-
-    const bool produced = producer(consumer);
-    output.close();
-    if (!produced || expectedRow != prototype.height || !output) {
-        return writeError(output ? "ImageRowProductionFailed" : "TemporaryStorageWriteFailed",
-                          output ? "Image row producer did not provide every row in order"
-                                 : "Unable to write the image row cache");
+    });
+    if (!inMemory) {
+        output.close();
+        if (!output) return writeError("TemporaryStorageWriteFailed", "Unable to write the image row cache");
     }
-
-    const auto cachePath = cache.pixelPath().string();
-    CFRef<CGDataProviderRef> provider(CGDataProviderCreateWithFilename(cachePath.c_str()));
-    if (provider.get() == nullptr) {
-        return writeError("ImageEncodeFailed", "Could not create image data provider from the row cache");
-    }
+    if (!produced || expectedRow != prototype.height)
+        return writeError("ImageRowProductionFailed", "Image row producer did not provide every row in order");
+    CFRef<CGDataProviderRef> provider(inMemory
+        ? CGDataProviderCreateWithData(nullptr, backing.data(), backing.size(), nullptr)
+        : CGDataProviderCreateWithFilename(cache.pixelPath().c_str()));
+    if (!provider.get()) return writeError("ImageEncodeFailed", "Could not create image data provider");
 
     const auto bitsPerComponent = write16 ? 16 : 8;
     const auto bitsPerPixel = write16 ? 64 : 32;

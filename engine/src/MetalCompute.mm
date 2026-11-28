@@ -6,9 +6,11 @@
 #include <cmath>
 #include <cstring>
 #include <condition_variable>
+#include <chrono>
 #include <mutex>
 #include <numeric>
 #include <span>
+#include <thread>
 #include <sys/sysctl.h>
 #include <unistd.h>
 
@@ -25,11 +27,40 @@ float4 cubicWeights(float t) {
     return float4(-.5f * t + t * t - .5f * t * t * t, 1 - 2.5f * t * t + 1.5f * t * t * t,
                   .5f * t + 2 * t * t - 1.5f * t * t * t, -.5f * t * t + .5f * t * t * t);
 }
+void storeFinite(device float4* out, uint i, float4 v, device atomic_uint* invalid) {
+    out[i] = v;
+    if (!all(isfinite(v))) atomic_store_explicit(invalid, 1u, memory_order_relaxed);
+}
+bool tinyCurveValue(float value) {
+    uint bits = as_type<uint>(value) & 0x7fffffffu;
+    return bits != 0 && bits < as_type<uint>(1.e-24f);
+}
+float curveSample(float value, device const float* lookup, uint resolution) {
+    if (tinyCurveValue(value)) return NAN;
+    float scaled = clamp(value, 0.f, 1.f) * float(resolution);
+    uint lo = uint(scaled), hi = min(lo + 1, resolution);
+    if (tinyCurveValue(lookup[lo]) || tinyCurveValue(lookup[hi])) return NAN;
+    return fma(lookup[hi] - lookup[lo], scaled - float(lo), lookup[lo]);
+}
+kernel void curveLUT(device const float4* input [[buffer(0)]], device float4* output [[buffer(1)]],
+                     constant uint4& params [[buffer(2)]], device const float* lookup [[buffer(3)]],
+                     device atomic_uint* invalid [[buffer(6)]], uint i [[thread_position_in_grid]]) {
+    float4 value = input[i];
+    bool visible = !params.y || value.a > 1.e-6f;
+    if (!isfinite(value.a) || (visible && !all(isfinite(value.rgb)))) {
+        atomic_store_explicit(invalid, 1u, memory_order_relaxed); output[i] = 0; return;
+    }
+    if (!visible) { output[i] = 0; return; }
+    for (uint c = 0; c < 3; ++c)
+        if (params.x == 0 || params.x == c + 1) value[c] = curveSample(value[c], lookup, params.z);
+    if (!params.y) value.a = curveSample(value.a, lookup, params.z);
+    storeFinite(output, i, value, invalid);
+}
 kernel void warp(device const float4* input [[buffer(0)]], device float4* output [[buffer(1)]],
-                 constant Params& p [[buffer(2)]], device const float2* coords [[buffer(3)]], uint i [[thread_position_in_grid]]) {
-    if (i >= p.w * p.h)
-        return;
-    float x = float(i % p.w) - p.dx, y = float(i / p.w) - p.dy;
+                 constant Params& p [[buffer(2)]], device const float2* coords [[buffer(3)]],
+                 device atomic_uint* invalid [[buffer(6)]], uint2 xy [[thread_position_in_grid]]) {
+    uint i = xy.y * p.w + xy.x;
+    float x = float(xy.x) - p.dx, y = float(xy.y) - p.dy;
     float sx = fma(p.cosine, x, p.sine * y) / p.scale;
     float sy = fma(-p.sine, x, p.cosine * y) / p.scale;
     if (p.mapping == 1) {
@@ -66,7 +97,8 @@ kernel void warp(device const float4* input [[buffer(0)]], device float4* output
         bool covered = true;
         for (uint j = 0; j < 4; ++j)
             for (uint k = 0; k < 4; ++k) {
-                float4 s = input[(iy + j - 1) * p.w + ix + k - 1];
+                float4 s = j >= 1 && j <= 2 && k >= 1 && k <= 2 ? v[(j - 1) * 2 + k - 1]
+                                                                  : input[(iy + j - 1) * p.w + ix + k - 1];
                 covered &= s.a == 1.f;
                 filtered = fma(float3(wx[k] * wy[j]), s.rgb, filtered);
             }
@@ -74,7 +106,7 @@ kernel void warp(device const float4* input [[buffer(0)]], device float4* output
             rgb = clamp(filtered, min(min(v[0].rgb, v[1].rgb), min(v[2].rgb, v[3].rgb)),
                         max(max(v[0].rgb, v[1].rgb), max(v[2].rgb, v[3].rgb)));
     }
-    output[i] = float4(rgb, a);
+    storeFinite(output, i, float4(rgb, a), invalid);
 }
 
 struct CFA {
@@ -82,8 +114,10 @@ struct CFA {
     int colors[4];
 };
 kernel void demosaic(device const float* src [[buffer(0)]], device float4* output [[buffer(1)]],
-                     constant CFA& p [[buffer(2)]], uint i [[thread_position_in_grid]]) {
-    int w = int(p.width), h = int(p.height), x = i % w, y = i / w;
+                     constant CFA& p [[buffer(2)]], device atomic_uint* invalid [[buffer(6)]],
+                     uint2 xy [[thread_position_in_grid]]) {
+    int w = int(p.width), h = int(p.height), x = xy.x, y = xy.y;
+    uint i = xy.y * p.width + xy.x;
     int phase = 2 * (y & 1) + (x & 1), native = p.colors[phase];
     float4 rgb = float4(src[i], src[i], src[i], 1);
     for (int c = 0; c < 3; ++c) {
@@ -117,15 +151,16 @@ kernel void demosaic(device const float* src [[buffer(0)]], device float4* outpu
             rgb[c] = sum / float(n);
         }
     }
-    output[i] = rgb;
+    storeFinite(output, i, rgb, invalid);
 }
 struct ScientificCFA { uint w,h; int colors[4]; float gains[3]; };
 // A compensated numerator and a rounding interval preserve the CPU scientific
 // stencil for non-integer mosaics. Ambiguous outputs use the existing scalar
 // stencil, which also handles nonfinite neighbors and the Bayer border.
 kernel void scientificCFA(device const float* src [[buffer(0)]], device float4* dst [[buffer(1)]],
-                          constant ScientificCFA& p [[buffer(2)]], uint i [[thread_position_in_grid]]) {
-    int x=i%p.w,y=i/p.w,w=p.w;
+                          constant ScientificCFA& p [[buffer(2)]], uint2 xy [[thread_position_in_grid]]) {
+    int x=xy.x,y=xy.y,w=p.w;
+    uint i=xy.y*p.w+xy.x;
     if (x<2 || y<2 || x+2>=w || y+2>=int(p.h)) { dst[i]=NAN; return; }
     int phase=2*(y&1)+(x&1), native=p.colors[phase];
     const int dx[13]={0,-1,1,0,0,-2,2,0,0,-1,1,-1,1};
@@ -252,7 +287,7 @@ struct CalibrationParams {
 kernel void calibration(device const float4* light [[buffer(0)]], device float4* output [[buffer(1)]],
                         constant CalibrationParams& p [[buffer(2)]], device const float4* dark [[buffer(3)]],
                         device const float4* bias [[buffer(4)]], device const float4* flat [[buffer(5)]],
-                        uint i [[thread_position_in_grid]]) {
+                        device atomic_uint* invalid [[buffer(6)]], uint i [[thread_position_in_grid]]) {
     float4 v = light[i];
     float3 error = 0;
     float a = isfinite(v.a) ? saturate(v.a) : 0;
@@ -285,7 +320,7 @@ kernel void calibration(device const float4* light [[buffer(0)]], device float4*
         // Defer a borderline validity decision or an intermediate overflow to
         // the double-precision implementation before exposing this output.
         if (a > 1.e-6f && (any(abs(norm - p.epsilon) <= p.epsilon * 1.e-6f) || !all(isfinite(norm)))) {
-            output[i] = float4(NAN);
+            atomic_store_explicit(invalid, 1u, memory_order_relaxed);
             return;
         }
         if (any(norm <= p.epsilon)) a = 0;
@@ -295,7 +330,7 @@ kernel void calibration(device const float4* light [[buffer(0)]], device float4*
         v.rgb = quotient + (fma(-quotient,flatValue,numerator) + (tail-quotient*flatTail)) / flatValue;
     } else v.rgb += error;
     if (p.clampNegative && all(isfinite(v.rgb))) v.rgb = max(v.rgb, 0.f);
-    output[i] = a > 1.e-6f ? float4(v.rgb,a) : float4(0);
+    storeFinite(output, i, a > 1.e-6f ? float4(v.rgb,a) : float4(0), invalid);
 }
 // One SIMD group per pixel/channel. Keep at most eight frame samples per
 // lane in registers; frame-major reads keep the CPU tile layout unchanged.
@@ -514,7 +549,7 @@ bool limits(device const float2* centers, uint p, constant ReductionParams& r,
 }
 kernel void reduceWinsor(device const float4* tile [[buffer(0)]], device float4* output [[buffer(1)]],
                          constant ReductionParams& r [[buffer(2)]], device const float2* centers [[buffer(3)]],
-                         device const float* weights [[buffer(4)]], uint tid [[thread_position_in_grid]],
+                         device const float* weights [[buffer(4)]], device atomic_uint* invalid [[buffer(6)]], uint tid [[thread_position_in_grid]],
                          ushort lane [[thread_index_in_simdgroup]]) {
     const uint padded = (r.pixels + 31) & ~31u;
     float3 low, high;
@@ -548,9 +583,9 @@ kernel void reduceWinsor(device const float4* tile [[buffer(0)]], device float4*
         const float alpha = ratio + tail/r.totalWeight;
         const float3 quotient = sum.rgb / sum.a;
         const float3 remainder = fma(-quotient,float3(sum.a),sum.rgb) + (correction.rgb-quotient*correction.a);
-        output[3*tid] = float4(quotient + remainder/sum.a, saturate(alpha));
-        output[3*tid+1] = float4(float3(lowCount)/float(count),1);
-        output[3*tid+2] = float4(float3(highCount)/float(count),1);
+        storeFinite(output, 3*tid, float4(quotient + remainder/sum.a, saturate(alpha)), invalid);
+        storeFinite(output, 3*tid+1, float4(float3(lowCount)/float(count),1), invalid);
+        storeFinite(output, 3*tid+2, float4(float3(highCount)/float(count),1), invalid);
         return;
     }
     uint group = (tid - padded) / 32, block = group % r.blockCount, frame = group / r.blockCount;
@@ -565,19 +600,16 @@ kernel void reduceWinsor(device const float4* tile [[buffer(0)]], device float4*
     counts = simd_sum(counts);
     if (!lane) output[3*r.pixels+group] = float4(float3(counts),0);
 }
-kernel void validateFinite(device const float* pixels [[buffer(0)]], device atomic_uint* invalid [[buffer(1)]],
-                           constant ulong& count [[buffer(2)]], uint i [[thread_position_in_grid]]) {
-    if (i < count && !isfinite(pixels[i])) atomic_store_explicit(invalid, 1u, memory_order_relaxed);
-}
 )metal";
 
-enum class Kernel { Warp, CFA, Winsor, Peaks, Calibration, WinsorWide, Reduce, GuardLuminance, GuardSky, WinsorStream, ScientificCFA, ValidateFinite, Count };
+enum class Kernel { Warp, CFA, Winsor, Peaks, Calibration, WinsorWide, Reduce, GuardLuminance, GuardSky, WinsorStream, ScientificCFA, CurveLUT, Count };
 constexpr std::array<const char*, unsigned(Kernel::Count)> kernelNames{
     "warp", "demosaic", "winsor", "peaks", "calibration", "winsorWide",
-    "reduceWinsor", "guardLuminance", "guardSky", "winsorStream", "scientificCFA", "validateFinite"};
+    "reduceWinsor", "guardLuminance", "guardSky", "winsorStream", "scientificCFA", "curveLUT"};
 struct MetalSlot {
     bool busy = false;
-    id<MTLBuffer> input, output, invalid;
+    id<MTLBuffer> input, output, invalid, centers;
+    std::chrono::steady_clock::time_point lastUse{};
     id<MTLBuffer> extra[3]{};
 };
 struct MetalDevice {
@@ -587,6 +619,8 @@ struct MetalDevice {
     id<MTLComputePipelineState> pipelines[unsigned(Kernel::Count)]{};
     std::condition_variable available;
     MetalSlot slots[2];
+    bool stopping = false;
+    std::thread trimmer;
     MetalDevice() {
         queue = [device newCommandQueue];
         MTLCompileOptions* opts = [MTLCompileOptions new];
@@ -601,6 +635,35 @@ struct MetalDevice {
             if (function)
                 pipelines[i] = [device newComputePipelineStateWithFunction:function error:&error];
         }
+        try { if (queue) trimmer = std::thread([this] {
+            std::unique_lock lock(mutex);
+            while (!stopping) {
+                auto next = std::chrono::steady_clock::time_point::max();
+                const auto now = std::chrono::steady_clock::now();
+                for (auto& slot : slots) {
+                    if (slot.busy || !(slot.input || slot.output || slot.invalid || slot.centers ||
+                                      slot.extra[0] || slot.extra[1] || slot.extra[2])) continue;
+                    const auto deadline = slot.lastUse + std::chrono::seconds(10);
+                    if (deadline <= now) slot = {};
+                    else next = std::min(next, deadline);
+                }
+                // No periodic wakeups when there are no cached buffers. A
+                // completed command supplies the next eviction deadline.
+                if (next == std::chrono::steady_clock::time_point::max()) available.wait(lock);
+                else available.wait_until(lock, next);
+            }
+        }); } catch (const std::system_error&) {
+            // Thread exhaustion must not prevent GPU processing. The execute
+            // path also evicts expired idle buffers on the next operation.
+        }
+    }
+    ~MetalDevice() {
+        {
+            std::lock_guard lock(mutex);
+            stopping = true;
+        }
+        available.notify_all();
+        if (trimmer.joinable()) trimmer.join();
     }
 };
 MetalDevice& sharedDevice() {
@@ -612,10 +675,12 @@ bool fallback(const char* reason) {
     return false;
 }
 
-template <class Params>
-bool execute(Kernel kernel, std::span<const float> source, const Params& params, std::size_t threads,
-             std::size_t outputSamples, std::vector<float>& result, const char* backend,
-             std::array<std::span<const float>, 3> extra = {}) {
+template <class Params, class Input, class Output>
+bool execute(Kernel kernel, const Input& storage, const Params& params, std::size_t threads,
+             std::size_t outputSamples, Output& result, const char* backend,
+             std::array<std::span<const float>, 3> extra = {}, unsigned gridWidth = 0,
+             std::array<unsigned, 4> centerShape = {}) {
+    const std::span<const float> source(storage);
     @autoreleasepool {
         @try {
             static_assert(std::is_trivially_copyable_v<Params>);
@@ -642,12 +707,15 @@ bool execute(Kernel kernel, std::span<const float> source, const Params& params,
             if (inputBytes > limit || outputBytes > limit || extraBytes > limit)
                 return fallback("Metal working-set budget");
             const auto grow = [&](id<MTLBuffer> buffer, NSUInteger length) -> id<MTLBuffer> {
-                if (buffer.length >= length)
+                if (buffer.length >= length && (buffer.length <= (16U << 20) || buffer.length / 4 <= length))
                     return buffer;
                 return [gpu.device newBufferWithLength:length options:MTLResourceStorageModeShared];
             };
             std::unique_lock lock(gpu.mutex);
             gpu.available.wait(lock, [&] { return !gpu.slots[0].busy || !gpu.slots[1].busy; });
+            const auto now = std::chrono::steady_clock::now();
+            for (auto& idle : gpu.slots)
+                if (!idle.busy && now - idle.lastUse > std::chrono::seconds(10)) idle = {};
             auto& slot = gpu.slots[gpu.slots[0].busy ? 1 : 0];
             slot.busy = true;
             lock.unlock();
@@ -656,73 +724,105 @@ bool execute(Kernel kernel, std::span<const float> source, const Params& params,
                 MetalSlot& slot;
                 ~ReleaseSlot() {
                     std::lock_guard guard(gpu.mutex);
+                    slot.lastUse = std::chrono::steady_clock::now();
                     slot.busy = false;
-                    gpu.available.notify_one();
+                    gpu.available.notify_all();
                 }
             } release{gpu, slot};
-            // Completed before this call returns. Borrow only complete, aligned VM
-            // pages so the driver never reads outside the vector's live elements.
-            const auto page = static_cast<NSUInteger>(getpagesize());
-            id<MTLBuffer> input = nil;
-            if (gpu.device.hasUnifiedMemory && inputBytes % page == 0 &&
-                reinterpret_cast<std::uintptr_t>(source.data()) % page == 0) {
-                input = [gpu.device newBufferWithBytesNoCopy:const_cast<float*>(source.data())
-                            length:inputBytes options:MTLResourceStorageModeShared deallocator:nil];
-            }
+            const auto page = pixelPageSize();
+            const auto borrow = [&](std::span<const float> span, bool padded) -> id<MTLBuffer> {
+                const auto n = span.size_bytes();
+                if (!gpu.device.hasUnifiedMemory || n < page || reinterpret_cast<std::uintptr_t>(span.data()) % page ||
+                    (!padded && n % page)) return nil;
+                return [gpu.device newBufferWithBytesNoCopy:const_cast<float*>(span.data())
+                              length:(n + page - 1) / page * page options:MTLResourceStorageModeShared deallocator:nil];
+            };
+            id<MTLBuffer> input = borrow(source, std::is_same_v<Input, PixelStorage>);
             if (!input) {
                 slot.input = grow(slot.input, inputBytes);
                 if (!slot.input) return fallback("Metal buffer allocation failed");
                 std::memcpy(slot.input.contents, source.data(), inputBytes);
                 input = slot.input;
+            } else slot.input = nil;
+            Output direct;
+            id<MTLBuffer> output = nil;
+            if constexpr (std::is_same_v<Output, PixelStorage>) {
+                if (gpu.device.hasUnifiedMemory && outputBytes >= page) {
+                    direct.resize(outputSamples);
+                    output = borrow(direct, true);
+                }
             }
-            slot.output = grow(slot.output, outputBytes);
-            if (!slot.output)
-                return fallback("Metal buffer allocation failed");
+            if (!output) {
+                slot.output = grow(slot.output, outputBytes);
+                output = slot.output;
+            } else slot.output = nil;
+            if (!output) return fallback("Metal output allocation failed");
+            id<MTLBuffer> auxiliary[3]{input, input, input};
             for (unsigned n = 0; n < extra.size(); ++n) {
-                if (extra[n].empty()) continue;
+                if (extra[n].empty()) { slot.extra[n] = nil; continue; }
+                auxiliary[n] = borrow(extra[n], kernel == Kernel::Calibration);
+                if (auxiliary[n]) { slot.extra[n] = nil; continue; }
                 slot.extra[n] = grow(slot.extra[n], extra[n].size_bytes());
                 if (!slot.extra[n]) return fallback("Metal auxiliary buffer allocation failed");
                 std::memcpy(slot.extra[n].contents, extra[n].data(), extra[n].size_bytes());
+                auxiliary[n] = slot.extra[n];
             }
             auto command = [gpu.queue commandBuffer];
+            if (!centerShape[0]) slot.centers = nil;
+            if (centerShape[0]) {
+                const auto pixels = centerShape[0], frames = centerShape[1];
+                const auto kind = frames > 1024 ? Kernel::WinsorStream :
+                                  !centerShape[2] && frames <= 240 ? Kernel::Winsor : Kernel::WinsorWide;
+                auto first = gpu.pipelines[unsigned(kind)];
+                slot.centers = grow(slot.centers, std::size_t(pixels) * 6 * sizeof(float));
+                auto median = [command computeCommandEncoder];
+                if (!first || first.threadExecutionWidth != 32 || !median || !slot.centers)
+                    return fallback("Metal Winsor centers unavailable");
+                [median setComputePipelineState:first];
+                [median setBuffer:input offset:0 atIndex:0];
+                [median setBuffer:slot.centers offset:0 atIndex:1];
+                [median setBytes:centerShape.data() length:sizeof(centerShape) atIndex:2];
+                [median setBuffer:auxiliary[1] offset:0 atIndex:3];
+                [median dispatchThreads:MTLSizeMake(std::size_t(pixels) * 3 * 32, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(32, 1, 1)];
+                [median endEncoding];
+                auxiliary[0] = slot.centers;
+            }
             auto encoder = [command computeCommandEncoder];
             if (!encoder)
                 return fallback("Metal command encoder unavailable");
             [encoder setComputePipelineState:pipeline];
             [encoder setBuffer:input offset:0 atIndex:0];
-            [encoder setBuffer:slot.output offset:0 atIndex:1];
+            [encoder setBuffer:output offset:0 atIndex:1];
             for (unsigned n = 0; n < extra.size(); ++n)
-                [encoder setBuffer:extra[n].empty() ? input : slot.extra[n] offset:0 atIndex:3+n];
+                [encoder setBuffer:auxiliary[n] offset:0 atIndex:3+n];
             [encoder setBytes:&params length:sizeof(params) atIndex:2];
-            [encoder dispatchThreads:MTLSizeMake(threads, 1, 1)
-                threadsPerThreadgroup:MTLSizeMake(pipeline.threadExecutionWidth, 1, 1)];
-            [encoder endEncoding];
             const bool checkFinite = kernel == Kernel::Warp || kernel == Kernel::CFA ||
-                                     kernel == Kernel::Calibration || kernel == Kernel::Reduce;
+                                     kernel == Kernel::Calibration || kernel == Kernel::Reduce || kernel == Kernel::CurveLUT;
             if (checkFinite) {
-                auto check = gpu.pipelines[unsigned(Kernel::ValidateFinite)];
                 slot.invalid = grow(slot.invalid, sizeof(std::uint32_t));
-                if (!check || !slot.invalid || outputSamples > UINT32_MAX) return fallback("Metal validation unavailable");
+                if (!slot.invalid) return fallback("Metal validation unavailable");
                 *static_cast<std::uint32_t*>(slot.invalid.contents) = 0;
-                auto validation = [command computeCommandEncoder];
-                if (!validation) return fallback("Metal validation encoder unavailable");
-                const std::uint64_t count = outputSamples;
-                [validation setComputePipelineState:check];
-                [validation setBuffer:slot.output offset:0 atIndex:0];
-                [validation setBuffer:slot.invalid offset:0 atIndex:1];
-                [validation setBytes:&count length:sizeof(count) atIndex:2];
-                [validation dispatchThreads:MTLSizeMake(outputSamples, 1, 1)
-                      threadsPerThreadgroup:MTLSizeMake(check.threadExecutionWidth, 1, 1)];
-                [validation endEncoding];
+                [encoder setBuffer:slot.invalid offset:0 atIndex:6];
             }
+            if (gridWidth) {
+                [encoder dispatchThreads:MTLSizeMake(gridWidth, threads / gridWidth, 1)
+                   threadsPerThreadgroup:MTLSizeMake(16, std::min<NSUInteger>(16, pipeline.maxTotalThreadsPerThreadgroup / 16), 1)];
+            } else {
+                [encoder dispatchThreads:MTLSizeMake(threads, 1, 1)
+                   threadsPerThreadgroup:MTLSizeMake(pipeline.threadExecutionWidth, 1, 1)];
+            }
+            [encoder endEncoding];
             [command commit];
             [command waitUntilCompleted];
             if (command.status != MTLCommandBufferStatusCompleted)
                 return fallback("Metal command failed");
-            const float* pixels = static_cast<const float*>(slot.output.contents);
+            const float* pixels = static_cast<const float*>(output.contents);
             if (checkFinite && *static_cast<const std::uint32_t*>(slot.invalid.contents))
-                return fallback("Metal result exceeded finite range");
-            result.assign(pixels, pixels + outputSamples);
+                return fallback(kernel == Kernel::CurveLUT ? "curve requires scalar validation or precision" :
+                                                           "Metal result exceeded finite range");
+            if (!direct.empty() && direct.data() == pixels) result.swap(direct);
+            else result.assign(pixels, pixels + outputSamples);
             recordBackend(backend, "", command.GPUEndTime - command.GPUStartTime, kernelNames[unsigned(kernel)]);
             return true;
         } @catch (NSException*) {
@@ -738,7 +838,7 @@ struct WarpParameters {
 
 bool runWarp(const ImageBuffer& image, const WarpParameters& params, std::span<const float> coordinates, ImageBuffer& result) {
     if (!execute(Kernel::Warp, image.pixels, params, image.pixelCount(), image.sampleCount(), result.pixels, "metal",
-                 {coordinates, {}, {}})) return false;
+                 {coordinates, {}, {}}, image.width)) return false;
     result.width = image.width;
     result.height = image.height;
     result.channels = image.channels;
@@ -774,15 +874,15 @@ bool metalDemosaic(const std::vector<float>& mosaic, const std::array<int, 4>& c
         std::array<int, 4> colors;
     } params{result.width, result.height, colors};
     return execute(Kernel::CFA, mosaic, params, result.pixelCount(), result.sampleCount(), result.pixels,
-                   guarded ? "metal+cpu-guard" : "metal");
+                   guarded ? "metal+cpu-guard" : "metal", {}, result.width);
 }
 bool metalScientificCFA(const std::vector<float>& mosaic, unsigned width, unsigned height,
                         const std::array<int,4>& colors, const std::array<float,3>& gains,
                         std::vector<float>& samples) {
     struct { unsigned w,h; std::array<int,4> colors; std::array<float,3> gains; } params{width,height,colors,gains};
-    return execute(Kernel::ScientificCFA,mosaic,params,mosaic.size(),mosaic.size()*4,samples,"metal+cpu-cfa");
+    return execute(Kernel::ScientificCFA,mosaic,params,mosaic.size(),mosaic.size()*4,samples,"metal+cpu-cfa",{},width);
 }
-bool metalGuardLuminance(const ImageBuffer& image, const std::array<float,3>& gains, std::vector<float>& luminance) {
+bool metalGuardLuminance(const ImageBuffer& image, const std::array<float,3>& gains, PixelStorage& luminance) {
     struct { float hi[3], lo[3]; } params{};
     const double coefficients[] = {.2126*gains[0], .7152*gains[1], .0722*gains[2]};
     for (unsigned c=0;c<3;++c) {
@@ -803,6 +903,17 @@ bool metalPeakMask(std::span<const float> luminance, float threshold, std::vecto
     const auto words = luminance.size() / 32;
     return execute(Kernel::Peaks, luminance, threshold, words, words, mask, "metal+cpu-photometry");
 }
+bool metalCurveLUT(const ImageBuffer& image, std::span<const float> lookup, unsigned channel, bool preserveAlpha,
+                   ImageBuffer& result) {
+    if (lookup.size() < 2 || lookup.size() > UINT32_MAX || channel > 3) return fallback("unsupported curve LUT");
+    const std::array<unsigned, 4> params{channel, preserveAlpha, unsigned(lookup.size() - 1), 0};
+    if (!execute(Kernel::CurveLUT, image.pixels, params, image.pixelCount(), image.sampleCount(), result.pixels,
+                 "metal", {lookup, {}, {}})) return false;
+    result.width = image.width; result.height = image.height; result.channels = image.channels;
+    result.format = image.format; result.colorEncoding = image.colorEncoding;
+    result.sourceBitsPerChannel = image.sourceBitsPerChannel;
+    return true;
+}
 bool metalCalibrate(const ImageBuffer& light, const CalibrationOptions& options, bool lightBias, bool flatBias,
                     const std::vector<double>& means, ImageBuffer& result) {
     struct {
@@ -818,19 +929,20 @@ bool metalCalibrate(const ImageBuffer& light, const CalibrationOptions& options,
     return execute(Kernel::Calibration, light.pixels, params, light.pixelCount(), light.sampleCount(), result.pixels,
                    "metal", {plane(options.dark), plane(options.bias), plane(options.flat)});
 }
-bool metalWinsorCenters(const std::vector<float>& tile, std::size_t pixels, std::size_t frames,
+bool metalWinsorCenters(const PixelStorage& tile, std::size_t pixels, std::size_t frames,
                         std::span<const float> weights, std::vector<float>& centers) {
     std::array<unsigned, 4> params{unsigned(pixels), unsigned(frames), !weights.empty(), 0};
     // Two signed midpoint distances must fit in int64 at Q40 precision.
-    if (frames >= (1u << 21) || pixels > UINT32_MAX / frames) return fallback("Metal tile indexing limit");
+    if (!frames || !pixels || frames >= (1u << 21) || pixels > UINT32_MAX / frames) return fallback("Metal tile indexing limit");
     const auto kernel = frames > 1024 ? Kernel::WinsorStream :
                         weights.empty() && frames <= 240 ? Kernel::Winsor : Kernel::WinsorWide;
     return execute(kernel, tile, params, pixels * 3 * 32, pixels * 6, centers, "metal",
                    {weights, {}, {}});
 }
-bool metalWinsorReduce(const std::vector<float>& tile, std::size_t pixels, std::size_t frames,
-                       std::span<const float> weights, const std::vector<float>& centers, float low, float high,
+bool metalWinsorReduce(const PixelStorage& tile, std::size_t pixels, std::size_t frames,
+                       std::span<const float> weights, float low, float high,
                        bool counts, std::vector<float>& reduced) {
+    if (!frames || !pixels || frames >= (1u << 21) || pixels > UINT32_MAX / frames) return fallback("Metal tile indexing limit");
     const unsigned blocks = (unsigned(pixels) + 255) / 256;
     double total = weights.empty() ? double(frames) : std::accumulate(weights.begin(), weights.end(), 0.);
     struct {
@@ -840,6 +952,6 @@ bool metalWinsorReduce(const std::vector<float>& tile, std::size_t pixels, std::
     } params{unsigned(pixels),unsigned(frames),!weights.empty(),blocks,low,high,float(total),float(total - float(total))};
     const auto groups = counts ? frames * blocks : 0;
     return execute(Kernel::Reduce, tile, params, ((pixels + 31) / 32 + groups) * 32, (3 * pixels + groups) * 4,
-                   reduced, "metal", {centers, weights, {}});
+                   reduced, "metal", {std::span<const float>{}, weights, {}}, 0, {unsigned(pixels), unsigned(frames), !weights.empty(), 0});
 }
 } // namespace photonstack::detail

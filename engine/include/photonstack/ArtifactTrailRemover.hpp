@@ -100,7 +100,9 @@ struct ArtifactTrailResult {
 
 class ArtifactTrailRemover {
   public:
-    ArtifactTrailResult detect(const ImageBuffer& image, const ArtifactTrailOptions& options = {}) const;
+    // Detection-only callers can omit the unchanged full-resolution image copy.
+    ArtifactTrailResult detect(const ImageBuffer& image, const ArtifactTrailOptions& options = {},
+                               bool includeImage = true) const;
     ArtifactTrailResult remove(const ImageBuffer& image, const ArtifactTrailOptions& options = {}) const;
 };
 

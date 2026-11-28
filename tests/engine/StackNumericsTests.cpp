@@ -124,7 +124,7 @@ void testRowCoverage() {
     require(grayAccumulator.addRow(0, second.data(), 2, 1));
     grayAccumulator.beginFinalization();
     grayAccumulator.finalizeRow(0, 2);
-    require(grayAccumulator.takeImage().pixels == std::vector<float>({8, 6}));
+    require(grayAccumulator.takeImage().pixels == PixelStorage({8, 6}));
 }
 } // namespace
 

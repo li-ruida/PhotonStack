@@ -29,6 +29,17 @@ struct SensorCalibrationResult {
 void validateSensorCalibration(const std::filesystem::path& input, const SensorCalibrationOptions& options);
 void validateSensorCalibration(const CalibrationAcquisition& light, const SensorCalibrationOptions& options,
                                const std::map<std::filesystem::path, CalibrationAcquisition>& masters);
+// Owned by one sequential calibration job. Readers retain their verified file
+// descriptors and validate their pathname and file version after each light.
+class SensorCalibrationSession {
+  public:
+    SensorCalibrationResult calibrate(SensorMasterSource input, const SensorCalibrationOptions& options);
+
+  private:
+    std::map<std::filesystem::path, SensorFitsReader> readers_;
+    std::optional<std::array<double, 4>> flatMeans_;
+    std::filesystem::path flatPath_, flatBiasPath_;
+};
 SensorCalibrationResult calibrateSensorFrame(SensorMasterSource input, const SensorCalibrationOptions& options);
 // Same pixel geometry: preserve source acquisition/WCS cards, replace storage
 // scaling and stale statistics, and mark calibrated sensor-domain output.

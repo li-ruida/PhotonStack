@@ -125,6 +125,17 @@ PhotonStackMosaicRunResult photonstack_mosaic_paths(
     char* errorBuffer,
     size_t errorBufferSize
 );
+#ifdef __APPLE__
+// The caller owns storage on success. Pixels are premultiplied RGBA8 in sRGB.
+typedef struct PhotonStackPreviewPixels {
+    const uint8_t* data;
+    void* storage;
+} PhotonStackPreviewPixels;
+PhotonStackCurvePreviewRunResult photonstack_curve_preview_pixels(
+    const char* input, PhotonStackCurvePreviewRequest request, PhotonStackPreviewPixels* pixels,
+    char* errorBuffer, size_t errorBufferSize);
+void photonstack_free_preview_pixels(void* storage);
+#endif
 PhotonStackCurvePreviewRunResult photonstack_curve_preview_path(
     const char* input,
     const char* output,

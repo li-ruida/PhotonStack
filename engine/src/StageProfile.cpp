@@ -40,29 +40,46 @@ std::uint64_t residentBytes() {
     return 0;
 }
 void transition(StageContext next) {
+    const auto previous = currentStage;
+    // Backend preference changes do not leave/re-enter a profiled stage.
+    // With profiling off, avoid both clocks and the task_info RSS system call.
+    if ((!previous.profile && !next.profile) ||
+        (previous.profile == next.profile && previous.stage == next.stage)) {
+        currentStage = next;
+        return;
+    }
     const auto cpu = threadCPU();
     const auto rss = residentBytes();
-    const auto update = [&](StageContext ctx, bool enter) {
-        if (!ctx.profile)
-            return;
-        std::lock_guard lock(ctx.profile->mutex);
+    const auto update = [&](StageContext ctx, bool enter, auto now) {
         auto& m = ctx.profile->stages[unsigned(ctx.stage)];
-        const auto now = std::chrono::steady_clock::now();
         m.peakResidentBytes = std::max(m.peakResidentBytes, rss);
         if (enter) {
-            if (!m.active++)
-                m.started = now;
+            if (!m.active++) m.started = now;
             m.peakWorkers = std::max(m.peakWorkers, m.active);
             ++m.visits;
         } else {
             m.cpu += cpu - since;
-            if (!--m.active)
-                m.wall += std::chrono::duration<double>(now - m.started).count();
+            if (!--m.active) m.wall += std::chrono::duration<double>(now - m.started).count();
         }
     };
-    update(currentStage, false);
+    if (previous.profile && previous.profile == next.profile) {
+        // Both sides share one timestamp and lock; keep the live active counts
+        // synchronized so union wall time and concurrent worker peaks stay exact.
+        std::lock_guard lock(previous.profile->mutex);
+        const auto now = std::chrono::steady_clock::now();
+        update(previous, false, now);
+        update(next, true, now);
+    } else {
+        if (previous.profile) {
+            std::lock_guard lock(previous.profile->mutex);
+            update(previous, false, std::chrono::steady_clock::now());
+        }
+        if (next.profile) {
+            std::lock_guard lock(next.profile->mutex);
+            update(next, true, std::chrono::steady_clock::now());
+        }
+    }
     currentStage = next;
-    update(next, true);
     since = cpu;
 }
 } // namespace

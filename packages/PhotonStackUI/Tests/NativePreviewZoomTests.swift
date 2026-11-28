@@ -203,3 +203,20 @@ private func writePreviewFixture(_ url: URL, width: Int) throws {
     }
 }
 #endif
+
+#if os(macOS)
+@Test func nativePreviewSeparatesViewportAndNativeResolutionCaches() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let input = root.appendingPathComponent("wide.png")
+    try writePreviewFixture(input, width: 4000)
+    let loader = NativePreviewImageLoader()
+    let fit = try #require(try await loader.load(input, maximumPixelSize: 512))
+    #expect(fit.width == 512)
+    #expect(await loader.sourceSize(input) == CGSize(width: 4000, height: 16))
+    let native = try #require(try await loader.load(input))
+    #expect(native.width == 4000 && native !== fit)
+    #expect(try await loader.load(input, maximumPixelSize: 512) === fit)
+}
+#endif

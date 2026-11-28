@@ -74,7 +74,8 @@ struct StageContext {
 extern thread_local StageContext currentStage;
 
 // Exclusive stages on each thread. Concurrent visits to the same stage share
-// wall time, while their thread CPU times are additive.
+// wall time, while their thread CPU times are additive. Backend preference
+// changes within the same stage do not add visits or reset its accounting.
 class StageScope {
   public:
     explicit StageScope(StageContext next);

@@ -2,9 +2,16 @@
 #include <filesystem>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 namespace photonstack {
+struct FileVersion {
+    std::uint64_t device, inode, size;
+    std::int64_t modifiedSeconds, modifiedNanoseconds, changedSeconds, changedNanoseconds;
+    bool operator==(const FileVersion&) const = default;
+};
+std::optional<FileVersion> regularFileVersion(const std::filesystem::path& path);
 struct FileDigestSnapshot {
     std::string sha, prefix;
     std::uint64_t size = 0;

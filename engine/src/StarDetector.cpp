@@ -1,5 +1,7 @@
-#include "photonstack/StageProfile.hpp"
 #include "photonstack/StarDetector.hpp"
+#include "photonstack/ParallelRanges.hpp"
+#include "photonstack/StageProfile.hpp"
+#include <atomic>
 
 #ifdef __APPLE__
 #include "MetalCompute.hpp"
@@ -88,7 +90,10 @@ StarDetectionResult detectLuminanceBuffer(
         }
         if (valid.size() < 16) return detectionError("ImageCoverageEmpty", "Robust stellar statistics need complete pixel coverage");
         mean = detail::stellarMedian(valid);
-        for (auto& value : valid) value = float(std::abs(value - mean));
+        detail::parallelRanges(valid.size(), 65536, [&](std::size_t first, std::size_t last) noexcept {
+            for (auto i = first; i < last; ++i)
+                valid[i] = float(std::abs(valid[i] - mean));
+        });
         standardDeviation = detail::stellarMedian(valid) * 1.482602218505602;
     } else {
         double sum = 0.0;
@@ -129,129 +134,148 @@ StarDetectionResult detectLuminanceBuffer(
         Star star;
         double flux = 0.0;
     };
+    // Each row keeps its raster order; merge rows before the legacy flux sort
+    // so equal-flux plateaus and separation decisions remain deterministic.
+    std::vector<std::vector<RankedStar>> rowStars(height);
+    detail::parallelRanges(
+        height - 2 * options.border, std::max<std::size_t>(1, 65536 / width), [&](std::size_t first, std::size_t last) {
+            for (auto row = first; row < last; ++row) {
+                const auto y = static_cast<std::uint32_t>(row) + options.border;
+                auto& stars = rowStars[y];
+                for (std::uint32_t x = options.border; x < width - options.border; ++x) {
+                    if (!peakMask.empty()) {
+                        const std::size_t index = static_cast<std::size_t>(y) * width + x;
+                        const auto word = index / 32;
+                        if (word < peakMask.size()) {
+                            const auto bits = std::bit_cast<std::uint32_t>(peakMask[word]) >> (index % 32);
+                            const auto skip = bits ? unsigned(std::countr_zero(bits)) : unsigned(32 - index % 32);
+                            if (skip) {
+                                x += std::min(skip, width - options.border - x) - 1;
+                                continue;
+                            }
+                        }
+                    }
+                    const auto centerIndex = static_cast<std::size_t>(y) * width + x;
+                    if (!isValid(centerIndex)) {
+                        continue;
+                    }
+                    const double center = effectiveLuminance(centerIndex);
+                    if (center < threshold) {
+                        continue;
+                    }
+
+                    bool isLocalMaximum = true;
+                    for (int dy = -1; dy <= 1 && isLocalMaximum; ++dy) {
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            if (dx == 0 && dy == 0) {
+                                continue;
+                            }
+                            const auto neighborX = static_cast<std::uint32_t>(static_cast<int>(x) + dx);
+                            const auto neighborY = static_cast<std::uint32_t>(static_cast<int>(y) + dy);
+                            const auto neighborIndex = static_cast<std::size_t>(neighborY) * width + neighborX;
+                            if (!isValid(neighborIndex)) {
+                                continue;
+                            }
+                            const double neighbor = effectiveLuminance(neighborIndex);
+                            const bool equalEarlierPixel =
+                                neighbor == center && (neighborY < y || (neighborY == y && neighborX < x));
+                            if (neighbor > center || equalEarlierPixel) {
+                                isLocalMaximum = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (!isLocalMaximum) {
+                        continue;
+                    }
+
+                    double weightedX = 0.0;
+                    double weightedY = 0.0;
+                    double flux = 0.0;
+                    for (int dy = -1; dy <= 1; ++dy) {
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            const auto sampleX = static_cast<std::uint32_t>(static_cast<int>(x) + dx);
+                            const auto sampleY = static_cast<std::uint32_t>(static_cast<int>(y) + dy);
+                            const auto sampleIndex = static_cast<std::size_t>(sampleY) * width + sampleX;
+                            if (!isValid(sampleIndex)) {
+                                continue;
+                            }
+                            const double sample = luminance[sampleIndex];
+                            const double signal = std::max(0.0, sample - mean) *
+                                                  std::clamp(static_cast<double>(coverageAt(sampleIndex)), 0.0, 1.0);
+                            weightedX += static_cast<double>(sampleX) * signal;
+                            weightedY += static_cast<double>(sampleY) * signal;
+                            flux += signal;
+                        }
+                    }
+
+                    if (!(flux > 0.0) || !std::isfinite(flux)) {
+                        continue;
+                    }
+
+                    const double centroidX = weightedX / flux;
+                    const double centroidY = weightedY / flux;
+                    double momentXX = 0.0;
+                    double momentYY = 0.0;
+                    double momentXY = 0.0;
+                    for (int dy = -1; dy <= 1; ++dy) {
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            const auto sampleX = static_cast<std::uint32_t>(static_cast<int>(x) + dx);
+                            const auto sampleY = static_cast<std::uint32_t>(static_cast<int>(y) + dy);
+                            const auto sampleIndex = static_cast<std::size_t>(sampleY) * width + sampleX;
+                            if (!isValid(sampleIndex)) {
+                                continue;
+                            }
+                            const double sample = luminance[sampleIndex];
+                            const double signal = std::max(0.0, sample - mean) *
+                                                  std::clamp(static_cast<double>(coverageAt(sampleIndex)), 0.0, 1.0);
+                            const double offsetX = static_cast<double>(sampleX) - centroidX;
+                            const double offsetY = static_cast<double>(sampleY) - centroidY;
+                            momentXX += offsetX * offsetX * signal;
+                            momentYY += offsetY * offsetY * signal;
+                            momentXY += offsetX * offsetY * signal;
+                        }
+                    }
+                    momentXX /= flux;
+                    momentYY /= flux;
+                    momentXY /= flux;
+                    const double trace = momentXX + momentYY;
+                    const double determinant = std::max(0.0, momentXX * momentYY - momentXY * momentXY);
+                    const double discriminant = std::max(0.0, trace * trace * 0.25 - determinant);
+                    const double majorVariance = std::max(0.0, trace * 0.5 + std::sqrt(discriminant));
+                    const double minorVariance = std::max(0.0, trace * 0.5 - std::sqrt(discriminant));
+                    const double sigmaMajor = std::sqrt(majorVariance);
+                    const double sigmaMinor = std::sqrt(minorVariance);
+                    const double fwhm = 2.35482 * sigmaMajor;
+                    const double eccentricity =
+                        sigmaMajor <= 0.0
+                            ? 0.0
+                            : std::sqrt(std::max(0.0, 1.0 - (sigmaMinor * sigmaMinor) / (sigmaMajor * sigmaMajor)));
+
+                    stars.push_back({
+                        .star =
+                            {
+                                .x = static_cast<float>(centroidX),
+                                .y = static_cast<float>(centroidY),
+                                .flux = static_cast<float>(
+                                    std::min(flux, static_cast<double>(std::numeric_limits<float>::max()))),
+                                .peak = luminance[centerIndex],
+                                .fwhm = static_cast<float>(fwhm),
+                                .eccentricity = static_cast<float>(eccentricity),
+                            },
+                        .flux = flux,
+                    });
+                }
+            }
+        });
+    std::size_t starCount = 0;
+    for (const auto& row : rowStars)
+        starCount += row.size();
     std::vector<RankedStar> stars;
-    for (std::uint32_t y = options.border; y < height - options.border; ++y) {
-        for (std::uint32_t x = options.border; x < width - options.border; ++x) {
-            if (!peakMask.empty()) {
-                const std::size_t index = static_cast<std::size_t>(y) * width + x;
-                const auto word = index / 32;
-                if (word < peakMask.size()) {
-                    const auto bits = std::bit_cast<std::uint32_t>(peakMask[word]) >> (index % 32);
-                    const auto skip = bits ? unsigned(std::countr_zero(bits)) : unsigned(32 - index % 32);
-                    if (skip) {
-                        x += std::min(skip, width - options.border - x) - 1;
-                        continue;
-                    }
-                }
-            }
-            const auto centerIndex = static_cast<std::size_t>(y) * width + x;
-            if (!isValid(centerIndex)) {
-                continue;
-            }
-            const double center = effectiveLuminance(centerIndex);
-            if (center < threshold) {
-                continue;
-            }
-
-            bool isLocalMaximum = true;
-            for (int dy = -1; dy <= 1 && isLocalMaximum; ++dy) {
-                for (int dx = -1; dx <= 1; ++dx) {
-                    if (dx == 0 && dy == 0) {
-                        continue;
-                    }
-                    const auto neighborX = static_cast<std::uint32_t>(static_cast<int>(x) + dx);
-                    const auto neighborY = static_cast<std::uint32_t>(static_cast<int>(y) + dy);
-                    const auto neighborIndex = static_cast<std::size_t>(neighborY) * width + neighborX;
-                    if (!isValid(neighborIndex)) {
-                        continue;
-                    }
-                    const double neighbor = effectiveLuminance(neighborIndex);
-                    const bool equalEarlierPixel = neighbor == center && (neighborY < y || (neighborY == y && neighborX < x));
-                    if (neighbor > center || equalEarlierPixel) {
-                        isLocalMaximum = false;
-                        break;
-                    }
-                }
-            }
-            if (!isLocalMaximum) {
-                continue;
-            }
-
-            double weightedX = 0.0;
-            double weightedY = 0.0;
-            double flux = 0.0;
-            for (int dy = -1; dy <= 1; ++dy) {
-                for (int dx = -1; dx <= 1; ++dx) {
-                    const auto sampleX = static_cast<std::uint32_t>(static_cast<int>(x) + dx);
-                    const auto sampleY = static_cast<std::uint32_t>(static_cast<int>(y) + dy);
-                    const auto sampleIndex = static_cast<std::size_t>(sampleY) * width + sampleX;
-                    if (!isValid(sampleIndex)) {
-                        continue;
-                    }
-                    const double sample = luminance[sampleIndex];
-                    const double signal = std::max(0.0, sample - mean) *
-                                          std::clamp(static_cast<double>(coverageAt(sampleIndex)), 0.0, 1.0);
-                    weightedX += static_cast<double>(sampleX) * signal;
-                    weightedY += static_cast<double>(sampleY) * signal;
-                    flux += signal;
-                }
-            }
-
-            if (!(flux > 0.0) || !std::isfinite(flux)) {
-                continue;
-            }
-
-            const double centroidX = weightedX / flux;
-            const double centroidY = weightedY / flux;
-            double momentXX = 0.0;
-            double momentYY = 0.0;
-            double momentXY = 0.0;
-            for (int dy = -1; dy <= 1; ++dy) {
-                for (int dx = -1; dx <= 1; ++dx) {
-                    const auto sampleX = static_cast<std::uint32_t>(static_cast<int>(x) + dx);
-                    const auto sampleY = static_cast<std::uint32_t>(static_cast<int>(y) + dy);
-                    const auto sampleIndex = static_cast<std::size_t>(sampleY) * width + sampleX;
-                    if (!isValid(sampleIndex)) {
-                        continue;
-                    }
-                    const double sample = luminance[sampleIndex];
-                    const double signal = std::max(0.0, sample - mean) *
-                                          std::clamp(static_cast<double>(coverageAt(sampleIndex)), 0.0, 1.0);
-                    const double offsetX = static_cast<double>(sampleX) - centroidX;
-                    const double offsetY = static_cast<double>(sampleY) - centroidY;
-                    momentXX += offsetX * offsetX * signal;
-                    momentYY += offsetY * offsetY * signal;
-                    momentXY += offsetX * offsetY * signal;
-                }
-            }
-            momentXX /= flux;
-            momentYY /= flux;
-            momentXY /= flux;
-            const double trace = momentXX + momentYY;
-            const double determinant = std::max(0.0, momentXX * momentYY - momentXY * momentXY);
-            const double discriminant = std::max(0.0, trace * trace * 0.25 - determinant);
-            const double majorVariance = std::max(0.0, trace * 0.5 + std::sqrt(discriminant));
-            const double minorVariance = std::max(0.0, trace * 0.5 - std::sqrt(discriminant));
-            const double sigmaMajor = std::sqrt(majorVariance);
-            const double sigmaMinor = std::sqrt(minorVariance);
-            const double fwhm = 2.35482 * sigmaMajor;
-            const double eccentricity =
-                sigmaMajor <= 0.0
-                    ? 0.0
-                    : std::sqrt(std::max(0.0, 1.0 - (sigmaMinor * sigmaMinor) / (sigmaMajor * sigmaMajor)));
-
-            stars.push_back({
-                .star = {
-                    .x = static_cast<float>(centroidX),
-                    .y = static_cast<float>(centroidY),
-                    .flux = static_cast<float>(std::min(flux, static_cast<double>(std::numeric_limits<float>::max()))),
-                    .peak = luminance[centerIndex],
-                    .fwhm = static_cast<float>(fwhm),
-                    .eccentricity = static_cast<float>(eccentricity),
-                },
-                .flux = flux,
-            });
-        }
+    stars.reserve(starCount);
+    for (auto& row : rowStars) {
+        stars.insert(stars.end(), row.begin(), row.end());
+        std::vector<RankedStar>().swap(row);
     }
 
     std::sort(stars.begin(), stars.end(), [](const RankedStar& left, const RankedStar& right) {
@@ -338,7 +362,15 @@ StarDetectionResult StarDetector::detect(const ImageBuffer& image, const StarDet
     }
     std::vector<float> luminance(image.pixelCount(), 0.0F);
     std::vector<float> coverage(image.channels == 4 ? image.pixelCount() : 0, 0.0F);
-    for (std::uint32_t y = 0; y < image.height; ++y) {
+    // Preserve the serial scan's first invalid pixel and diagnostic text.
+    std::atomic<std::size_t> invalid{std::numeric_limits<std::size_t>::max()};
+    const auto markInvalid = [&](std::size_t pixel, std::size_t kind) noexcept {
+        const auto candidate = pixel * 4 + kind;
+        auto current = invalid.load(std::memory_order_relaxed);
+        while (candidate < current && !invalid.compare_exchange_weak(current, candidate, std::memory_order_relaxed)) {
+        }
+    };
+    detail::parallelRows(image.width, image.height, [&](int y) noexcept {
         for (std::uint32_t x = 0; x < image.width; ++x) {
             const auto pixel = static_cast<std::size_t>(y) * image.width + x;
             const auto offset = pixel * image.channels;
@@ -346,7 +378,8 @@ StarDetectionResult StarDetector::detect(const ImageBuffer& image, const StarDet
             if (image.channels == 4) {
                 const float alpha = image.pixels[offset + 3];
                 if (!std::isfinite(alpha)) {
-                    return detectionError("ImageBufferInvalid", "Input image alpha must be finite");
+                    markInvalid(pixel, 0);
+                    continue;
                 }
                 pixelCoverage = std::clamp(alpha, 0.0F, 1.0F);
                 coverage[pixel] = pixelCoverage;
@@ -356,15 +389,21 @@ StarDetectionResult StarDetector::detect(const ImageBuffer& image, const StarDet
             }
             for (std::uint16_t channel = 0; channel < detail::colorChannelCount(image); ++channel) {
                 if (!std::isfinite(image.pixels[offset + channel])) {
-                    return detectionError("ImageBufferInvalid", "Covered image colors must be finite");
+                    markInvalid(pixel, 1);
                 }
             }
             const float value = luminanceAt(image, x, y);
             if (!std::isfinite(value)) {
-                return detectionError("ImageBufferInvalid", "Covered image luminance must be finite");
+                markInvalid(pixel, 2);
+                continue;
             }
             luminance[pixel] = value;
         }
+    });
+    if (const auto first = invalid.load(std::memory_order_relaxed); first != std::numeric_limits<std::size_t>::max()) {
+        constexpr const char* messages[] = {"Input image alpha must be finite", "Covered image colors must be finite",
+                                            "Covered image luminance must be finite"};
+        return detectionError("ImageBufferInvalid", messages[first % 4]);
     }
 
     return detectLuminanceBuffer(image.width, image.height, luminance, options, coverage);

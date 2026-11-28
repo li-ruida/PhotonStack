@@ -1,4 +1,6 @@
 #include "photonstack/Deconvolution.hpp"
+#include "photonstack/ParallelRanges.hpp"
+#include <atomic>
 
 #include <algorithm>
 #include <cmath>
@@ -34,14 +36,13 @@ std::vector<float> gaussianKernel(std::uint32_t radius, float sigma) {
     return kernel;
 }
 
-ImageBuffer gaussianBlur(const ImageBuffer& image, const std::vector<float>& kernel, std::uint32_t radius) {
-    ImageBuffer temp = image;
-    ImageBuffer output = image;
+void gaussianBlur(const ImageBuffer& image, const std::vector<float>& kernel, std::uint32_t radius,
+                  ImageBuffer& temp, ImageBuffer& output, std::vector<float>& horizontalCoverage) {
     const int r = static_cast<int>(radius);
     const auto colorChannels = detail::colorChannelCount(image);
-    std::vector<float> horizontalCoverage(image.pixelCount(), 0.0F);
 
-    for (std::uint32_t y = 0; y < image.height; ++y) {
+
+    detail::parallelRows(image.width, image.height, [&](int y) noexcept {
         for (std::uint32_t x = 0; x < image.width; ++x) {
             const auto pixel = static_cast<std::size_t>(y) * image.width + x;
             const auto offset = pixel * image.channels;
@@ -60,16 +61,16 @@ ImageBuffer gaussianBlur(const ImageBuffer& image, const std::vector<float>& ker
                 }
                 weightSum += weight;
             }
+            horizontalCoverage[pixel] = static_cast<float>(weightSum);
             if (weightSum > 0.0F) {
-                horizontalCoverage[pixel] = static_cast<float>(weightSum);
                 for (std::uint16_t c = 0; c < colorChannels; ++c) {
                     temp.pixels[offset + c] = static_cast<float>(sums[c] / weightSum);
                 }
             }
         }
-    }
+    });
 
-    for (std::uint32_t y = 0; y < image.height; ++y) {
+    detail::parallelRows(image.width, image.height, [&](int y) noexcept {
         for (std::uint32_t x = 0; x < image.width; ++x) {
             const auto pixel = static_cast<std::size_t>(y) * image.width + x;
             const auto offset = pixel * image.channels;
@@ -99,8 +100,7 @@ ImageBuffer gaussianBlur(const ImageBuffer& image, const std::vector<float>& ker
                                                 : image.pixels[offset + c];
             }
         }
-    }
-    return output;
+    });
 }
 
 } // namespace
@@ -153,45 +153,55 @@ DeconvolutionResult Deconvolution::richardsonLucy(const ImageBuffer& image, cons
         );
     }
 
+    // Both blurs use the same temporary image and coverage plane. The modeled
+    // image becomes the ratio only after the first blur has finished.
+    ImageBuffer temp = estimate, modeled = estimate, correction = estimate;
+    std::vector<float> horizontalCoverage(image.pixelCount());
     for (std::uint32_t iteration = 0; iteration < options.iterations; ++iteration) {
-        const auto blurred = gaussianBlur(estimate, kernel, options.radius);
-        ImageBuffer ratio = image;
-        for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
-            const auto offset = pixel * image.channels;
-            if (!detail::pixelHasValidColor(image, pixel)) {
-                detail::clearMaskedPixel(ratio, pixel);
-                continue;
-            }
-            for (std::uint16_t c = 0; c < colorChannels; ++c) {
-                const double observed = image.pixels[offset + c];
-                const double modeled = std::max(denominatorFloor[c], static_cast<double>(blurred.pixels[offset + c]));
-                const double rawRatio = observed / modeled;
-                ratio.pixels[offset + c] = static_cast<float>(std::clamp(
-                    1.0 + (rawRatio - 1.0) * (1.0 - options.damping), 0.0, 4.0
-                ));
-            }
-        }
-        const auto correction = gaussianBlur(ratio, kernel, options.radius);
-        for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
-            const auto offset = pixel * image.channels;
-            if (!detail::pixelHasValidColor(image, pixel) || !detail::pixelHasValidColor(correction, pixel)) {
-                detail::clearMaskedPixel(estimate, pixel);
-                continue;
-            }
-            for (std::uint16_t c = 0; c < colorChannels; ++c) {
-                const double updated = std::max(
-                    0.0,
-                    static_cast<double>(estimate.pixels[offset + c]) * correction.pixels[offset + c]
-                );
-                if (!options.clampOutput &&
-                    (!std::isfinite(updated) || updated > std::numeric_limits<float>::max())) {
-                    return deconvolutionError("ImageValueInvalid", "Deconvolution output exceeds Float32 range");
+        gaussianBlur(estimate, kernel, options.radius, temp, modeled, horizontalCoverage);
+        auto& ratio = modeled;
+        detail::parallelRanges(image.pixelCount(), 32768, [&](std::size_t first, std::size_t last) noexcept {
+            for (auto pixel = first; pixel < last; ++pixel) {
+                const auto offset = pixel * image.channels;
+                if (!detail::pixelHasValidColor(image, pixel)) {
+                    detail::clearMaskedPixel(ratio, pixel);
+                    continue;
                 }
-                estimate.pixels[offset + c] = options.clampOutput
-                                                  ? static_cast<float>(std::clamp(updated, 0.0, 1.0))
-                                                  : static_cast<float>(updated);
+                for (std::uint16_t c = 0; c < colorChannels; ++c) {
+                    const double observed = image.pixels[offset + c];
+                    const double denominator =
+                        std::max(denominatorFloor[c], static_cast<double>(modeled.pixels[offset + c]));
+                    const double rawRatio = observed / denominator;
+                    ratio.pixels[offset + c] =
+                        static_cast<float>(std::clamp(1.0 + (rawRatio - 1.0) * (1.0 - options.damping), 0.0, 4.0));
+                }
             }
-        }
+        });
+        gaussianBlur(ratio, kernel, options.radius, temp, correction, horizontalCoverage);
+        std::atomic<bool> overflow{false};
+        detail::parallelRanges(image.pixelCount(), 32768, [&](std::size_t first, std::size_t last) noexcept {
+            for (auto pixel = first; pixel < last; ++pixel) {
+                const auto offset = pixel * image.channels;
+                if (!detail::pixelHasValidColor(image, pixel) || !detail::pixelHasValidColor(correction, pixel)) {
+                    detail::clearMaskedPixel(estimate, pixel);
+                    continue;
+                }
+                for (std::uint16_t c = 0; c < colorChannels; ++c) {
+                    const double updated =
+                        std::max(0.0, static_cast<double>(estimate.pixels[offset + c]) * correction.pixels[offset + c]);
+                    if (!options.clampOutput &&
+                        (!std::isfinite(updated) || updated > std::numeric_limits<float>::max())) {
+                        overflow.store(true, std::memory_order_relaxed);
+                        return;
+                    }
+                    estimate.pixels[offset + c] = options.clampOutput
+                                                      ? static_cast<float>(std::clamp(updated, 0.0, 1.0))
+                                                      : static_cast<float>(updated);
+                }
+            }
+        });
+        if (overflow.load(std::memory_order_relaxed))
+            return deconvolutionError("ImageValueInvalid", "Deconvolution output exceeds Float32 range");
     }
 
     DeconvolutionResult result;

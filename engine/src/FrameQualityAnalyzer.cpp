@@ -33,12 +33,52 @@ double luminanceAt(const ImageBuffer& image, std::size_t pixel) {
 
 struct WeightedSample {
     float value = 0.0F;
-    double weight = 0.0;
+    float weight = 0.0F;
 };
 
 float weightedMedian(std::vector<WeightedSample>& values) {
     if (values.empty()) {
         return 0.0F;
+    }
+    const auto less = [](const WeightedSample& a, const WeightedSample& b) { return a.value < b.value; };
+    if (std::all_of(values.begin(), values.end(), [](const auto& sample) { return sample.weight == 1; })) {
+        auto middle = values.begin() + values.size() / 2;
+        std::nth_element(values.begin(), middle, values.end(), less);
+        if (values.size() % 2) return middle->value;
+        const auto lower = std::max_element(values.begin(), middle, less);
+        return float((double(lower->value) + middle->value) * .5);
+    }
+    // With binary fixed-point coverage whose sum fits a double mantissa,
+    // partition sums are exact in any order. Otherwise keep the sorted
+    // accumulation order for compatibility at a weighted half-rank boundary.
+    double total = 0;
+    const bool exactWeights = values.size() <= (1ULL << 29) &&
+        std::all_of(values.begin(), values.end(), [&](const auto& sample) {
+            total += sample.weight;
+            const double units = std::ldexp(double(sample.weight), 24);
+            return std::floor(units) == units;
+        });
+    if (exactWeights && values.size() > 128) {
+        auto first = values.begin(), last = values.end();
+        const double half = .5 * total, tolerance = std::max(1., total) * 1.e-12;
+        double before = 0;
+        while (first != last) {
+            auto pivot = first + (last - first) / 2;
+            std::nth_element(first, pivot, last, less);
+            const float value = pivot->value;
+            const auto lower = std::partition(first, last, [&](const auto& s) { return s.value < value; });
+            const auto upper = std::partition(lower, last, [&](const auto& s) { return s.value == value; });
+            double left = before, right;
+            for (auto it = first; it != lower; ++it) left += it->weight;
+            right = left;
+            for (auto it = lower; it != upper; ++it) right += it->weight;
+            if (left >= half) { last = lower; continue; }
+            if (right < half) { first = upper; before = right; continue; }
+            if (right - half > tolerance) return value;
+            // Equal samples can straddle the tolerance boundary. Resolve the
+            // rare tie with the original sorted-rank rule below.
+            break;
+        }
     }
     std::sort(values.begin(), values.end(), [](const WeightedSample& left, const WeightedSample& right) {
         return left.value < right.value;

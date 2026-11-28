@@ -296,10 +296,7 @@ FrameNormalizationResult FrameNormalizer::matchReference(const ImageBuffer& imag
         return normalizationError("ArgumentInvalid", "Frame normalization options are outside valid ranges");
     }
 
-    float inputBackground = backgroundMedian(image);
-    float measuredReferenceBackground = backgroundMedian(reference);
-    float inputScale = robustScale(image, inputBackground);
-    float measuredReferenceScale = robustScale(reference, measuredReferenceBackground);
+    float inputBackground, measuredReferenceBackground, inputScale, measuredReferenceScale;
     if (image.width == reference.width && image.height == reference.height) {
         const auto paired = pairedStatistics(image, reference);
         if (!paired.ok) {
@@ -309,6 +306,11 @@ FrameNormalizationResult FrameNormalizer::matchReference(const ImageBuffer& imag
         measuredReferenceBackground = paired.referenceBackground;
         inputScale = paired.inputScale;
         measuredReferenceScale = paired.referenceScale;
+    } else {
+        inputBackground = backgroundMedian(image);
+        measuredReferenceBackground = backgroundMedian(reference);
+        inputScale = robustScale(image, inputBackground);
+        measuredReferenceScale = robustScale(reference, measuredReferenceBackground);
     }
     if (!std::isfinite(inputBackground) || !std::isfinite(measuredReferenceBackground) ||
         !std::isfinite(inputScale) || !std::isfinite(measuredReferenceScale)) {

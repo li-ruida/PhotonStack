@@ -51,7 +51,8 @@ PsfMeasurement measurePsf(const ImageBuffer& image,const PsfMeasureOptions& opti
     if(excluded.size()!=options.excluded.size()||excluded.size()>2048)throw std::invalid_argument("Invalid excluded PSF star IDs");
     // Detection uses a finite luminance placeholder plus explicit coverage, so
     // NaN holes and partial RGB coverage are never treated as black sky.
-    std::vector<float> luminance(image.pixelCount()),coverage(image.pixelCount());
+    PixelStorage luminance(image.pixelCount());
+    std::vector<float> coverage(image.pixelCount());
     for(std::size_t i=0;i<image.pixelCount();++i){
         if(!detail::pixelHasValidColor(image,i)||detail::pixelCoverage(image,i)<.999999F)continue;
         const auto* p=&image.pixels[i*image.channels];

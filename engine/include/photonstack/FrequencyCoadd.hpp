@@ -27,7 +27,8 @@ struct FrequencyNoisePower {
 // std::overflow_error/domain_error. A failed add/merge never changes the state.
 class FrequencyCoadd {
 public:
-    FrequencyCoadd(std::size_t width, std::size_t height, std::size_t threads = 1);
+    // Zero selects bounded automatic parallelism; explicit 1..64 stays supported.
+    FrequencyCoadd(std::size_t width, std::size_t height, std::size_t threads = 0);
     [[nodiscard]] std::size_t width() const { return width_; }
     [[nodiscard]] std::size_t height() const { return height_; }
     [[nodiscard]] std::size_t frameCount() const { return count_; }

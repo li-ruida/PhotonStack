@@ -91,7 +91,7 @@ class SequenceQualityAnalyzer {
     // native image and must be measured separately when using a renderer.
     SequenceFrameSample sample(const ImageBuffer& image,
                                const SequenceQualityOptions& options = {},
-                               const RegisteredGridRenderer& renderer = {}) const;
+                               const RegisteredGridRenderer& renderer = {}, bool keepGrid = true) const;
     // Temporal residual centers exclude the frame being assessed. Call after
     // registration, with consistent linear photometric units and sampling grids.
     SequenceQualityResult assess(const std::vector<SequenceFrameSample>& frames,

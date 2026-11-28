@@ -606,7 +606,10 @@ private func writeSolidTestPNG(to url: URL, red: CGFloat, green: CGFloat, blue: 
             try await service.runCLI(arguments: ["drizzle"])
         }
     }
-    let deadline = ContinuousClock.now + .seconds(15)
+    // Wait for an observed event, not a launch timer. The complete suite starts
+    // many subprocess fixtures concurrently; setup can take longer than the
+    // cancellation itself, which is tested only after the stream is active.
+    let deadline = ContinuousClock.now + .seconds(30)
     while recorder.snapshot().isEmpty, ContinuousClock.now < deadline {
         try await Task.sleep(for: .milliseconds(10))
     }
@@ -1427,5 +1430,34 @@ private func writeSolidTestPNG(to url: URL, red: CGFloat, green: CGFloat, blue: 
         "--include-reference", "on", moving.path,
     ])
     #expect(FileManager.default.fileExists(atPath: outputDirectory.appendingPathComponent("aligned.fits").path))
+}
+@Test func interactiveCurvePixelsMatchFilePreviewAndSurviveCacheRelease() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let input = root.appendingPathComponent("input.png"), output = root.appendingPathComponent("reference.png")
+    try writeSolidTestPNG(to: input, red: 0.5, green: 0.4, blue: 0.3)
+    let service = CLIProcessingService(executableURL: URL(fileURLWithPath: "/missing"))
+    let controls: [(Double, Double)] = [(0, 0), (0.5, 0.25), (1, 1)]
+    let image = try #require(try await EngineCurvePreview.interactiveImage(using: service, input: input,
+        width: 1, rawOptions: RawProcessingOptions(), points: controls, channel: .rgb))
+    await EngineCurvePreview.clearCachedSourceAsync()
+    #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == ["input.png"])
+    _ = try EngineCurvePreview.runIfAvailable(using: service, input: input, output: output, width: 1,
+        rawOptions: RawProcessingOptions(), points: controls, channel: .rgb)
+    let source = try #require(CGImageSourceCreateWithURL(output as CFURL, nil))
+    let reference = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+    func rgba(_ image: CGImage) throws -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: 4)
+        let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        try bytes.withUnsafeMutableBytes { raw in
+            let context = try #require(CGContext(data: raw.baseAddress, width: 1, height: 1, bitsPerComponent: 8,
+                bytesPerRow: 4, space: space,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        }
+        return bytes
+    }
+    #expect(try rgba(image) == rgba(reference))
 }
 #endif

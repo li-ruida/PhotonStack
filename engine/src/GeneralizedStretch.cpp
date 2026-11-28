@@ -80,7 +80,7 @@ GeneralizedStretchResult generalizedStretch(const ImageBuffer& source,const Gene
             if(source.channels==4) result.image.pixels[p*4+3]=result.normalized.pixels[p*4+3]=detail::pixelCoverage(source,p);
             ++stats.covered;double values[3]={},mapped[3]={};bool low=false,high=false;
             for(unsigned c=0;c<colors;++c){const double raw=source.pixels[p*source.channels+c];low|=raw<o.black;high|=raw>o.white;
-                values[c]=std::clamp((raw-o.black)/(o.white-o.black),0.,1.);result.normalized.pixels[p*source.channels+c]=float(values[c]);mapped[c]=curve.evaluate(values[c]);}
+                values[c]=std::clamp((raw-o.black)/(o.white-o.black),0.,1.);result.normalized.pixels[p*source.channels+c]=float(values[c]);}
             stats.low+=low;stats.high+=high;
             const double luminance=colors==1?values[0]:.2126*values[0]+.7152*values[1]+.0722*values[2];
             if(o.saturation){
@@ -92,10 +92,22 @@ GeneralizedStretchResult generalizedStretch(const ImageBuffer& source,const Gene
                     for(unsigned c=0;c<3;++c)mapped[c]=std::clamp(high-(high-values[c])*factor,0.,1.);
                 }
             }else if(o.luminance&&colors==3&&luminance>0){
-                const double factor=curve.evaluate(luminance)/luminance;double blend=1;
-                for(unsigned c=0;c<3;++c)if(values[c]*factor>1)blend=std::min(blend,(1-mapped[c])/(values[c]*factor-mapped[c]));
-                if(blend<1)++stats.blend;
-                for(unsigned c=0;c<3;++c)mapped[c]=std::clamp(blend*values[c]*factor+(1-blend)*mapped[c],0.,1.);
+                const double factor = curve.evaluate(luminance) / luminance;
+                if (*std::max_element(values, values + 3) * factor > 1) {
+                    double blend = 1;
+                    for (unsigned c = 0; c < 3; ++c) {
+                        mapped[c] = curve.evaluate(values[c]);
+                        const double scaled = values[c] * factor;
+                        if (scaled > 1) blend = std::min(blend, (1 - mapped[c]) / (scaled - mapped[c]));
+                    }
+                    if (blend < 1) ++stats.blend;
+                    for (unsigned c = 0; c < 3; ++c)
+                        mapped[c] = std::clamp(blend * values[c] * factor + (1 - blend) * mapped[c], 0., 1.);
+                } else {
+                    for (unsigned c = 0; c < 3; ++c) mapped[c] = values[c] * factor;
+                }
+            } else {
+                for (unsigned c = 0; c < colors; ++c) mapped[c] = curve.evaluate(values[c]);
             }
             for(unsigned c=0;c<colors;++c)result.image.pixels[p*source.channels+c]=float(mapped[c]);
             const double after=colors==1?mapped[0]:.2126*mapped[0]+.7152*mapped[1]+.0722*mapped[2];

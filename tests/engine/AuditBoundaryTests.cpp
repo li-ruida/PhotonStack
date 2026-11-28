@@ -39,6 +39,7 @@ int main() {
     try { changing.finish(); } catch (const std::runtime_error&) { changed = true; }
     require(changed);
     struct Sample { float value, weight; };
+    std::vector<std::uint32_t> quantileScratch;
     for (int population : {1, 2, 17, 129, 1024}) for (int kind : {0, 1, 2}) {
         std::vector<Sample> original;
         for (int i = 0; i < population; ++i) {
@@ -62,6 +63,8 @@ int main() {
             }
             auto samples = original;
             require(detail::weightedSampleQuantile(samples, q) == expected);
+            samples = original;
+            require(detail::weightedSampleQuantile(samples, q, quantileScratch) == expected);
         }
     }
     ImageBuffer image; image.width = image.height = 16; image.channels = 1; image.pixels.assign(256, .2F);
@@ -72,6 +75,12 @@ int main() {
     stars.border = 1; require(StarDetector().detect(image, stars).ok);
     ArtifactTrailOptions options; options.useDetectedTrails = true;
     const ArtifactTrailRemover remover;
+    const auto fullDetection = remover.detect(image);
+    const auto compactDetection = remover.detect(image, {}, false);
+    require(fullDetection.ok && compactDetection.ok && compactDetection.image.empty());
+    require(fullDetection.image.pixels == image.pixels);
+    require(fullDetection.trails.size() == compactDetection.trails.size());
+    require(fullDetection.protectedMeteors == compactDetection.protectedMeteors);
     require(remover.remove({}, options).errorCode == "ImageBufferInvalid");
     auto broken = image; broken.pixels.resize(1);
     require(remover.remove(broken, options).errorCode == "ImageBufferInvalid");
@@ -105,6 +114,10 @@ int main() {
         }
     }
     require(astrometricSources(sky).size() >= 40);
+    RegistrationOptions registrationOptions;
+    registrationOptions.matchTolerance = .25F;
+    const auto identity = Registration().estimateTranslation(sky, sky, registrationOptions);
+    require(identity.ok && identity.matches >= 40 && identity.translation.dx == 0 && identity.translation.dy == 0);
     for (std::size_t i = 0; i < sky.pixelCount(); ++i) sky.pixels[i*4+3] = NAN;
     bool missingCoverage = false;
     try { astrometricSources(sky); } catch (const std::runtime_error&) { missingCoverage = true; }

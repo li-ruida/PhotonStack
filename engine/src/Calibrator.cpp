@@ -36,6 +36,25 @@ bool hasAlpha(const ImageBuffer& image) {
     return image.channels == 4;
 }
 
+bool invalidCalibrationSamples(const std::array<const ImageBuffer*, 4>& images, std::size_t count) {
+    std::atomic<bool> invalid{false};
+    detail::parallelRanges(count, 32768, [&](std::size_t first, std::size_t last) noexcept {
+        if (invalid.load(std::memory_order_relaxed)) return;
+        for (const auto* image : images) {
+            if (!image) continue;
+            for (auto pixel = first; pixel < last; ++pixel) {
+                const auto offset = pixel * image->channels;
+                if ((hasAlpha(*image) && !std::isfinite(image->pixels[offset + 3])) ||
+                    (detail::pixelCoverage(*image, pixel) > 1.e-6F && !detail::pixelHasValidColor(*image, pixel))) {
+                    invalid.store(true, std::memory_order_relaxed);
+                    return;
+                }
+            }
+        }
+    });
+    return invalid.load(std::memory_order_relaxed);
+}
+
 std::optional<double> positiveChannelMean(
     const ImageBuffer& image,
     const ImageBuffer* bias,
@@ -79,6 +98,17 @@ const char* calibrationBiasStateName(CalibrationBiasState state) {
             return "removed";
     }
     return "unknown";
+}
+
+CalibrationMasterValidation Calibrator::validateMasters(const CalibrationOptions& options) {
+    CalibrationMasterValidation result;
+    result.masters_ = {options.dark, options.bias, options.flat};
+    result.valid_ = std::all_of(result.masters_.begin(), result.masters_.end(), [](const auto* image) {
+        return !image || (!image->empty() && (image->channels == 1 || image->channels == 3 || image->channels == 4) &&
+            image->pixels.size() == image->sampleCount() &&
+            !invalidCalibrationSamples({image, nullptr, nullptr, nullptr}, image->pixelCount()));
+    });
+    return result;
 }
 
 CalibrationFlatMeans Calibrator::measureFlat(const CalibrationOptions& options) {
@@ -125,10 +155,12 @@ CalibrationResult Calibrator::calibrate(const ImageBuffer& light, const Calibrat
             "Calibration requires linear light, dark, bias, and flat frames"
         );
     }
-    if (detail::imageHasInvalidCoveredColor(light) ||
-        (options.dark != nullptr && detail::imageHasInvalidCoveredColor(*options.dark)) ||
-        (options.bias != nullptr && detail::imageHasInvalidCoveredColor(*options.bias)) ||
-        (options.flat != nullptr && detail::imageHasInvalidCoveredColor(*options.flat))) {
+    const auto* validation = options.masterValidation;
+    const bool known = validation && validation->masters_ ==
+        std::array<const ImageBuffer*, 3>{options.dark, options.bias, options.flat};
+    if ((known && !validation->valid_) || invalidCalibrationSamples(
+            {&light, known ? nullptr : options.dark, known ? nullptr : options.bias, known ? nullptr : options.flat},
+            light.pixelCount())) {
         return calibrationError("ImageBufferInvalid", "Covered calibration frame samples must be finite");
     }
     if (!std::isfinite(options.flatEpsilon) || options.flatEpsilon <= 0.0F || options.flatEpsilon >= 1.0F) {
@@ -170,7 +202,7 @@ CalibrationResult Calibrator::calibrate(const ImageBuffer& light, const Calibrat
                                       options.flatBiasState == CalibrationBiasState::Included;
 
     ImageBuffer output{light.width, light.height, light.channels, light.format, light.colorEncoding,
-                       light.sourceBitsPerChannel, std::vector<float>(light.sampleCount())};
+                       light.sourceBitsPerChannel, {}};
     std::vector<double> flatMeans(light.channels, 1.);
     if (options.flat) {
         const auto* known = options.flatMeans;
@@ -188,6 +220,9 @@ CalibrationResult Calibrator::calibrate(const ImageBuffer& light, const Calibrat
         detail::metalCalibrate(light, options, subtractBiasFromLight, subtractBiasFromFlat, flatMeans, output))
         return {true, std::move(output), subtractBiasFromLight, subtractBiasFromFlat, {}, {}};
 #endif
+    // Metal lends its destination pages directly to the result. Allocate CPU
+    // storage only on fallback, avoiding two live full-size output planes.
+    output.pixels.resize(light.sampleCount());
     std::atomic<bool> overflow{false};
     detail::parallelRanges(light.pixelCount(), 32768, [&](std::size_t begin, std::size_t end) noexcept {
         std::array<double, 4> calibrated{};

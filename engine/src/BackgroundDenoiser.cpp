@@ -1,3 +1,4 @@
+#include <span>
 #include "photonstack/ParallelRanges.hpp"
 #include "photonstack/BackgroundDenoiser.hpp"
 #include <algorithm>
@@ -11,7 +12,7 @@ int reflect(int x, int size) {
     const int period=2*(size-1); x%=period; if(x<0)x+=period;
     return x<size?x:period-x;
 }
-void smooth(std::vector<float>& values, unsigned w, unsigned h) {
+void smooth(std::span<float> values, unsigned w, unsigned h) {
     std::vector<float> temp(values.size());
     constexpr double kernel[]{1./16,4./16,6./16,4./16,1./16};
     for(int step: {1,2,4,8}) {
@@ -36,7 +37,7 @@ void smooth(std::vector<float>& values, unsigned w, unsigned h) {
 double median(std::vector<float>& a) {
     auto m=a.begin()+a.size()/2;std::nth_element(a.begin(),m,a.end());return *m;
 }
-std::vector<float> protectPeaks(const ImageBuffer& image, const ImageBuffer& blend) {
+PixelStorage protectPeaks(const ImageBuffer& image, const ImageBuffer& blend) {
     const auto w=image.width,h=image.height;
     std::vector<double> integral((std::size_t(w)+1)*(h+1),0);
     for(unsigned y=0;y<h;++y) {

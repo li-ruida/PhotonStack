@@ -51,7 +51,7 @@ final class NativePreviewScrollView: NSScrollView {
 
 enum NativePreviewImageDecoder {
     private static let displayContext = CIContext(options: [.cacheIntermediates: false])
-    static func decodeCGImage(contentsOf url: URL) -> CGImage? {
+    static func decodeCGImage(contentsOf url: URL, maximumPixelSize: Int? = nil) -> CGImage? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
             return nil
         }
@@ -59,7 +59,7 @@ enum NativePreviewImageDecoder {
         let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         let width = (properties?[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
         let height = (properties?[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
-        let maximumDimension = max(width, height)
+        let maximumDimension = min(max(width, height), maximumPixelSize ?? Int.max)
         if maximumDimension > 0 {
             let thumbnailOptions = [
                 kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -80,6 +80,16 @@ enum NativePreviewImageDecoder {
             return nil
         }
         return displayImage(from: image)
+    }
+
+    static func sourceSize(at url: URL) -> CGSize? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else { return nil }
+        let rotated = (5...8).contains((properties[kCGImagePropertyOrientation] as? NSNumber)?.intValue ?? 1)
+        return rotated ? CGSize(width: height.intValue, height: width.intValue)
+                       : CGSize(width: width.intValue, height: height.intValue)
     }
 
     private static func displayImage(from image: CGImage) -> CGImage? {
@@ -108,25 +118,35 @@ actor NativePreviewImageLoader {
         let size: Int
         var cost: Int { image.bytesPerRow * image.height }
     }
-    private var entries: [URL: Entry] = [:]
-    private var order: [URL] = []
-    private let byteLimit = 96 * 1024 * 1024
+    private struct Key: Hashable {
+        let url: URL
+        let maximumPixelSize: Int?
+    }
+    private var entries: [Key: Entry] = [:]
+    private var order: [Key] = []
+    // Keep one native 61 MP RGBA8 preview on smaller machines, and two on
+    // larger machines. Entry count and byte cost still bound retained memory.
+    private let byteLimit = Int(min(512 * 1024 * 1024,
+                                   max(256 * 1024 * 1024, ProcessInfo.processInfo.physicalMemory / 64)))
 
-    func load(_ url: URL) throws -> CGImage? {
+    func sourceSize(_ url: URL) -> CGSize? { NativePreviewImageDecoder.sourceSize(at: url) }
+
+    func load(_ url: URL, maximumPixelSize: Int? = nil) throws -> CGImage? {
         try Task.checkCancellation()
+        let key = Key(url: url, maximumPixelSize: maximumPixelSize)
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let modified = attributes[.modificationDate] as? Date ?? .distantPast
         let size = attributes[.size] as? Int ?? 0
-        if let entry = entries[url], entry.modified == modified, entry.size == size {
-            order.removeAll { $0 == url }; order.append(url)
+        if let entry = entries[key], entry.modified == modified, entry.size == size {
+            order.removeAll { $0 == key }; order.append(key)
             return entry.image
         }
-        guard let image = NativePreviewImageDecoder.decodeCGImage(contentsOf: url) else { return nil }
+        guard let image = NativePreviewImageDecoder.decodeCGImage(contentsOf: url, maximumPixelSize: maximumPixelSize) else { return nil }
         try Task.checkCancellation()
         let entry = Entry(image: image, modified: modified, size: size)
-        entries.removeValue(forKey: url); order.removeAll { $0 == url }
+        entries.removeValue(forKey: key); order.removeAll { $0 == key }
         if entry.cost <= byteLimit {
-            entries[url] = entry; order.append(url)
+            entries[key] = entry; order.append(key)
             while order.count > 2 || entries.values.reduce(0, { $0 + $1.cost }) > byteLimit {
                 entries.removeValue(forKey: order.removeFirst())
             }
@@ -239,6 +259,12 @@ struct NativeImagePreview: NSViewRepresentable {
         if let nativeScrollView = scrollView as? NativePreviewScrollView {
             nativeScrollView.viewportLaidOut = { [weak coordinator = context.coordinator] in
                 coordinator?.centerInitialImageIfNeeded()
+                if self.fitToWindow, self.decodedImage == nil, let coordinator, let scrollView = coordinator.scrollView {
+                    let limit = Coordinator.previewPixelLimit(in: scrollView)
+                    if coordinator.maximumPixelSize != limit {
+                        coordinator.updateImage(self.url, maximumPixelSize: limit)
+                    }
+                }
             }
             nativeScrollView.backingPropertiesChanged = { [weak coordinator = context.coordinator] in
                 coordinator?.applyZoom(
@@ -261,8 +287,11 @@ struct NativeImagePreview: NSViewRepresentable {
             coordinator?.applyZoom(magnification: self.magnification, fitToWindow: self.fitToWindow,
                                    updateMagnification: { self.magnification = $0 })
         }
-        if context.coordinator.url != url || context.coordinator.decodedImage !== decodedImage {
-            context.coordinator.updateImage(url, decodedImage: decodedImage, decodedSize: decodedSize)
+        let maximumPixelSize = decodedImage == nil && fitToWindow ? Coordinator.previewPixelLimit(in: scrollView) : nil
+        if context.coordinator.url != url || context.coordinator.decodedImage !== decodedImage ||
+            context.coordinator.maximumPixelSize != maximumPixelSize {
+            context.coordinator.updateImage(url, decodedImage: decodedImage, decodedSize: decodedSize,
+                                            maximumPixelSize: maximumPixelSize)
         }
 
         context.coordinator.applyZoom(
@@ -296,6 +325,7 @@ struct NativeImagePreview: NSViewRepresentable {
         weak var scrollView: NSScrollView?
         var url: URL?
         var decodedImage: CGImage?
+        var maximumPixelSize: Int?
         var naturalImageSize: CGSize = .zero
         var centerFirstImage = false
         private var needsInitialCenter = false
@@ -313,9 +343,18 @@ struct NativeImagePreview: NSViewRepresentable {
             imageTask = nil
         }
 
-        func updateImage(_ newURL: URL, decodedImage: CGImage? = nil, decodedSize: CGSize? = nil) {
+        static func previewPixelLimit(in view: NSScrollView) -> Int {
+            let pixels = max(view.bounds.width, view.bounds.height) * backingScale(for: view)
+            // Quantization avoids decoding again for every point of a resize.
+            return max(512, Int(ceil(pixels / 256)) * 256)
+        }
+
+        func updateImage(_ newURL: URL, decodedImage: CGImage? = nil, decodedSize: CGSize? = nil,
+                         maximumPixelSize: Int? = nil) {
             cancelImageLoad()
+            let sourceChanged = url != newURL
             url = newURL
+            self.maximumPixelSize = maximumPixelSize
             self.decodedImage = decodedImage
             if let image = decodedImage {
                 setImage(NSImage(cgImage: image, size: decodedSize ?? CGSize(width: image.width, height: image.height)))
@@ -323,13 +362,14 @@ struct NativeImagePreview: NSViewRepresentable {
                 return
             }
             // Never display the old image under the new frame's label.
-            imageView?.image = nil
+            if sourceChanged { imageView?.image = nil }
             let generation = imageGeneration
             let loader = imageLoader
             imageTask = Task { [weak self] in
-                guard let image = try? await loader.load(newURL), !Task.isCancelled,
-                      let self, generation == self.imageGeneration else { return }
-                self.setImage(NSImage(cgImage: image, size: CGSize(width: image.width, height: image.height)))
+                guard let image = try? await loader.load(newURL, maximumPixelSize: maximumPixelSize) else { return }
+                let sourceSize = await loader.sourceSize(newURL) ?? CGSize(width: image.width, height: image.height)
+                guard !Task.isCancelled, let self, generation == self.imageGeneration else { return }
+                self.setImage(NSImage(cgImage: image, size: sourceSize))
                 self.imageLoaded?()
             }
         }

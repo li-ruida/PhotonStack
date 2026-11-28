@@ -1,4 +1,6 @@
 #include "photonstack/MeteorLayerComposer.hpp"
+#include "photonstack/ParallelRanges.hpp"
+#include "MeteorBackground.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -16,24 +18,6 @@ MeteorLayerResult errorResult(std::string code, std::string message) {
 
 bool validRgba(const ImageBuffer& image) {
     return !image.empty() && image.channels == 4 && image.pixels.size() == image.sampleCount();
-}
-
-bool pixelSample(const ImageBuffer& image, std::uint32_t x, std::uint32_t y, float& luminance, float& alpha) {
-    const auto offset = (static_cast<std::size_t>(y) * image.width + x) * image.channels;
-    alpha = image.pixels[offset + 3];
-    if (!std::isfinite(alpha) || alpha <= 1.0e-6F) {
-        return false;
-    }
-    alpha = std::clamp(alpha, 0.0F, 1.0F);
-
-    const float red = image.pixels[offset];
-    const float green = image.pixels[offset + 1];
-    const float blue = image.pixels[offset + 2];
-    if (!std::isfinite(red) || !std::isfinite(green) || !std::isfinite(blue)) {
-        return false;
-    }
-    luminance = red * 0.2126F + green * 0.7152F + blue * 0.0722F;
-    return std::isfinite(luminance);
 }
 
 float distanceToSegment(float px, float py, const ArtifactTrail& trail) {
@@ -65,40 +49,6 @@ float trailMaskAlpha(float distance, float coreRadius, float featherRadius) {
     return 1.0F - t;
 }
 
-float localBackground(
-    const ImageBuffer& image,
-    std::uint32_t x,
-    std::uint32_t y,
-    std::uint32_t radius,
-    float fallback
-) {
-    const auto minX = x > radius ? x - radius : 0;
-    const auto minY = y > radius ? y - radius : 0;
-    const auto maxX = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-        image.width - 1,
-        static_cast<std::uint64_t>(x) + radius
-    ));
-    const auto maxY = static_cast<std::uint32_t>(std::min<std::uint64_t>(
-        image.height - 1,
-        static_cast<std::uint64_t>(y) + radius
-    ));
-
-    double weightedSum = 0.0;
-    double totalWeight = 0.0;
-    for (std::uint32_t sampleY = minY; sampleY <= maxY; ++sampleY) {
-        for (std::uint32_t sampleX = minX; sampleX <= maxX; ++sampleX) {
-            float luminance = 0.0F;
-            float alpha = 0.0F;
-            if (!pixelSample(image, sampleX, sampleY, luminance, alpha)) {
-                continue;
-            }
-            weightedSum += static_cast<double>(luminance) * static_cast<double>(alpha);
-            totalWeight += static_cast<double>(alpha);
-        }
-    }
-    return totalWeight <= 1.0e-9 ? fallback : static_cast<float>(weightedSum / totalWeight);
-}
-
 ImageBuffer makeTransparentLike(const ImageBuffer& source) {
     ImageBuffer layer;
     layer.width = source.width;
@@ -121,7 +71,7 @@ void writeLayerPixel(
     const auto offset = (static_cast<std::size_t>(y) * source.width + x) * source.channels;
     float luminance = 0.0F;
     float sourceAlpha = 0.0F;
-    if (!std::isfinite(alpha) || !pixelSample(source, x, y, luminance, sourceAlpha)) {
+    if (!std::isfinite(alpha) || !detail::meteorPixelSample(source, x, y, luminance, sourceAlpha)) {
         return;
     }
     const float effectiveAlpha = std::clamp(alpha * sourceAlpha, 0.0F, 1.0F);
@@ -193,7 +143,7 @@ MeteorLayerResult MeteorLayerComposer::extractUsingDetectionImage(
     detectionOptions.includeMeteors = true;
 
     const ArtifactTrailRemover detector;
-    const auto detected = detector.detect(detectionImage, detectionOptions);
+    const auto detected = detector.detect(detectionImage, detectionOptions, false);
     if (!detected.ok) {
         return errorResult(detected.errorCode, detected.message);
     }
@@ -225,27 +175,43 @@ MeteorLayerResult MeteorLayerComposer::extractUsingDetectionImage(
             static_cast<float>(source.height - 1),
             std::ceil(std::max(trail.y1, trail.y2) + searchRadius + 1.0F)));
 
-        for (std::uint32_t y = minY; y <= maxY; ++y) {
-            for (std::uint32_t x = minX; x <= maxX; ++x) {
-                const float distance = distanceToSegment(static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F, trail);
-                const float geometricAlpha = trailMaskAlpha(distance, coreRadius, featherRadius);
-                if (geometricAlpha <= 0.0F) {
-                    continue;
-                }
+        constexpr std::uint32_t tileSize = 256;
+        const auto columns = (maxX - minX) / tileSize + 1;
+        const auto rows = (maxY - minY) / tileSize + 1;
+        detail::parallelRanges(std::size_t(columns) * rows, 1, [&](std::size_t first, std::size_t last) {
+            for (auto tile = first; tile < last; ++tile) {
+                const auto x0 = minX + (tile % columns) * tileSize;
+                const auto y0 = minY + (tile / columns) * tileSize;
+                const auto x1 = std::min<std::uint64_t>(maxX, x0 + tileSize - 1);
+                const auto y1 = std::min<std::uint64_t>(maxY, y0 + tileSize - 1);
+                const detail::MeteorBackground backgrounds(detectionImage, x0 > backgroundRadius ? x0 - backgroundRadius : 0,
+                                                  y0 > backgroundRadius ? y0 - backgroundRadius : 0,
+                                                  std::min<std::uint64_t>(source.width - 1, x1 + backgroundRadius),
+                                                  std::min<std::uint64_t>(source.height - 1, y1 + backgroundRadius));
+                for (std::uint32_t y = y0; y <= y1; ++y) {
+                    for (std::uint32_t x = x0; x <= x1; ++x) {
+                        const float distance =
+                            distanceToSegment(static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F, trail);
+                        const float geometricAlpha = trailMaskAlpha(distance, coreRadius, featherRadius);
+                        if (geometricAlpha <= 0.0F) {
+                            continue;
+                        }
 
-                float luminance = 0.0F;
-                float sourceAlpha = 0.0F;
-                if (!pixelSample(detectionImage, x, y, luminance, sourceAlpha)) {
-                    continue;
-                }
-                const float background = localBackground(detectionImage, x, y, backgroundRadius, luminance);
-                const float contrastAlpha = std::clamp((luminance - background + 0.04F) / 0.16F, 0.0F, 1.0F);
-                const float alpha = std::clamp(geometricAlpha * std::max(contrastAlpha, 0.2F), 0.0F, 1.0F);
-                if (alpha > 0.01F) {
-                    writeLayerPixel(result.layer, source, x, y, alpha);
+                        float luminance = 0.0F;
+                        float sourceAlpha = 0.0F;
+                        if (!detail::meteorPixelSample(detectionImage, x, y, luminance, sourceAlpha)) {
+                            continue;
+                        }
+                        const float background = backgrounds.at(detectionImage, x, y, backgroundRadius, luminance);
+                        const float contrastAlpha = std::clamp((luminance - background + 0.04F) / 0.16F, 0.0F, 1.0F);
+                        const float alpha = std::clamp(geometricAlpha * std::max(contrastAlpha, 0.2F), 0.0F, 1.0F);
+                        if (alpha > 0.01F) {
+                            writeLayerPixel(result.layer, source, x, y, alpha);
+                        }
+                    }
                 }
             }
-        }
+        });
     }
 
     result.image = result.layer;

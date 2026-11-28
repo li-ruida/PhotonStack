@@ -49,18 +49,21 @@ struct PhotonStackPreview: View {
             ZStack {
                 Color.black
 
-                if let url = currentURL {
-                    if ["fit", "fits", "fts"].contains(url.pathExtension.lowercased()) {
-                        WorkspaceFITSPreview(model: model, previews: scientificPreviews, input: url,
-                            isMosaic: model.isShowingMosaicResult, alignmentStars: showAlignmentStars ? stars : [],
-                            magnification: $magnification, fitToWindow: $fitToWindow)
-                            .padding(16)
+                CurvePreviewCanvas(curves: model.interactiveCurve, input: model.currentInputURL,
+                                  showCurve: !showArtifactMarkedPreview, magnification: $magnification, fit: $fitToWindow) {
+                    if let url = currentURL {
+                        if ["fit", "fits", "fts"].contains(url.pathExtension.lowercased()) {
+                            WorkspaceFITSPreview(model: model, previews: scientificPreviews, input: url,
+                                isMosaic: model.isShowingMosaicResult, alignmentStars: showAlignmentStars ? stars : [],
+                                magnification: $magnification, fitToWindow: $fitToWindow)
+                                .padding(16)
+                        } else {
+                            PlatformImageView(url: url, preview: model.photoPreview, edits: model.photoDraft, input: model.currentInputURL, allowsDraft: !showArtifactMarkedPreview, alignmentStars: currentURL == model.previewURL && showAlignmentStars ? stars : [], magnification: $magnification, fitToWindow: $fitToWindow)
+                                .padding(16)
+                        }
                     } else {
-                        PlatformImageView(url: url, preview: model.photoPreview, edits: model.photoDraft, input: model.currentInputURL, allowsDraft: !showArtifactMarkedPreview && model.interactiveCurveURL == nil, alignmentStars: currentURL == model.previewURL && showAlignmentStars ? stars : [], magnification: $magnification, fitToWindow: $fitToWindow)
-                            .padding(16)
+                        ContentUnavailableView(model.localized(.noImage), systemImage: "photo")
                     }
-                } else {
-                    ContentUnavailableView(model.localized(.noImage), systemImage: "photo")
                 }
             }
             .onReceive(model.photoDraft.$picking) { if $0 { showArtifactMarkedPreview = false } }
@@ -86,7 +89,25 @@ struct PhotonStackPreview: View {
         if showArtifactMarkedPreview, let markedPreview = model.artifactMarkedPreviewURL {
             return markedPreview
         }
-        return model.interactiveCurveURL ?? model.previewURL ?? model.selectedAsset?.originalURL
+        return model.previewURL ?? model.selectedAsset?.originalURL
+    }
+}
+
+private struct CurvePreviewCanvas<Base: View>: View {
+    @ObservedObject var curves: InteractiveCurvePreview
+    let input: URL?
+    let showCurve: Bool
+    @Binding var magnification: Double
+    @Binding var fit: Bool
+    @ViewBuilder var base: () -> Base
+
+    var body: some View {
+        if showCurve, let frame = curves.frame, frame.input == input {
+            NativeImagePreview(url: frame.file ?? frame.input, magnification: $magnification, fitToWindow: $fit,
+                               decodedImage: frame.image).padding(16)
+        } else {
+            base()
+        }
     }
 }
 

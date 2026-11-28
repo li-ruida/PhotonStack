@@ -1557,6 +1557,25 @@ void testCalibration() {
     assert(hiddenInvalidResult.image.pixels[0] == 0.0F);
     assert(hiddenInvalidResult.image.pixels[3] == 0.0F);
 
+    photonstack::CalibrationOptions preparedOptions{.dark = &maskedDark, .flat = &maskedFlat};
+    const auto validation = photonstack::Calibrator::validateMasters(preparedOptions);
+    const auto originalCalibration = calibrator.calibrate(maskedLight, preparedOptions);
+    preparedOptions.masterValidation = &validation;
+    const auto preparedCalibration = calibrator.calibrate(maskedLight, preparedOptions);
+    assert(originalCalibration.ok && preparedCalibration.ok);
+    assert(originalCalibration.image.pixels == preparedCalibration.image.pixels);
+    auto invalidLight = maskedLight;
+    invalidLight.pixels[0] = std::numeric_limits<float>::quiet_NaN();
+    assert(calibrator.calibrate(invalidLight, preparedOptions).errorCode == "ImageBufferInvalid");
+    auto invalidMaster = maskedDark;
+    invalidMaster.pixels[0] = std::numeric_limits<float>::infinity();
+    preparedOptions.dark = &invalidMaster;
+    // Evidence from a different master selection must never suppress checking.
+    assert(calibrator.calibrate(maskedLight, preparedOptions).errorCode == "ImageBufferInvalid");
+    const auto invalidValidation = photonstack::Calibrator::validateMasters(preparedOptions);
+    preparedOptions.masterValidation = &invalidValidation;
+    assert(calibrator.calibrate(maskedLight, preparedOptions).errorCode == "ImageBufferInvalid");
+
     photonstack::ImageBuffer extremeLight;
     extremeLight.width = 1;
     extremeLight.height = 1;
@@ -4717,6 +4736,34 @@ void testMeteorLayerExtractionAndRestore() {
     assert(extracted.meteors.size() == 1);
     assert(extracted.layer.pixels[(static_cast<std::size_t>(12) * source.width + 8) * source.channels + 3] > 0.1F);
     assert(extracted.layer.pixels[(static_cast<std::size_t>(2) * source.width + 2) * source.channels + 3] == 0.0F);
+
+    // Independent direct-summation oracle for the tiled background path.
+    // Check feather pixels as well as the saturated core, including image edges.
+    const auto& trail = extracted.meteors.front();
+    const auto radius = static_cast<std::uint32_t>(std::ceil(options.maskRadius + options.featherRadius + 4.F));
+    for (unsigned y = 0; y < source.height; ++y) for (unsigned x = 0; x < source.width; ++x) {
+        const float vx = trail.x2 - trail.x1, vy = trail.y2 - trail.y1;
+        const float t = std::clamp(((x + .5F - trail.x1) * vx + (y + .5F - trail.y1) * vy) /
+                                   (vx * vx + vy * vy), 0.F, 1.F);
+        const float dx = x + .5F - (trail.x1 + t * vx), dy = y + .5F - (trail.y1 + t * vy);
+        const float distance = std::sqrt(dx * dx + dy * dy);
+        const float geometric = distance <= options.maskRadius ? 1.F :
+            1.F - std::clamp((distance - options.maskRadius) / options.featherRadius, 0.F, 1.F);
+        double sum = 0., weight = 0.;
+        for (unsigned yy = y > radius ? y - radius : 0; yy <= std::min(source.height - 1, y + radius); ++yy)
+            for (unsigned xx = x > radius ? x - radius : 0; xx <= std::min(source.width - 1, x + radius); ++xx) {
+                const auto i = (std::size_t(yy) * source.width + xx) * 4;
+                const float luminance = source.pixels[i] * .2126F + source.pixels[i + 1] * .7152F + source.pixels[i + 2] * .0722F;
+                sum += double(luminance) * source.pixels[i + 3];
+                weight += source.pixels[i + 3];
+            }
+        const auto i = (std::size_t(y) * source.width + x) * 4;
+        const float luminance = source.pixels[i] * .2126F + source.pixels[i + 1] * .7152F + source.pixels[i + 2] * .0722F;
+        const float contrast = std::clamp((luminance - float(sum / weight) + .04F) / .16F, 0.F, 1.F);
+        const float alpha = std::clamp(geometric * std::max(contrast, .2F), 0.F, 1.F);
+        const float expected = alpha > .01F ? alpha : 0.F;
+        assert(std::fabs(extracted.layer.pixels[i + 3] - expected) < 2.e-6F);
+    }
 
     const auto restored = composer.restore(base, source, options);
     assert(restored.ok);

@@ -1,10 +1,34 @@
 #include <cmath>
+#include <array>
+#include <limits>
+#include "../../engine/src/StraightAlphaSampling.hpp"
 #include <stdexcept>
 #include "photonstack/Registration.hpp"
 
 void require(bool b) { if (!b) throw std::runtime_error("Registration sampling regression"); }
 int main() {
     using namespace photonstack;
+    // Combined-channel interpolation must preserve the scalar contract at
+    // borders, incomplete coverage, non-finite colors, and extra channels.
+    for (const unsigned channels : {1U, 3U, 4U, 5U}) {
+        ImageBuffer samples;
+        samples.width = 9; samples.height = 7; samples.channels = channels;
+        samples.pixels.resize(samples.sampleCount());
+        for (std::size_t p = 0; p < samples.pixelCount(); ++p) {
+            for (unsigned c = 0; c < channels; ++c)
+                samples.pixels[p * channels + c] = float(int((p * 17 + c * 31) % 67) - 23) / 11.F;
+            if (channels >= 4) samples.pixels[p * channels + 3] = float(p % 5) / 4.F;
+        }
+        samples.pixels[3 * channels] = std::numeric_limits<float>::quiet_NaN();
+        if (channels >= 4) samples.pixels[4 * channels + 3] = std::numeric_limits<float>::infinity();
+        for (bool clamp : {false, true}) for (int iy = -3; iy < 27; ++iy) for (int ix = -3; ix < 35; ++ix) {
+            std::array<float, 5> out{};
+            const float x = ix * .27F, y = iy * .27F;
+            detail::sampleBilinearPixel(samples, x, y, clamp, out.data());
+            for (unsigned c = 0; c < channels; ++c)
+                require(out[c] == detail::sampleBilinearStraightAlpha(samples, x, y, c, clamp));
+        }
+    }
     ImageBuffer source;
     source.width = source.height = 33; source.channels = 4;
     source.colorEncoding = ColorEncoding::Linear;

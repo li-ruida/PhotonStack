@@ -95,6 +95,8 @@ struct FitsDecodeOptions {
     // Normalize channel responses for cross-channel interpolation, then undo
     // them in the result. Measured samples and output physical units are retained.
     std::array<float, 3> cfaInterpolationGains = {1, 1, 1};
+    // Keep native mono when the caller does not need an alpha coverage plane.
+    bool preferGray = false;
 };
 
 struct ImageReadOptions {
@@ -127,6 +129,10 @@ using ImageRowConsumer = std::function<bool(std::uint32_t row, const float* samp
 using ImageRowProducer = std::function<bool(const ImageRowConsumer& consumer)>;
 
 void applyRawDecodeOptions(ImageBuffer& image, const RawDecodeOptions& options);
+
+#ifdef __APPLE__
+std::vector<std::uint8_t> displayRGBA8(const ImageBuffer& image);
+#endif
 
 class ImageCodec {
   public:

@@ -5,6 +5,16 @@ import SwiftUI
 /// Published only to the canvas. Dragging sliders doesn't invalidate the workspace
 /// or substitute a preview bitmap for the input to another edit or export.
 @MainActor
+final class InteractiveCurvePreview: ObservableObject {
+    struct Frame {
+        let input: URL
+        let image: CGImage?
+        let file: URL?
+    }
+    @Published var frame: Frame?
+}
+
+@MainActor
 final class PhotoAdjustmentPreview: ObservableObject {
     struct Frame {
         let input: URL
@@ -17,8 +27,13 @@ final class PhotoAdjustmentPreview: ObservableObject {
     private var pending: (URL, PhotoAdjustments, PhotoClippingWarnings)?
     private var task: Task<Void, Never>?
     private var renderer: PhotoAdjustmentRenderer?
+    private var refinement: Task<Void, Never>?
+    private var generation = 0
 
     func schedule(input: URL, settings: PhotoAdjustments, warnings: PhotoClippingWarnings = []) {
+        generation += 1
+        refinement?.cancel()
+        refinement = nil
         pending = (input, settings, warnings)
         guard task == nil else { return }
         let renderer = renderer ?? PhotoAdjustmentRenderer()
@@ -30,10 +45,28 @@ final class PhotoAdjustmentPreview: ObservableObject {
                 do {
                     guard let (source, values, warnings) = pending else { break }
                     pending = nil
-                    let preview = try await renderer.preview(input: source, adjustments: values, warnings: warnings)
+                    let revision = generation
+                    let preview = try await renderer.preview(input: source, adjustments: values, warnings: warnings,
+                                                             preciseWarnings: false)
                     try Task.checkCancellation()
+                    guard revision == generation else { continue }
                     frame = Frame(input: source, settings: values, image: preview.image, sourceSize: preview.sourceSize)
                     if errorMessage != nil { errorMessage = nil }
+                    if !warnings.isEmpty {
+                        refinement = Task {
+                            defer { if revision == generation { refinement = nil } }
+                            do {
+                                try await Task.sleep(for: .milliseconds(200))
+                                let precise = try await renderer.preview(input: source, adjustments: values, warnings: warnings)
+                                try Task.checkCancellation()
+                                guard revision == generation else { return }
+                                frame = Frame(input: source, settings: values, image: precise.image, sourceSize: precise.sourceSize)
+                            } catch {
+                                guard !Task.isCancelled, revision == generation else { return }
+                                errorMessage = error.localizedDescription
+                            }
+                        }
+                    }
                 } catch {
                     guard !Task.isCancelled else { return }
                     frame = nil
@@ -45,6 +78,9 @@ final class PhotoAdjustmentPreview: ObservableObject {
     }
 
     func clear(releaseSource: Bool = false) {
+        generation += 1
+        refinement?.cancel()
+        refinement = nil
         task?.cancel()
         task = nil
         pending = nil

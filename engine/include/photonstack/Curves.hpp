@@ -30,6 +30,9 @@ struct CurvesOptions {
     // Opt-in bounded display transfer for Luminance: map Y exactly, scaling
     // RGB differences from Y together to fit the gamut instead of clipping.
     bool preserveLuminanceGamut = false;
+    // Large RGBA RGB/channel curves can fuse LUT mapping and validation on
+    // Metal. Unsupported channels and precision edge cases retain the CPU path.
+    bool preferMetal = false;
 };
 
 struct CurvesResult {

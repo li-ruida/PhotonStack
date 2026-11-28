@@ -1,6 +1,9 @@
 #include "photonstack/NoiseReducer.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include "photonstack/ParallelRanges.hpp"
 #include <cmath>
 #include <limits>
 #include <string>
@@ -38,7 +41,9 @@ NoiseReductionResult NoiseReducer::reduce(const ImageBuffer& image, const NoiseR
     ImageBuffer output = image;
     const int radius = static_cast<int>(options.radius);
     const auto colorChannels = detail::colorChannelCount(image);
-    for (std::uint32_t y = 0; y < image.height; ++y) {
+    const double edgeScale = std::max(1e-6, static_cast<double>(options.edgeThreshold));
+    std::atomic<bool> overflow{false};
+    detail::parallelRows(image.width, image.height, [&](int y) noexcept {
         for (std::uint32_t x = 0; x < image.width; ++x) {
             const auto pixel = static_cast<std::size_t>(y) * image.width + x;
             const auto offset = pixel * image.channels;
@@ -48,35 +53,27 @@ NoiseReductionResult NoiseReducer::reduce(const ImageBuffer& image, const NoiseR
             }
 
             float blurredChannels[3] = {0.0F, 0.0F, 0.0F};
-            for (std::uint16_t channel = 0; channel < colorChannels; ++channel) {
-                const float center = image.pixels[offset + channel];
-                double sum = 0.0;
-                double weightSum = 0.0;
-                for (int dy = -radius; dy <= radius; ++dy) {
-                    for (int dx = -radius; dx <= radius; ++dx) {
-                        float sample = 0.0F;
-                        float coverage = 0.0F;
-                        if (!detail::sampleClampedCovered(
-                                image,
-                                static_cast<int>(x) + dx,
-                                static_cast<int>(y) + dy,
-                                channel,
-                                sample,
-                                coverage
-                            )) {
-                            continue;
-                        }
-                        const double delta = std::fabs(static_cast<double>(sample) - center);
-                        const double edgeWeight = delta > options.edgeThreshold
-                                                      ? 0.0
-                                                      : 1.0 - delta / std::max(1.0e-6, static_cast<double>(options.edgeThreshold));
-                        const double weight = edgeWeight * coverage;
-                        sum += static_cast<double>(sample) * weight;
-                        weightSum += weight;
+            std::array<double, 3> sums{};
+            std::array<double, 3> weights{};
+            for (int dy = -radius; dy <= radius; ++dy) {
+                for (int dx = -radius; dx <= radius; ++dx) {
+                    const auto neighbor = detail::clampedPixelIndex(image, static_cast<int>(x) + dx, y + dy);
+                    const float coverage = detail::pixelCoverage(image, neighbor);
+                    if (coverage <= 1e-6F) continue;
+                    const auto base = neighbor * image.channels;
+                    for (std::uint16_t c = 0; c < colorChannels; ++c) {
+                        const double sample = image.pixels[base + c];
+                        const double delta = std::abs(sample - image.pixels[offset + c]);
+                        if (delta > options.edgeThreshold) continue;
+                        const double weight = (1.0 - delta / edgeScale) * coverage;
+                        sums[c] += sample * weight;
+                        weights[c] += weight;
                     }
                 }
+            }
+            for (std::uint16_t channel = 0; channel < colorChannels; ++channel) {
                 blurredChannels[channel] =
-                    weightSum <= 0.0 ? center : static_cast<float>(sum / weightSum);
+                    weights[channel] <= 0.0 ? image.pixels[offset + channel] : static_cast<float>(sums[channel] / weights[channel]);
             }
 
             if (colorChannels >= 3) {
@@ -98,7 +95,8 @@ NoiseReductionResult NoiseReducer::reduce(const ImageBuffer& image, const NoiseR
                                     image.pixels[offset + channel] <= 1;
                     if (!options.clampOutput &&
                         (!std::isfinite(adjusted) || std::fabs(adjusted) > std::numeric_limits<float>::max())) {
-                        return noiseError("ImageValueInvalid", "Noise reduction output exceeds Float32 range");
+                        overflow.store(true, std::memory_order_relaxed);
+                        return;
                     }
                 }
                 double adjustment = 1;
@@ -134,7 +132,8 @@ NoiseReductionResult NoiseReducer::reduce(const ImageBuffer& image, const NoiseR
                     const double adjusted = center * (1.0 - options.amount) + blurred * options.amount;
                     if (!options.clampOutput &&
                         (!std::isfinite(adjusted) || std::fabs(adjusted) > std::numeric_limits<float>::max())) {
-                        return noiseError("ImageValueInvalid", "Noise reduction output exceeds Float32 range");
+                        overflow.store(true, std::memory_order_relaxed);
+                        return;
                     }
                     output.pixels[offset + channel] = options.clampOutput
                                                           ? static_cast<float>(std::clamp(adjusted, 0.0, 1.0))
@@ -142,7 +141,8 @@ NoiseReductionResult NoiseReducer::reduce(const ImageBuffer& image, const NoiseR
                 }
             }
         }
-    }
+    });
+    if (overflow.load(std::memory_order_relaxed)) return noiseError("ImageValueInvalid", "Noise reduction output exceeds Float32 range");
 
     NoiseReductionResult result;
     result.ok = true;

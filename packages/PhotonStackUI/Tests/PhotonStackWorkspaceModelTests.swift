@@ -1444,6 +1444,7 @@ import Testing
     #expect(model.canCreateLayer(from: artifact) == false)
     let layerCount = model.project.layers.count
     model.createLayer(from: artifact)
+    await model.waitForLayerStackPreview()
     #expect(model.project.layers.count == layerCount)
     let sourceLayer = try #require(model.project.layers.first { $0.kind == .baseImage })
     #expect(sourceLayer.inputURL == input)
@@ -3198,7 +3199,7 @@ import Testing
     #expect(layer.sourceArtifactID == artifact.id)
 }
 
-@Test @MainActor func processingLayerControlsMutateProjectLayerStack() {
+@Test @MainActor func processingLayerControlsMutateProjectLayerStack() async {
     let service = RecordingProcessingService()
     let bottomLayer = ProcessingLayer(
         name: "Registered Base",
@@ -3223,10 +3224,14 @@ import Testing
     )
 
     model.setLayerOpacity(bottomLayer.id, opacity: .nan)
+    await model.waitForLayerStackPreview()
     #expect(model.layerOpacity(bottomLayer.id) == 0.6)
     model.setLayerVisibility(bottomLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
     model.setLayerOpacity(bottomLayer.id, opacity: 1.5)
+    await model.waitForLayerStackPreview()
     model.setLayerBlendMode(bottomLayer.id, blendMode: .lighten)
+    await model.waitForLayerStackPreview()
 
     #expect(model.layerIsVisible(bottomLayer.id) == false)
     #expect(model.layerOpacity(bottomLayer.id) == 1.0)
@@ -3235,16 +3240,18 @@ import Testing
     #expect(model.canMoveProcessingLayer(bottomLayer.id, direction: .down) == false)
 
     model.moveProcessingLayer(bottomLayer.id, direction: .up)
+    await model.waitForLayerStackPreview()
 
     #expect(model.project.layers.map(\.id) == [topLayer.id, bottomLayer.id])
     #expect(model.canMoveProcessingLayer(bottomLayer.id, direction: .up) == false)
     #expect(model.canMoveProcessingLayer(bottomLayer.id, direction: .down))
 
     model.deleteProcessingLayer(bottomLayer.id)
+    await model.waitForLayerStackPreview()
     #expect(model.project.layers.map(\.id) == [topLayer.id])
 }
 
-@Test @MainActor func malformedPersistedMaskParametersFallBackToFiniteValues() throws {
+@Test @MainActor func malformedPersistedMaskParametersFallBackToFiniteValues() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
         "PhotonStackMalformedMaskParameters-\(UUID().uuidString)",
         isDirectory: true
@@ -3281,6 +3288,7 @@ import Testing
     #expect(model.layerMaskDensity(layer.id) == 1)
     #expect(model.layerMaskFeatherRadius(layer.id) == 0)
     model.setLayerOpacity(layer.id, opacity: .nan)
+    await model.waitForLayerStackPreview()
     #expect(model.layerOpacity(layer.id) == 0.4)
 }
 
@@ -3332,7 +3340,7 @@ import Testing
     #expect(revealedPixel.blue > 240 && revealedPixel.red < 15)
 }
 
-@Test @MainActor func maskLayerRejectsCompositionOnlyControls() {
+@Test @MainActor func maskLayerRejectsCompositionOnlyControls() async {
     let bottomLayer = ProcessingLayer(
         name: "Bottom",
         kind: .baseImage,
@@ -3359,9 +3367,12 @@ import Testing
     )
 
     model.setLayerVisibility(maskLayer.id, isVisible: true)
+    await model.waitForLayerStackPreview()
     model.beginLayerOpacityAdjustment(maskLayer.id)
     model.setLayerOpacity(maskLayer.id, opacity: 0.25)
+    await model.waitForLayerStackPreview()
     model.setLayerBlendMode(maskLayer.id, blendMode: .screen)
+    await model.waitForLayerStackPreview()
 
     #expect(model.layerIsVisible(maskLayer.id) == false)
     #expect(model.layerOpacity(maskLayer.id) == 1)
@@ -3371,19 +3382,22 @@ import Testing
     #expect(model.canMoveProcessingLayer(maskLayer.id, direction: .down) == false)
 
     model.moveProcessingLayer(maskLayer.id, direction: .down)
+    await model.waitForLayerStackPreview()
     #expect(model.project.layers.map(\.id) == [bottomLayer.id, maskLayer.id, topLayer.id])
 
     #expect(model.canMoveProcessingLayer(bottomLayer.id, direction: .up))
     model.moveProcessingLayer(bottomLayer.id, direction: .up)
+    await model.waitForLayerStackPreview()
     #expect(model.project.layers.map(\.id) == [topLayer.id, maskLayer.id, bottomLayer.id])
 
     model.selectLayer(maskLayer)
+    await model.waitForLayerStackPreview()
     #expect(model.activeLayerID == maskLayer.id)
     #expect(model.canvasMode == .sourcePreview)
     #expect(model.previewURL == maskLayer.inputURL)
 }
 
-@Test @MainActor func processingLayerStackChangesAreUndoable() {
+@Test @MainActor func processingLayerStackChangesAreUndoable() async {
     let service = RecordingProcessingService()
     let bottomLayer = ProcessingLayer(
         name: "Base",
@@ -3401,25 +3415,30 @@ import Testing
     let model = PhotonStackWorkspaceModel(project: project, processingService: service)
 
     model.setLayerVisibility(bottomLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
     model.stepBackPreview()
     #expect(model.layerIsVisible(bottomLayer.id))
 
     model.setLayerBlendMode(bottomLayer.id, blendMode: .screen)
+    await model.waitForLayerStackPreview()
     model.stepBackPreview()
     #expect(model.layerBlendMode(bottomLayer.id) == .normal)
 
     model.moveProcessingLayer(bottomLayer.id, direction: .up)
+    await model.waitForLayerStackPreview()
     model.stepBackPreview()
     #expect(model.project.layers.map(\.id) == [bottomLayer.id, topLayer.id])
 
     model.beginLayerOpacityAdjustment(bottomLayer.id)
     model.setLayerOpacity(bottomLayer.id, opacity: 0.75)
+    await model.waitForLayerStackPreview()
     model.setLayerOpacity(bottomLayer.id, opacity: 0.35)
+    await model.waitForLayerStackPreview()
     model.stepBackPreview()
     #expect(model.layerOpacity(bottomLayer.id) == 1.0)
 }
 
-@Test @MainActor func deletingProcessingLayerRewiresChildrenAndUndoRestoresLineage() {
+@Test @MainActor func deletingProcessingLayerRewiresChildrenAndUndoRestoresLineage() async {
     let service = RecordingProcessingService()
     let baseLayer = ProcessingLayer(
         name: "Base",
@@ -3450,8 +3469,10 @@ import Testing
     project.appendLayer(maskLayer)
     let model = PhotonStackWorkspaceModel(project: project, processingService: service)
     model.selectLayer(middleLayer)
+    await model.waitForLayerStackPreview()
 
     model.deleteProcessingLayer(middleLayer.id)
+    await model.waitForLayerStackPreview()
 
     #expect(model.project.layers.map(\.id) == [baseLayer.id, topLayer.id, maskLayer.id])
     #expect(model.project.layers[1].parameters["sourceLayerID"] == baseLayer.id.uuidString)
@@ -3464,7 +3485,7 @@ import Testing
     #expect(model.activeLayerID == middleLayer.id)
 }
 
-@Test @MainActor func creatingProcessingLayerCanBeUndone() {
+@Test @MainActor func creatingProcessingLayerCanBeUndone() async {
     let service = RecordingProcessingService()
     let asset = PhotonStackAsset(
         originalURL: URL(fileURLWithPath: "/tmp/create-layer-history.nef"),
@@ -3476,6 +3497,7 @@ import Testing
     )
 
     model.createLayer(from: asset)
+    await model.waitForLayerStackPreview()
     #expect(model.project.layers.count == 1)
 
     model.stepBackPreview()
@@ -3483,7 +3505,7 @@ import Testing
     #expect(model.activeLayerID == nil)
 }
 
-@Test @MainActor func workspaceCreatesLayersFromAssetsAndArtifacts() {
+@Test @MainActor func workspaceCreatesLayersFromAssetsAndArtifacts() async {
     let service = RecordingProcessingService()
     let asset = PhotonStackAsset(
         originalURL: URL(fileURLWithPath: "/tmp/workspace-source.nef"),
@@ -3503,7 +3525,9 @@ import Testing
     )
 
     model.createLayer(from: asset)
+    await model.waitForLayerStackPreview()
     model.createLayer(from: artifact)
+    await model.waitForLayerStackPreview()
 
     #expect(model.project.layers.count == 2)
     #expect(model.project.layers[0].name == "workspace-source.nef")
@@ -3516,7 +3540,7 @@ import Testing
     #expect(model.currentInputURL == artifact.previewURL)
 }
 
-@Test @MainActor func removingAssetUpdatesSelectionAndDerivedLayers() {
+@Test @MainActor func removingAssetUpdatesSelectionAndDerivedLayers() async {
     let service = RecordingProcessingService()
     let removed = PhotonStackAsset(
         originalURL: URL(fileURLWithPath: "/tmp/remove-selected.nef"),
@@ -3533,6 +3557,7 @@ import Testing
 
     model.select(removed)
     model.createLayer(from: removed)
+    await model.waitForLayerStackPreview()
     model.selectOnlyBatchRegistrationFrame(removed)
 
     model.removeAsset(removed)
@@ -3589,7 +3614,7 @@ import Testing
     #expect(model.batchQueue.isEmpty)
 }
 
-@Test @MainActor func assetRemovalRequestRequiresConfirmationAndSupportsCancellation() throws {
+@Test @MainActor func assetRemovalRequestRequiresConfirmationAndSupportsCancellation() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("PhotonStackAssetRemovalConfirmation-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -3613,6 +3638,7 @@ import Testing
         processingService: RecordingProcessingService()
     )
     model.createLayer(from: first)
+    await model.waitForLayerStackPreview()
     let sourceLayerID = try #require(model.project.layers.first?.id)
 
     model.requestAssetRemoval(first)
@@ -3784,6 +3810,7 @@ import Testing
     #expect(try rgbaPixel(in: maskedPreview, x: 6, y: 1).blue > 240)
 
     model.removeArtifact(mask)
+    await model.waitForLayerStackPreview()
 
     let unmaskedPreview = try #require(model.previewURL)
     #expect(model.project.layers.last?.maskArtifactID == nil)
@@ -4608,6 +4635,7 @@ import Testing
         previewDirectory: directory.appendingPathComponent("previews", isDirectory: true)
     )
     model.selectLayer(maskedLayer)
+    await model.waitForLayerStackPreview()
 
     #expect(model.canExportCurrentImage == false)
     #expect(model.canEnqueueCurrentBatchItem == false)
@@ -4673,7 +4701,7 @@ import Testing
     #expect(model.errorMessage?.contains("Masked image") == true)
 }
 
-@Test @MainActor func layerCompositeWithoutActiveLayerDoesNotProcessTheSelectedAsset() throws {
+@Test @MainActor func layerCompositeWithoutActiveLayerDoesNotProcessTheSelectedAsset() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("PhotonStackNoActiveLayerInput-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -4707,6 +4735,7 @@ import Testing
     #expect(model.errorMessage == model.localized(.missingWorkspaceSourceError))
 
     model.selectLayer(layer)
+    await model.waitForLayerStackPreview()
     #expect(model.currentInputURL == layerURL)
     #expect(model.canProcessCurrentInput)
     #expect(model.canEnqueueCurrentBatchItem)
@@ -4742,6 +4771,7 @@ import Testing
         previewDirectory: directory.appendingPathComponent("previews", isDirectory: true)
     )
     model.selectLayer(maskLayer)
+    await model.waitForLayerStackPreview()
 
     #expect(model.canvasMode == .sourcePreview)
     #expect(model.activeLayerID == maskLayer.id)
@@ -4971,7 +5001,7 @@ import Testing
     #expect(model.canRestoreMeteorsFromSelectedAsset)
 }
 
-@Test @MainActor func missingOriginalCannotResetAnAvailableWorkspacePreview() throws {
+@Test @MainActor func missingOriginalCannotResetAnAvailableWorkspacePreview() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("PhotonStackMissingOriginalReset-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -4992,6 +5022,7 @@ import Testing
         previewDirectory: directory.appendingPathComponent("previews", isDirectory: true)
     )
     model.selectLayer(layer)
+    await model.waitForLayerStackPreview()
     let previewBeforeReset = try #require(model.previewURL)
 
     #expect(model.canResetPreviewToOriginal == false)
@@ -5005,7 +5036,7 @@ import Testing
     #expect(model.errorMessage?.contains("missing-original.nef") == true)
 }
 
-@Test @MainActor func resetToOriginalDoesNotReactivateACompositedSourceLayer() throws {
+@Test @MainActor func resetToOriginalDoesNotReactivateACompositedSourceLayer() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("PhotonStackResetCompositedSource-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -5036,6 +5067,7 @@ import Testing
         previewDirectory: directory.appendingPathComponent("previews", isDirectory: true)
     )
     model.selectLayer(layer)
+    await model.waitForLayerStackPreview()
 
     model.resetPreviewToOriginal()
 
@@ -5045,7 +5077,7 @@ import Testing
     #expect(model.canProcessCurrentInput)
 }
 
-@Test @MainActor func missingArtifactPreviewCannotBePreviewedOrPromotedToLayer() throws {
+@Test @MainActor func missingArtifactPreviewCannotBePreviewedOrPromotedToLayer() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("PhotonStackMissingArtifactPreview-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -5073,6 +5105,7 @@ import Testing
 
     model.previewArtifact(artifact)
     model.createLayer(from: artifact)
+    await model.waitForLayerStackPreview()
 
     #expect(model.previewURL == nil)
     #expect(model.project.layers.isEmpty)
@@ -5110,7 +5143,9 @@ import Testing
     #expect(model.canPreviewVisibleLayerStack == false)
 
     model.selectLayer(layer)
+    await model.waitForLayerStackPreview()
     model.setLayerVisibility(layer.id, isVisible: true)
+    await model.waitForLayerStackPreview()
     await model.previewLayerStack()
 
     #expect(model.activeLayerID == nil)
@@ -5120,6 +5155,7 @@ import Testing
 
     try writeSolidPNG(to: missingURL, red: 0.8, green: 0.4, blue: 0.2, width: 16, height: 8)
     model.setLayerVisibility(layer.id, isVisible: true)
+    await model.waitForLayerStackPreview()
     #expect(model.isLayerInputAvailable(layer))
     #expect(model.canPreviewVisibleLayerStack)
 }
@@ -5155,11 +5191,12 @@ import Testing
     #expect(model.errorMessage?.contains(model.localized(.missingWorkspaceSourceError)) == true)
 
     model.setLayerVisibility(missingLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
     #expect(model.canPreviewVisibleLayerStack)
     #expect(model.previewURL != nil)
 }
 
-@Test @MainActor func layerCompositeMutationsRollBackWhenAnotherVisibleLayerIsMissing() throws {
+@Test @MainActor func layerCompositeMutationsRollBackWhenAnotherVisibleLayerIsMissing() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("PhotonStackLayerMutationRollback-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -5193,14 +5230,21 @@ import Testing
     let previewSnapshot = model.previewURL
 
     model.selectLayer(availableLayer)
+    await model.waitForLayerStackPreview()
     #expect(model.activeLayerID == availableLayer.id)
     let hasUnsavedChangesSnapshot = model.hasUnsavedChanges
     model.setLayerOpacity(availableLayer.id, opacity: 0.4)
+    await model.waitForLayerStackPreview()
     model.setLayerBlendMode(availableLayer.id, blendMode: .screen)
+    await model.waitForLayerStackPreview()
     model.moveProcessingLayer(availableLayer.id, direction: .up)
+    await model.waitForLayerStackPreview()
     model.setLayerMask(availableLayer.id, artifactID: mask.id)
+    await model.waitForLayerStackPreview()
     model.createLayer(from: extraAsset)
+    await model.waitForLayerStackPreview()
     model.deleteProcessingLayer(availableLayer.id)
+    await model.waitForLayerStackPreview()
 
     #expect(model.project == projectSnapshot)
     #expect(model.previewURL == previewSnapshot)
@@ -5210,6 +5254,7 @@ import Testing
     #expect(model.errorMessage?.contains(model.localized(.missingWorkspaceSourceError)) == true)
 
     model.setLayerVisibility(missingLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
 
     #expect(model.layerIsVisible(missingLayer.id) == false)
     #expect(model.previewURL?.lastPathComponent.hasPrefix("cache-layer-stack-live-") == true)
@@ -5257,12 +5302,14 @@ import Testing
 
     blockedModel.beginLayerOpacityAdjustment(layer.id)
     blockedModel.setLayerOpacity(layer.id, opacity: 0.4)
+    await blockedModel.waitForLayerStackPreview()
     blockedModel.endLayerOpacityAdjustment(layer.id)
     #expect(blockedModel.layerOpacity(layer.id) == 1)
     #expect(blockedModel.canStepBack == false)
 
     blockedModel.beginLayerMaskAdjustment(layer.id)
     blockedModel.setLayerMaskDensity(layer.id, density: 0.4)
+    await blockedModel.waitForLayerStackPreview()
     blockedModel.endLayerMaskAdjustment(layer.id)
     #expect(blockedModel.layerMaskDensity(layer.id) == 1)
     #expect(blockedModel.canStepBack == false)
@@ -5278,7 +5325,9 @@ import Testing
 
     workingModel.beginLayerOpacityAdjustment(layer.id)
     workingModel.setLayerOpacity(layer.id, opacity: 0.8)
+    await workingModel.waitForLayerStackPreview()
     workingModel.setLayerOpacity(layer.id, opacity: 0.3)
+    await workingModel.waitForLayerStackPreview()
     workingModel.endLayerOpacityAdjustment(layer.id)
     #expect(workingModel.layerOpacity(layer.id) == 0.3)
     #expect(workingModel.canStepBack)
@@ -5288,7 +5337,9 @@ import Testing
 
     workingModel.beginLayerMaskAdjustment(layer.id)
     workingModel.setLayerMaskDensity(layer.id, density: 0.7)
+    await workingModel.waitForLayerStackPreview()
     workingModel.setLayerMaskDensity(layer.id, density: 0.2)
+    await workingModel.waitForLayerStackPreview()
     workingModel.endLayerMaskAdjustment(layer.id)
     #expect(workingModel.layerMaskDensity(layer.id) == 0.2)
     #expect(workingModel.canStepBack)
@@ -5316,7 +5367,7 @@ import Testing
     #expect(blockedModel.layerOpacity(layer.id) == 1 && !blockedModel.canStepBack)
 }
 
-@Test @MainActor func missingLayerMaskCanBeDetachedButNotAdjustedOrReshown() throws {
+@Test @MainActor func missingLayerMaskCanBeDetachedButNotAdjustedOrReshown() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("PhotonStackMissingLayerMask-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -5349,19 +5400,26 @@ import Testing
     #expect(model.canPreviewVisibleLayerStack == false)
 
     model.setLayerMaskInverted(layer.id, inverted: true)
+    await model.waitForLayerStackPreview()
     model.setLayerMaskDensity(layer.id, density: 0.4)
+    await model.waitForLayerStackPreview()
     model.setLayerOpacity(layer.id, opacity: 0.4)
+    await model.waitForLayerStackPreview()
     #expect(model.layerMaskIsInverted(layer.id) == false)
     #expect(model.layerMaskDensity(layer.id) == 1)
     #expect(model.layerOpacity(layer.id) == 1)
 
     model.setLayerVisibility(layer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
     model.setLayerVisibility(layer.id, isVisible: true)
+    await model.waitForLayerStackPreview()
     #expect(model.layerIsVisible(layer.id) == false)
 
     model.setLayerMask(layer.id, artifactID: nil)
+    await model.waitForLayerStackPreview()
     #expect(model.layerMaskArtifact(layer.id) == nil)
     model.setLayerVisibility(layer.id, isVisible: true)
+    await model.waitForLayerStackPreview()
     #expect(model.layerIsVisible(layer.id))
     #expect(model.canPreviewVisibleLayerStack)
 }
@@ -5393,6 +5451,7 @@ import Testing
         previewDirectory: directory.appendingPathComponent("previews", isDirectory: true)
     )
     model.selectLayer(layer)
+    await model.waitForLayerStackPreview()
 
     #expect(model.canProcessCurrentInput == false)
     await model.autoStretchPreview()
@@ -5401,6 +5460,7 @@ import Testing
     #expect(model.errorMessage?.contains("Broken Mask Layer") == true)
 
     model.setLayerMask(layer.id, artifactID: nil)
+    await model.waitForLayerStackPreview()
     #expect(model.canProcessCurrentInput)
 }
 
@@ -5562,6 +5622,7 @@ import Testing
     )
 
     model.selectLayer(baseLayer)
+    await model.waitForLayerStackPreview()
     #expect(model.activeLayerID == baseLayer.id)
     #expect(model.currentInputURL == source)
 
@@ -5698,6 +5759,7 @@ import Testing
     #expect(model.latestJob?.status == .succeeded)
 
     model.setLayerVisibility(overlayLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
 
     let refreshedPreviewURL = try #require(model.previewURL)
     #expect(refreshedPreviewURL.lastPathComponent.hasPrefix("cache-layer-stack-live-"))
@@ -5707,6 +5769,7 @@ import Testing
     #expect(model.project.editGraph.operations.filter { $0.kind == .preview && $0.parameters["source"] == "layerStack" }.isEmpty)
 
     model.setLayerVisibility(baseLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
 
     let emptyPreviewURL = try #require(model.previewURL)
     #expect(emptyPreviewURL.lastPathComponent.hasPrefix("cache-layer-stack-empty-"))
@@ -5720,9 +5783,12 @@ import Testing
     #expect(model.previewURL == refreshedPreviewURL)
 
     model.selectLayer(overlayLayer)
+    await model.waitForLayerStackPreview()
     model.setLayerVisibility(baseLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
     let emptyPreviewBeforeDeletion = try #require(model.previewURL)
     model.deleteProcessingLayer(overlayLayer.id)
+    await model.waitForLayerStackPreview()
 
     #expect(model.activeLayerID == baseLayer.id)
     #expect(model.layerIsVisible(baseLayer.id) == false)
@@ -5777,6 +5843,7 @@ import Testing
         #expect(transparentPixel == expectedBackground)
 
         model.setLayerOpacity(overlay.id, opacity: 0)
+        await model.waitForLayerStackPreview()
         let zeroOpacityPreview = try #require(model.previewURL)
         for x in [2, 13] {
             let pixel = try rgbaPixel(in: zeroOpacityPreview, x: x, y: 4)
@@ -5885,12 +5952,14 @@ import Testing
     #expect(maskedRight.blue > 240 && maskedRight.red < 15)
 
     model.setLayerMask(overlayLayer.id, artifactID: nil)
+    await model.waitForLayerStackPreview()
     #expect(model.layerMaskArtifact(overlayLayer.id) == nil)
     let unmaskedPreview = try #require(model.previewURL)
     let unmaskedLeft = try rgbaPixel(in: unmaskedPreview, x: 1, y: 1)
     #expect(unmaskedLeft.blue > 240 && unmaskedLeft.red < 15)
 
     model.setLayerMask(overlayLayer.id, artifactID: maskArtifact.id)
+    await model.waitForLayerStackPreview()
     #expect(model.layerMaskArtifact(overlayLayer.id)?.id == maskArtifact.id)
 }
 
@@ -5929,6 +5998,7 @@ import Testing
     )
 
     model.setLayerMaskInverted(overlayLayer.id, inverted: true)
+    await model.waitForLayerStackPreview()
     let inverted = try #require(model.previewURL)
     let invertedLeft = try rgbaPixel(in: inverted, x: 4, y: 8)
     let invertedRight = try rgbaPixel(in: inverted, x: 27, y: 8)
@@ -5942,6 +6012,7 @@ import Testing
 
     model.beginLayerMaskAdjustment(overlayLayer.id)
     model.setLayerMaskDensity(overlayLayer.id, density: 0)
+    await model.waitForLayerStackPreview()
     let transparentMask = try #require(model.previewURL)
     let formerlyMaskedPixel = try rgbaPixel(in: transparentMask, x: 4, y: 8)
     #expect(formerlyMaskedPixel.blue > 240 && formerlyMaskedPixel.red < 15)
@@ -5950,6 +6021,7 @@ import Testing
 
     model.beginLayerMaskAdjustment(overlayLayer.id)
     model.setLayerMaskFeatherRadius(overlayLayer.id, radius: 1.6)
+    await model.waitForLayerStackPreview()
     #expect(abs(model.layerMaskFeatherRadius(overlayLayer.id) - 1.6) < 0.001)
     let feathered = try #require(model.previewURL)
     let boundaryPixel = try rgbaPixel(in: feathered, x: 15, y: 8)
@@ -5988,6 +6060,7 @@ import Testing
     )
 
     model.setLayerMaskFeatherRadius(overlay.id, radius: 3.2)
+    await model.waitForLayerStackPreview()
     let preview = try #require(model.previewURL)
     for point in [(0, 0), (63, 0), (0, 31), (63, 31), (32, 16)] {
         let pixel = try rgbaPixel(in: preview, x: point.0, y: point.1)
@@ -6035,6 +6108,7 @@ import Testing
     #expect(try rgbaPixel(in: normal, x: 27, y: 8).blue > 240)
 
     model.setLayerMaskInverted(overlayLayer.id, inverted: true)
+    await model.waitForLayerStackPreview()
     let inverted = try #require(model.previewURL)
     #expect(try rgbaPixel(in: inverted, x: 4, y: 8).blue > 240)
     #expect(try rgbaPixel(in: inverted, x: 27, y: 8).red > 240)
@@ -6088,6 +6162,7 @@ import Testing
         diameterFraction: 0.25
     )
     #expect(model.applyMaskBrushEdits([stroke], to: overlayLayer.id))
+    await model.waitForLayerStackPreview()
 
     let editedArtifact = try #require(model.layerMaskArtifact(overlayLayer.id))
     let editedMaskURL = try #require(editedArtifact.previewURL)
@@ -6228,6 +6303,7 @@ import Testing
         )],
         to: overlayLayer.id
     )
+    await model.waitForLayerStackPreview()
 
     #expect(applied == false)
     #expect(model.project == initialProject)
@@ -6267,6 +6343,7 @@ import Testing
         previewDirectory: directory.appendingPathComponent("previews", isDirectory: true)
     )
     model.selectLayer(baseLayer)
+    await model.waitForLayerStackPreview()
 
     await model.exportCurrentImage(to: directory.appendingPathComponent("final.tiff"))
 
@@ -6278,7 +6355,9 @@ import Testing
     #expect(exportedPixel.blue > 110 && exportedPixel.blue < 145)
 
     model.setLayerVisibility(baseLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
     model.setLayerVisibility(overlayLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
     await model.exportCurrentImage(to: directory.appendingPathComponent("empty-final.tiff"))
 
     let emptyExportInput = try #require(await service.snapshot().convertInput)
@@ -6315,6 +6394,7 @@ import Testing
     )
 
     model.selectLayer(redLayer)
+    await model.waitForLayerStackPreview()
     #expect(model.canvasMode == .layerComposite)
     model.select(blueAsset)
     #expect(model.canvasMode == .sourcePreview)
@@ -6352,6 +6432,7 @@ import Testing
     )
 
     model.selectLayer(redLayer)
+    await model.waitForLayerStackPreview()
     model.previewArtifact(artifact)
     #expect(model.canvasMode == .sourcePreview)
     #expect(model.activeLayerID == nil)
@@ -6785,7 +6866,7 @@ import Testing
 }
 
 #if os(macOS)
-@Test @MainActor func nativeCurvePreviewCreatesMissingManagedCacheDirectory() async throws {
+@Test @MainActor func nativeCurvePreviewNeedsNoManagedCacheDirectory() async throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("PhotonStackNativeCurvePreviewDirectory-\(UUID().uuidString)", isDirectory: true)
     let executable = directory.appendingPathComponent("photonstack")
@@ -6818,8 +6899,9 @@ import Testing
     model.startCurvePreview()
     try await waitForCurvePreviewCompletion(in: model)
 
-    #expect(FileManager.default.fileExists(atPath: missingPreviewDirectory.path))
-    #expect(model.interactiveCurveURL.map { FileManager.default.fileExists(atPath: $0.path) } == true)
+    #expect(!FileManager.default.fileExists(atPath: missingPreviewDirectory.path))
+    #expect(model.interactiveCurve.frame?.image != nil)
+    #expect(model.interactiveCurveURL == nil)
     #expect(model.errorMessage == nil)
     #expect(model.project.editGraph.operations.isEmpty)
 }
@@ -8078,6 +8160,7 @@ import Testing
         previewDirectory: directory.appendingPathComponent("previews", isDirectory: true)
     )
     model.createLayer(from: asset)
+    await model.waitForLayerStackPreview()
     await model.createStarMask(radius: 2, largeRadius: 5, layered: true, sigmaThreshold: 3, minPeak: 0.02)
 
     let sourceLayer = try #require(model.project.layers.first(where: { $0.kind != .mask }))
@@ -8089,6 +8172,7 @@ import Testing
         )],
         to: sourceLayer.id
     ))
+    await model.waitForLayerStackPreview()
 
     await model.exportCurrentImage(to: directory.appendingPathComponent("final.tiff"))
 
@@ -8628,12 +8712,19 @@ import Testing
     let activeLayerSnapshot = model.activeLayerID
     model.previewArtifact(artifact)
     model.createLayer(from: artifact)
+    await model.waitForLayerStackPreview()
     model.selectLayer(topLayer)
+    await model.waitForLayerStackPreview()
     model.setLayerVisibility(topLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
     model.setLayerOpacity(topLayer.id, opacity: 0.25)
+    await model.waitForLayerStackPreview()
     model.setLayerBlendMode(topLayer.id, blendMode: .screen)
+    await model.waitForLayerStackPreview()
     model.moveProcessingLayer(topLayer.id, direction: .down)
+    await model.waitForLayerStackPreview()
     model.deleteProcessingLayer(topLayer.id)
+    await model.waitForLayerStackPreview()
     model.requestArtifactRemoval(artifact)
     model.confirmArtifactRemoval(artifact)
     model.toggleEditOperation(operation.id)
@@ -9786,6 +9877,10 @@ import Testing
 
     try writeSolidPNG(to: input, red: 0.02, green: 0.02, blue: 0.02, width: 240, height: 140)
     model.refreshArtifactMarkedPreview(selectedIndices: [])
+    for _ in 0..<200 {
+        if model.artifactMarkedPreviewURL != nil { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
     #expect(model.artifactMarkedPreviewURL != nil)
     #expect(model.errorMessage == nil)
 
@@ -9798,6 +9893,10 @@ import Testing
 
     try writeSolidPNG(to: input, red: 0.02, green: 0.02, blue: 0.02, width: 240, height: 140)
     model.refreshCloudMarkedPreview(selectedIndices: [])
+    for _ in 0..<200 {
+        if model.artifactMarkedPreviewURL != nil { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
     #expect(model.artifactMarkedPreviewURL != nil)
     #expect(model.errorMessage == nil)
 }
@@ -10645,7 +10744,10 @@ import Testing
     #expect(FileManager.default.fileExists(atPath: oldMarker.path))
     #expect(oldMarker.deletingLastPathComponent().lastPathComponent == project.id.uuidString)
 
+    model.refreshArtifactMarkedPreview(selectedIndices: [])
     model.createProject(template: .singleFrame, name: "New Managed Cache")
+    try await Task.sleep(for: .milliseconds(60))
+    #expect(model.artifactMarkedPreviewURL == nil)
     let newProjectID = model.project.id
     model.importAssets(from: [input])
     await model.autoStretchPreview()
@@ -11554,6 +11656,7 @@ import Testing
         previewDirectory: directory.appendingPathComponent("previews", isDirectory: true)
     )
     model.selectLayer(redLayer)
+    await model.waitForLayerStackPreview()
     model.select(blueAsset)
 
     let projectDirectory = directory.appendingPathComponent("project", isDirectory: true)
@@ -12246,6 +12349,7 @@ import Testing
     model.select(secondAsset)
     model.previewArtifact(artifact)
     model.selectLayer(layer)
+    await model.waitForLayerStackPreview()
 
     #expect(model.selectedAssetID == firstAsset.id)
     #expect(model.activeLayerID == nil)
@@ -12367,17 +12471,27 @@ import Testing
     let frozenActiveLayerID = model.activeLayerID
 
     model.createLayer(from: secondAsset)
+    await model.waitForLayerStackPreview()
     model.createLayer(from: smartObject)
+    await model.waitForLayerStackPreview()
     model.setLayerVisibility(topLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
     model.beginLayerOpacityAdjustment(topLayer.id)
     model.setLayerOpacity(topLayer.id, opacity: 0.35)
+    await model.waitForLayerStackPreview()
     model.setLayerBlendMode(topLayer.id, blendMode: .screen)
+    await model.waitForLayerStackPreview()
     model.moveProcessingLayer(topLayer.id, direction: .down)
+    await model.waitForLayerStackPreview()
     model.deleteProcessingLayer(bottomLayer.id)
+    await model.waitForLayerStackPreview()
     model.setLayerMaskInverted(topLayer.id, inverted: true)
+    await model.waitForLayerStackPreview()
     model.beginLayerMaskAdjustment(topLayer.id)
     model.setLayerMaskDensity(topLayer.id, density: 0.35)
+    await model.waitForLayerStackPreview()
     model.setLayerMask(topLayer.id, artifactID: nil)
+    await model.waitForLayerStackPreview()
     #expect(model.applyMaskBrushEdits(
         [MaskBrushStroke(
             mode: .hide,
@@ -12386,6 +12500,7 @@ import Testing
         )],
         to: topLayer.id
     ) == false)
+    await model.waitForLayerStackPreview()
     model.removeArtifact(mask)
     model.removeAsset(secondAsset)
     model.toggleEditOperation(stretch.id)
@@ -12404,6 +12519,7 @@ import Testing
     try await waitForProcessingCompletion(in: model)
     #expect(model.canModifyProcessingConfiguration)
     model.setLayerVisibility(topLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
     #expect(model.layerIsVisible(topLayer.id) == false)
 }
 
@@ -13167,6 +13283,7 @@ import Testing
     #expect(model.previewOperationID == operation.id)
     #expect(model.layerIsVisible(operationLayer.id))
     model.selectLayer(operationLayer)
+    await model.waitForLayerStackPreview()
     #expect(model.canvasMode == .layerComposite)
     #expect(model.previewOperationID == nil)
 
@@ -13179,6 +13296,7 @@ import Testing
     #expect(model.project.layers.first(where: { $0.id == operationLayer.id })?
         .parameters["visibilityBeforeOperationDisable"] == "true")
     model.setLayerVisibility(operationLayer.id, isVisible: true)
+    await model.waitForLayerStackPreview()
     #expect(model.layerIsVisible(operationLayer.id) == false)
     #expect(model.errorMessage == model.localized(.disabledOperationLayer))
     model.startReplayEditGraph()
@@ -13233,6 +13351,7 @@ import Testing
         $0.parameters["operationID"] == operation.id.uuidString
     })
     model.setLayerVisibility(operationLayer.id, isVisible: false)
+    await model.waitForLayerStackPreview()
     #expect(model.layerIsVisible(operationLayer.id) == false)
 
     model.toggleEditOperation(operation.id)
@@ -13447,6 +13566,7 @@ import Testing
     })
     #expect(denoiseLayer.parameters["sourceLayerID"] == stretchLayer.id.uuidString)
     model.selectLayer(denoiseLayer)
+    await model.waitForLayerStackPreview()
     #expect(model.canvasMode == .layerComposite)
     #expect(model.previewOperationID == nil)
 
@@ -13513,6 +13633,7 @@ import Testing
     let originalStretchInput = try #require(originalStretchLayer.inputURL)
     let originalDenoiseInput = try #require(originalDenoiseLayer.inputURL)
     model.selectLayer(originalDenoiseLayer)
+    await model.waitForLayerStackPreview()
     #expect(model.canvasMode == .layerComposite)
     #expect(model.previewOperationID == nil)
 
@@ -13578,6 +13699,7 @@ import Testing
         $0.parameters["operationID"] == denoise.id.uuidString
     })
     model.selectLayer(denoiseLayer)
+    await model.waitForLayerStackPreview()
     #expect(model.canvasMode == .layerComposite)
     #expect(model.previewOperationID == nil)
 
@@ -15146,4 +15268,56 @@ private actor RecordingProcessingService: ProcessingService {
         #expect(Set(snapshot.stackInputs).count == 2)
         #expect(snapshot.calibrateCalls == (calibrated ? 2 : 0))
     }
+}
+
+@Test func photoClippingRefinesSmallStarCoresAfterBoundedInteractivePreview() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let input = root.appendingPathComponent("star.png")
+    let width = 5600, height = 16
+    var pixels = Array(repeating: UInt8(64), count: width * height * 4)
+    for i in stride(from: 3, to: pixels.count, by: 4) { pixels[i] = 255 }
+    for c in 0..<3 { pixels[(8 * width + 2800) * 4 + c] = 255 }
+    let context = CIContext()
+    let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+    let source = CIImage(bitmapData: Data(pixels), bytesPerRow: width * 4,
+                         size: CGSize(width: width, height: height), format: .RGBA8, colorSpace: space)
+    try context.writePNGRepresentation(of: source, to: input, format: .RGBA8, colorSpace: space)
+    let renderer = PhotoAdjustmentRenderer()
+    var settings = PhotoAdjustments()
+    settings[.exposure] = 1
+    let fast = try await renderer.preview(input: input, adjustments: settings, warnings: .highlights,
+                                          preciseWarnings: false)
+    let exact = try await renderer.preview(input: input, adjustments: settings, warnings: .highlights)
+    #expect(fast.image.width == 1400 && exact.image.width == 1400)
+    #expect(fast.sourceSize == CGSize(width: width, height: height) && exact.sourceSize == fast.sourceSize)
+    func redMarkers(_ image: CGImage) -> Int {
+        var rgba = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        context.render(CIImage(cgImage: image), toBitmap: &rgba, rowBytes: image.width * 4,
+                       bounds: CGRect(x: 0, y: 0, width: image.width, height: image.height), format: .RGBA8, colorSpace: space)
+        return stride(from: 0, to: rgba.count, by: 4).filter { Int(rgba[$0]) > Int(rgba[$0 + 1]) + 30 }.count
+    }
+    #expect(redMarkers(exact.image) > 0)
+    #expect(redMarkers(fast.image) < redMarkers(exact.image))
+}
+
+@Test func photoSourceGeometryCacheInvalidatesWhenCropPositionChanges() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let input = root.appendingPathComponent("bands.png")
+    let row: [UInt8] = (0..<80).flatMap { $0 < 40 ? [120, 80, 60, 255] : [60, 80, 120, 255] }
+    let image = CIImage(bitmapData: Data(Array(repeating: row, count: 20).flatMap { $0 }), bytesPerRow: 320,
+                        size: CGSize(width: 80, height: 20), format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB))
+    try CIContext().writePNGRepresentation(of: image, to: input, format: .RGBA8,
+                                          colorSpace: #require(CGColorSpace(name: CGColorSpace.sRGB)))
+    let renderer = PhotoAdjustmentRenderer()
+    var settings = PhotoAdjustments()
+    settings.aspect = .square
+    settings.horizontalPosition = 0
+    let left = try #require(try await renderer.neutralSample(input: input, adjustments: settings, at: CGPoint(x: 0.5, y: 0.5)))
+    settings.horizontalPosition = 1
+    let right = try #require(try await renderer.neutralSample(input: input, adjustments: settings, at: CGPoint(x: 0.5, y: 0.5)))
+    #expect(left.red > left.blue && right.blue > right.red)
 }

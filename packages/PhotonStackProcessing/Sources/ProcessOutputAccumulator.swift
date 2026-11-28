@@ -138,11 +138,19 @@ final class ProcessOutputAccumulator: @unchecked Sendable {
         NotificationCenter.default.post(name: .photonStackProcessingProgress, object: event)
     }
 
+    private static let progressMarkers = ["\"progress\"", "\"type\"", "\"task\"", "\"command\"", "\"stage\""].map { Data($0.utf8) }
+    private static let unicodeEscape = Data("\\u".utf8)
+
     private static func progressEvent(
         from data: Data,
         jobID: UUID?,
         progressScope: ProcessingProgressScope?
     ) -> ProcessingProgressEvent? {
+        // The compact progress protocol has these keys. Large final reports can
+        // be forwarded verbatim without constructing a second object graph.
+        // Escaped key names are valid JSON and use the normal parser.
+        if data.count > 4096, data.range(of: Self.unicodeEscape) == nil,
+           !Self.progressMarkers.allSatisfy({ data.range(of: $0) != nil }) { return nil }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               object["type"] as? String == "progress",
               let task = object["task"] as? String,

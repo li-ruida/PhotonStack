@@ -1,4 +1,6 @@
 #include "photonstack/ColorAdjuster.hpp"
+#include "photonstack/ParallelRanges.hpp"
+#include <atomic>
 
 #include <algorithm>
 #include <array>
@@ -32,6 +34,21 @@ float channelMedian(const ImageBuffer& image, std::uint16_t channel) {
             .value = image.pixels[pixel * image.channels + channel],
             .weight = detail::pixelCoverage(image, pixel),
         });
+    }
+    if (!values.empty() && std::all_of(values.begin(), values.end(), [](const auto& s) { return s.weight == 1; })) {
+        if (values.size() == 1)
+            return static_cast<float>(values.front().value);
+        const auto less = [](const auto& a, const auto& b) { return a.value < b.value; };
+        const auto rank = values.size() / 2;
+        const auto upper = values.begin() + rank;
+        std::nth_element(values.begin(), upper, values.end(), less);
+        const auto lower = std::max_element(values.begin(), upper, less);
+        // Match weightedMedian's center-position interpolation, including its
+        // rounding, rather than replacing an even population with (a+b)/2.
+        const double previous = (double(rank) - .5) / values.size();
+        const double position = (double(rank) + .5) / values.size();
+        const double amount = std::clamp((.5 - previous) / (position - previous), 0., 1.);
+        return static_cast<float>(lower->value + (upper->value - lower->value) * amount);
     }
     return static_cast<float>(detail::weightedMedian(std::move(values)));
 }
@@ -72,19 +89,21 @@ ColorAdjustmentResult ColorAdjuster::neutralizeBackground(const ImageBuffer& ima
     const float blueScale = target / std::max(options.epsilon, blue);
 
     ImageBuffer output = image;
-    for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
-        if (!detail::pixelHasValidColor(image, pixel)) {
-            detail::clearMaskedPixel(output, pixel);
-            continue;
+    detail::parallelRanges(image.pixelCount(), 32768, [&](std::size_t first, std::size_t last) noexcept {
+        for (auto pixel = first; pixel < last; ++pixel) {
+            if (!detail::pixelHasValidColor(image, pixel)) {
+                detail::clearMaskedPixel(output, pixel);
+                continue;
+            }
+            const auto offset = pixel * image.channels;
+            output.pixels[offset] =
+                std::clamp(image.pixels[offset] * (1.0F + (redScale - 1.0F) * options.strength), 0.0F, 1.0F);
+            output.pixels[offset + 1] =
+                std::clamp(image.pixels[offset + 1] * (1.0F + (greenScale - 1.0F) * options.strength), 0.0F, 1.0F);
+            output.pixels[offset + 2] =
+                std::clamp(image.pixels[offset + 2] * (1.0F + (blueScale - 1.0F) * options.strength), 0.0F, 1.0F);
         }
-        const auto offset = pixel * image.channels;
-        output.pixels[offset] =
-            std::clamp(image.pixels[offset] * (1.0F + (redScale - 1.0F) * options.strength), 0.0F, 1.0F);
-        output.pixels[offset + 1] =
-            std::clamp(image.pixels[offset + 1] * (1.0F + (greenScale - 1.0F) * options.strength), 0.0F, 1.0F);
-        output.pixels[offset + 2] =
-            std::clamp(image.pixels[offset + 2] * (1.0F + (blueScale - 1.0F) * options.strength), 0.0F, 1.0F);
-    }
+    });
 
     ColorAdjustmentResult result;
     result.ok = true;
@@ -109,19 +128,21 @@ ColorAdjustmentResult ColorAdjuster::adjustSaturation(const ImageBuffer& image,
 
     ImageBuffer output = image;
     const float factor = 1.0F + options.amount;
-    for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
-        if (!detail::pixelHasValidColor(image, pixel)) {
-            detail::clearMaskedPixel(output, pixel);
-            continue;
+    detail::parallelRanges(image.pixelCount(), 32768, [&](std::size_t first, std::size_t last) noexcept {
+        for (auto pixel = first; pixel < last; ++pixel) {
+            if (!detail::pixelHasValidColor(image, pixel)) {
+                detail::clearMaskedPixel(output, pixel);
+                continue;
+            }
+            const auto offset = pixel * image.channels;
+            const float luminance = image.pixels[offset] * 0.2126F + image.pixels[offset + 1] * 0.7152F +
+                                    image.pixels[offset + 2] * 0.0722F;
+            for (std::uint16_t channel = 0; channel < 3; ++channel) {
+                output.pixels[offset + channel] =
+                    std::clamp(luminance + (image.pixels[offset + channel] - luminance) * factor, 0.0F, 1.0F);
+            }
         }
-        const auto offset = pixel * image.channels;
-        const float luminance =
-            image.pixels[offset] * 0.2126F + image.pixels[offset + 1] * 0.7152F + image.pixels[offset + 2] * 0.0722F;
-        for (std::uint16_t channel = 0; channel < 3; ++channel) {
-            output.pixels[offset + channel] =
-                std::clamp(luminance + (image.pixels[offset + channel] - luminance) * factor, 0.0F, 1.0F);
-        }
-    }
+    });
 
     ColorAdjustmentResult result;
     result.ok = true;
@@ -147,7 +168,7 @@ ColorAdjustmentResult ColorAdjuster::suppressGreenCast(const ImageBuffer& image,
     }
 
     ImageBuffer output = image;
-    std::size_t affectedPixels = 0;
+    std::atomic<std::size_t> affectedPixels{0};
     if (options.averageNeutral || options.preserveLightness) {
         if (image.colorEncoding != ColorEncoding::SRGB)
             return colorError("ImageColorEncodingMismatch",
@@ -158,60 +179,64 @@ ColorAdjustmentResult ColorAdjuster::suppressGreenCast(const ImageBuffer& image,
                     if (image.pixels[p * image.channels + c] < 0 || image.pixels[p * image.channels + c] > 1)
                         return colorError("ImageValueInvalid", "Green display styling requires samples in [0,1]");
     }
-    for (std::size_t pixel = 0; pixel < image.pixelCount(); ++pixel) {
-        if (!detail::pixelHasValidColor(image, pixel)) {
-            detail::clearMaskedPixel(output, pixel);
-            continue;
-        }
-        const auto offset = pixel * image.channels;
-        const float red = image.pixels[offset];
-        const float green = image.pixels[offset + 1];
-        const float blue = image.pixels[offset + 2];
-        const float luminance = red * 0.2126F + green * 0.7152F + blue * 0.0722F;
-        const float neutralGreen = (red + blue) * 0.5F;
-        const float excess = green - neutralGreen;
-        if (excess <= options.greenExcessThreshold) {
-            continue;
-        }
-
-        const float backgroundMask =
-            1.0F - smoothstep(options.backgroundLimit * 0.65F, options.backgroundLimit, luminance);
-        const float excessMask = std::clamp(excess / std::max(0.03F, luminance * 0.35F), 0.0F, 1.0F);
-        const float blend = options.averageNeutral
-                                ? options.amount
-                                : std::clamp(options.amount * backgroundMask * excessMask, 0.0F, 1.0F);
-        if (blend <= 0.0F) {
-            continue;
-        }
-
-        output.pixels[offset + 1] = std::clamp(green + (neutralGreen - green) * blend, 0.0F, 1.0F);
-        if (options.preserveLightness) {
-            const std::array<double, 3> weights{.2126, .7152, .0722};
-            std::array<double, 3> color;
-            double originalY = 0, adjustedY = 0;
-            for (int c = 0; c < 3; ++c) {
-                originalY += weights[c] * detail::decodeSRGB(image.pixels[offset + c]);
-                color[c] = detail::decodeSRGB(output.pixels[offset + c]);
-                adjustedY += weights[c] * color[c];
+    detail::parallelRanges(image.pixelCount(), 32768, [&](std::size_t first, std::size_t last) noexcept {
+        std::size_t changed = 0;
+        for (auto pixel = first; pixel < last; ++pixel) {
+            if (!detail::pixelHasValidColor(image, pixel)) {
+                detail::clearMaskedPixel(output, pixel);
+                continue;
             }
-            // A pure green pixel may become black at full suppression. Its
-            // achromatic value is the only finite neutral solution at that Y.
-            for (double& value : color)
-                value = adjustedY > 0 ? value * originalY / adjustedY : originalY;
-            double available = std::numeric_limits<double>::infinity();
-            for (double value : color) {
-                if (value > originalY)
-                    available = std::min(available, (1 - originalY) / (value - originalY));
-                if (value < originalY)
-                    available = std::min(available, originalY / (originalY - value));
+            const auto offset = pixel * image.channels;
+            const float red = image.pixels[offset];
+            const float green = image.pixels[offset + 1];
+            const float blue = image.pixels[offset + 2];
+            const float luminance = red * 0.2126F + green * 0.7152F + blue * 0.0722F;
+            const float neutralGreen = (red + blue) * 0.5F;
+            const float excess = green - neutralGreen;
+            if (excess <= options.greenExcessThreshold) {
+                continue;
             }
-            const double scale = detail::softGamutScale(available);
-            for (int c = 0; c < 3; ++c)
-                output.pixels[offset + c] =
-                    static_cast<float>(detail::encodeSRGB(std::clamp(originalY + scale * (color[c] - originalY), 0.0, 1.0)));
+
+            const float backgroundMask =
+                1.0F - smoothstep(options.backgroundLimit * 0.65F, options.backgroundLimit, luminance);
+            const float excessMask = std::clamp(excess / std::max(0.03F, luminance * 0.35F), 0.0F, 1.0F);
+            const float blend = options.averageNeutral
+                                    ? options.amount
+                                    : std::clamp(options.amount * backgroundMask * excessMask, 0.0F, 1.0F);
+            if (blend <= 0.0F) {
+                continue;
+            }
+
+            output.pixels[offset + 1] = std::clamp(green + (neutralGreen - green) * blend, 0.0F, 1.0F);
+            if (options.preserveLightness) {
+                const std::array<double, 3> weights{.2126, .7152, .0722};
+                std::array<double, 3> color;
+                double originalY = 0, adjustedY = 0;
+                for (int c = 0; c < 3; ++c) {
+                    originalY += weights[c] * detail::decodeSRGB(image.pixels[offset + c]);
+                    color[c] = detail::decodeSRGB(output.pixels[offset + c]);
+                    adjustedY += weights[c] * color[c];
+                }
+                // A pure green pixel may become black at full suppression. Its
+                // achromatic value is the only finite neutral solution at that Y.
+                for (double& value : color)
+                    value = adjustedY > 0 ? value * originalY / adjustedY : originalY;
+                double available = std::numeric_limits<double>::infinity();
+                for (double value : color) {
+                    if (value > originalY)
+                        available = std::min(available, (1 - originalY) / (value - originalY));
+                    if (value < originalY)
+                        available = std::min(available, originalY / (originalY - value));
+                }
+                const double scale = detail::softGamutScale(available);
+                for (int c = 0; c < 3; ++c)
+                    output.pixels[offset + c] = static_cast<float>(
+                        detail::encodeSRGB(std::clamp(originalY + scale * (color[c] - originalY), 0.0, 1.0)));
+            }
+            ++changed;
         }
-        ++affectedPixels;
-    }
+        affectedPixels.fetch_add(changed, std::memory_order_relaxed);
+    });
 
     ColorAdjustmentResult result;
     result.ok = true;
@@ -219,7 +244,7 @@ ColorAdjustmentResult ColorAdjuster::suppressGreenCast(const ImageBuffer& image,
     result.redBackground = channelMedian(result.image, 0);
     result.greenBackground = channelMedian(result.image, 1);
     result.blueBackground = channelMedian(result.image, 2);
-    result.affectedPixels = affectedPixels;
+    result.affectedPixels = affectedPixels.load(std::memory_order_relaxed);
     return result;
 }
 

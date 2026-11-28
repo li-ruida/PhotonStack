@@ -1,8 +1,10 @@
+#include "photonstack/ParallelRanges.hpp"
 #include "photonstack/NonlocalDenoiser.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <numeric>
+#include "photonstack/WorkingMemory.hpp"
 #include <vector>
 
 namespace photonstack {
@@ -39,8 +41,12 @@ ImageBuffer conservativeRGB(const ImageBuffer& image, const ImageBuffer& blend,
         return double(image.pixels[(std::size_t(reflect(y, image.height)) * image.width +
                                     reflect(x, image.width)) * image.channels + c]);
     };
-    for (std::size_t ty = 0; ty < image.height; ty += tile) {
-        for (std::size_t tx = 0; tx < image.width; tx += tile) {
+    const auto columns = (std::size_t(image.width) + tile - 1) / tile;
+    const auto rows = (std::size_t(image.height) + tile - 1) / tile;
+    const detail::ScopedRangeWorkerLimit memoryLimit(std::max<std::size_t>(1, detail::workingMemoryBudget() / (20ULL << 20)));
+    detail::parallelRanges(rows * columns, 1, [&](std::size_t first, std::size_t last) {
+        for (auto block = first; block < last; ++block) {
+            const auto ty = block / columns * tile, tx = block % columns * tile;
             const auto right = std::min(tx + tile, std::size_t(image.width));
             const auto bottom = std::min(ty + tile, std::size_t(image.height));
             bool active = false;
@@ -124,7 +130,7 @@ ImageBuffer conservativeRGB(const ImageBuffer& image, const ImageBuffer& blend,
                 for (int c = 0; c < 3; ++c) output.pixels[pixel + c] = static_cast<float>(result[i][c]);
             }
         }
-    }
+    });
     return output;
 }
 }
@@ -162,8 +168,12 @@ NonlocalDenoiseResult NonlocalDenoiser::apply(const ImageBuffer& image, const Im
         return result;
     }
     constexpr std::size_t tile = 128;
-    for (std::size_t ty = 0; ty < image.height; ty += tile) {
-        for (std::size_t tx = 0; tx < image.width; tx += tile) {
+    const auto columns = (std::size_t(image.width) + tile - 1) / tile;
+    const auto rows = (std::size_t(image.height) + tile - 1) / tile;
+    const detail::ScopedRangeWorkerLimit memoryLimit(std::max<std::size_t>(1, detail::workingMemoryBudget() / (4ULL << 20)));
+    detail::parallelRanges(rows * columns, 1, [&](std::size_t first, std::size_t last) {
+        for (auto block = first; block < last; ++block) {
+            const auto ty = block / columns * tile, tx = block % columns * tile;
             const auto w = std::min(tile, image.width - tx), h = std::min(tile, image.height - ty);
             bool active = false;
             for (std::size_t y = 0; y < h && !active; ++y)
@@ -209,8 +219,8 @@ NonlocalDenoiseResult NonlocalDenoiser::apply(const ImageBuffer& image, const Im
                             const double distance = std::max(0.0, (integral[(y + 7) * stride + x + 7] -
                                 integral[y * stride + x + 7] - integral[(y + 7) * stride + x] +
                                 integral[y * stride + x]) / 49);
-                            const double normalized = std::sqrt(distance) / options.h;
-                            const double weight = std::exp(-normalized * normalized);
+                            // Divide successively: squaring h first can overflow or underflow.
+                            const double weight = std::exp(-(distance / options.h) / options.h);
                             const auto& sample = rgb[(y + 8 + dy) * ew + x + 8 + dx];
                             for (int c = 0; c < 3; ++c) accum[y * w + x][c] += weight * sample[c];
                             norm[y * w + x] += weight;
@@ -231,7 +241,7 @@ NonlocalDenoiseResult NonlocalDenoiser::apply(const ImageBuffer& image, const Im
                 }
             }
         }
-    }
+    });
     return result;
 }
 } // namespace photonstack

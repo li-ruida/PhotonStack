@@ -268,7 +268,7 @@ DrizzleResult DrizzleStacker::drizzle(const std::vector<std::filesystem::path>& 
         prepared.emplace(registration.prepareReference(std::move(reference), options.registration,
                                                        options.alignment == DrizzleAlignment::Distortion));
     else
-        std::vector<float>().swap(reference.pixels);
+        PixelStorage().swap(reference.pixels);
     const auto& referenceGeometry = prepared ? prepared->image() : reference;
     std::size_t alignedFrames = 0;
     std::size_t alignmentFallbacks = 0;

@@ -1,3 +1,4 @@
+#include "photonstack/ParallelRanges.hpp"
 #include "photonstack/ReconstructionProtection.hpp"
 
 #include <algorithm>
@@ -32,7 +33,7 @@ std::vector<double> blur(const std::vector<double>& input, std::uint32_t width,
     std::vector<double> temp(input.size()), output(input.size());
     const int radius = static_cast<int>(kernel.size() / 2);
     // Vertical then horizontal matches the reference scientific implementation.
-    for (std::uint32_t y = 0; y < height; ++y) {
+    detail::parallelRows(width, height, [&](int y) noexcept {
         for (int k = -radius; k <= radius; ++k) {
             const auto source = reflected(static_cast<std::int64_t>(y) + k, height) * width;
             const auto target = static_cast<std::size_t>(y) * width;
@@ -40,17 +41,28 @@ std::vector<double> blur(const std::vector<double>& input, std::uint32_t width,
             for (std::uint32_t x = 0; x < width; ++x)
                 temp[target + x] += weight * input[source + x];
         }
-    }
-    for (std::uint32_t y = 0; y < height; ++y) {
+    });
+    detail::parallelRows(width, height, [&](int y) noexcept {
         const auto row = static_cast<std::size_t>(y) * width;
-        for (std::uint32_t x = 0; x < width; ++x) {
+        const auto left = std::min<std::uint32_t>(radius, width);
+        const auto right = std::max(left, width > unsigned(radius) ? width - radius : 0);
+        const auto border = [&](std::uint32_t x) {
             double sum = 0;
             for (int k = -radius; k <= radius; ++k)
                 sum += kernel[static_cast<std::size_t>(k + radius)] *
-                       temp[row + reflected(static_cast<std::int64_t>(x) + k, width)];
+                       temp[row + reflected(std::int64_t(x) + k, width)];
             output[row + x] = sum;
+        };
+        for (std::uint32_t x = 0; x < left; ++x) border(x);
+        for (std::uint32_t x = right; x < width; ++x) border(x);
+        // Vectorize independent pixels, retaining the original double-precision
+        // tap order for each output rather than reducing across SIMD lanes.
+        for (int k = -radius; k <= radius; ++k) {
+            const double weight = kernel[static_cast<std::size_t>(k + radius)];
+            for (auto x = left; x < right; ++x)
+                output[row + x] += weight * temp[row + std::size_t(std::int64_t(x) + k)];
         }
-    }
+    });
     return output;
 }
 } // namespace
@@ -115,21 +127,22 @@ ReconstructionProtectionResult ReconstructionProtection::apply(
     for (auto& value : kernel) value /= sum;
     const auto support = allCovered ? std::vector<double>{}
                                     : blur(coverage, reconstructed.width, reconstructed.height, kernel);
-    std::vector<double> difference(count), weighted(count);
+    std::vector<double> weighted(count);
     for (unsigned c = 0; c < detail::colorChannelCount(reconstructed); ++c) {
         for (std::size_t p = 0; p < count; ++p) {
-            difference[p] = coverage[p] > 1e-6
+            const double difference = coverage[p] > 1e-6
                 ? static_cast<double>(reference.pixels[p * reference.channels + c]) -
                       reconstructed.pixels[p * reconstructed.channels + c]
                 : 0;
-            weighted[p] = difference[p] * coverage[p];
+            weighted[p] = difference * coverage[p];
         }
         const auto smooth = blur(weighted, reconstructed.width, reconstructed.height, kernel);
         for (std::size_t p = 0; p < count; ++p) {
             if (weights[p] == 0) continue; // Preserve every untouched float bit.
             const double background = smooth[p] / (allCovered ? 1.0 : support[p]);
             const auto offset = p * reconstructed.channels + c;
-            const double value = reconstructed.pixels[offset] + weights[p] * (difference[p] - background);
+            const double difference = double(reference.pixels[p * reference.channels + c]) - reconstructed.pixels[offset];
+            const double value = reconstructed.pixels[offset] + weights[p] * (difference - background);
             if (!std::isfinite(value) || std::abs(value) > std::numeric_limits<float>::max())
                 return error("ImageValueInvalid", "Protected scientific value exceeds float32 range");
             result.image.pixels[offset] = static_cast<float>(value);

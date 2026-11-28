@@ -1,3 +1,4 @@
+#include "photonstack/ParallelRanges.hpp"
 #include "photonstack/ImageResizer.hpp"
 
 #include <algorithm>
@@ -19,10 +20,6 @@ ResizeResult resizeError(std::string code, std::string message) {
     result.errorCode = std::move(code);
     result.message = std::move(message);
     return result;
-}
-
-float sampleBilinear(const ImageBuffer& input, float x, float y, std::uint16_t channel) {
-    return detail::sampleBilinearStraightAlpha(input, x, y, channel, true);
 }
 
 } // namespace
@@ -68,16 +65,14 @@ ResizeResult ImageResizer::resizeToWidth(const ImageBuffer& input, std::uint32_t
     const float scaleX = static_cast<float>(input.width) / static_cast<float>(targetWidth);
     const float scaleY = static_cast<float>(input.height) / static_cast<float>(targetHeight);
 
-    for (std::uint32_t y = 0; y < targetHeight; ++y) {
+    detail::parallelRows(targetWidth, targetHeight, [&](int y) noexcept {
         for (std::uint32_t x = 0; x < targetWidth; ++x) {
             const float sourceX = (static_cast<float>(x) + 0.5F) * scaleX - 0.5F;
             const float sourceY = (static_cast<float>(y) + 0.5F) * scaleY - 0.5F;
             const auto outputOffset = (static_cast<std::size_t>(y) * targetWidth + x) * output.channels;
-            for (std::uint16_t c = 0; c < output.channels; ++c) {
-                output.pixels[outputOffset + c] = sampleBilinear(input, sourceX, sourceY, c);
-            }
+            detail::sampleBilinearPixel(input, sourceX, sourceY, true, output.pixels.data() + outputOffset);
         }
-    }
+    });
 
     ResizeResult result;
     result.ok = true;

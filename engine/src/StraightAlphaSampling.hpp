@@ -10,6 +10,70 @@
 
 namespace photonstack::detail {
 
+inline void sampleBilinearPixel(
+    const ImageBuffer& image,
+    float x,
+    float y,
+    bool clampToEdge, float* out
+) {
+    std::fill_n(out, image.channels, 0.0F);
+    if (image.empty() || !std::isfinite(x) || !std::isfinite(y)) {
+        return;
+    }
+    if (clampToEdge) {
+        x = std::clamp(x, 0.0F, static_cast<float>(image.width - 1));
+        y = std::clamp(y, 0.0F, static_cast<float>(image.height - 1));
+    } else if (x < 0.0F || y < 0.0F ||
+               x > static_cast<float>(image.width - 1) || y > static_cast<float>(image.height - 1)) {
+        return;
+    }
+
+    const auto x0 = static_cast<std::uint32_t>(std::floor(x));
+    const auto y0 = static_cast<std::uint32_t>(std::floor(y));
+    const auto x1 = std::min<std::uint32_t>(x0 + 1, image.width - 1);
+    const auto y1 = std::min<std::uint32_t>(y0 + 1, image.height - 1);
+    const float tx = x - static_cast<float>(x0);
+    const float ty = y - static_cast<float>(y0);
+    const auto pixelOffset = [&](std::uint32_t px, std::uint32_t py) {
+        return (static_cast<std::size_t>(py) * image.width + px) * image.channels;
+    };
+    const std::array<std::size_t, 4> offsets = {
+        pixelOffset(x0, y0),
+        pixelOffset(x1, y0),
+        pixelOffset(x0, y1),
+        pixelOffset(x1, y1),
+    };
+    const std::array<float, 4> weights = {
+        (1.0F - tx) * (1.0F - ty),
+        tx * (1.0F - ty),
+        (1.0F - tx) * ty,
+        tx * ty,
+    };
+
+    std::array<double, 4> sampleWeights{};
+    double alpha = 0;
+    const bool hasAlpha = image.channels >= 4;
+    for (unsigned k = 0; k < 4; ++k) {
+        const float a = hasAlpha ? image.pixels[offsets[k] + 3] : 1.F;
+        sampleWeights[k] = std::isfinite(a) ? double(weights[k]) * std::clamp(a, 0.F, 1.F) : 0.;
+        alpha += sampleWeights[k];
+    }
+    if (hasAlpha) out[3] = float(alpha);
+    if (alpha <= 1.e-6) return;
+    for (unsigned c = 0; c < image.channels; ++c) {
+        if (hasAlpha && c == 3) continue;
+        double sum = 0, coverage = 0;
+        for (unsigned k = 0; k < 4; ++k) {
+            const float value = image.pixels[offsets[k] + c];
+            if (sampleWeights[k] > 0 && std::isfinite(value)) {
+                sum += sampleWeights[k] * value;
+                coverage += sampleWeights[k];
+            }
+        }
+        if (coverage > 1.e-6) out[c] = float(sum / coverage);
+    }
+}
+
 inline float sampleBilinearStraightAlpha(
     const ImageBuffer& image,
     float x,

@@ -14,9 +14,11 @@
 #include <iomanip>
 
 #include "photonstack/ImageCodec.hpp"
+#include "photonstack/ImageInspector.hpp"
 #include "photonstack/NonlocalDenoiser.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -321,12 +323,14 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         std::set<std::string> sourceDigests;
         FitsSensorIdentity sensorIdentity;
         result.frames.resize(inputs.size());
+        std::vector<std::optional<FileVersion>> inputVersions(inputs.size());
         const auto checkLight = [&](std::size_t i) {
             const auto& frame = result.frames[i];
             std::error_code error;
             ensure(fs::canonical(inputs[i], error) == frame.input && !error, "InputChanged",
                    "Light path changed during processing: " + inputs[i].string());
-            checkIdentity(frame);
+            ensure(inputVersions[i] && regularFileVersion(frame.input) == inputVersions[i], "InputChanged",
+                   "Source changed during processing: " + inputs[i].string());
         };
         // Promote only the real-data validated family. Sparse grid analysis,
         // small batches and unrelated algorithms retain their CPU path.
@@ -353,6 +357,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         const ImageCodec codec;
         ImageBuffer masterDark, masterBias, masterFlat;
         std::vector<DeepSkyFrameReport> calibrationIdentities;
+        std::vector<std::pair<fs::path, FileVersion>> calibrationVersions;
         CalibrationOptions calibration;
         calibration.clampNegativeValues = false;
         calibration.darkBiasState = o.darkBiasState;
@@ -368,7 +373,13 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                 ensure(unique.insert(identity.input).second, "DuplicateInput", "A calibration frame was supplied more than once");
                 identity.bytes = fs::file_size(identity.input);
                 identity.modifiedTicks = fs::last_write_time(identity.input).time_since_epoch().count();
-                if(independentNoise) identity.sha256=fileSHA256(identity.input);
+                if (independentNoise) {
+                    const auto version = regularFileVersion(path);
+                    ensure(version.has_value(), "InputInvalid", "Expected a regular calibration file");
+                    identity.sha256 = fileSHA256(identity.input);
+                    ensure(regularFileVersion(path) == version, "InputChanged", "Calibration source changed");
+                    calibrationVersions.emplace_back(path, *version);
+                }
                 calibrationIdentities.push_back(std::move(identity));
             }
             emit(name, 0);
@@ -385,6 +396,8 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         calibration.flat = masterFlat.empty() ? nullptr : &masterFlat;
         const auto flatMeans = Calibrator::measureFlat(calibration);
         if (calibration.flat) calibration.flatMeans = &flatMeans;
+        const auto masterValidation = Calibrator::validateMasters(calibration);
+        calibration.masterValidation = &masterValidation;
         const bool calibrated = calibration.dark || calibration.bias || calibration.flat;
         const bool alignFrames = o.stack.alignTranslation || o.stack.alignSimilarity ||
                                  o.stack.alignAffine || o.stack.alignDistortion;
@@ -411,16 +424,43 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             return read;
         };
         const SequenceQualityAnalyzer analyzer;
-        const bool assessNativeGrid = o.analysisOnly && !alignFrames;
+        std::vector<fs::path> aligned(inputs.size());
+        const auto method = o.stack.method;
+        const bool directCache = method == StackMethod::WinsorizedSigmaClip || method == StackMethod::SigmaClip ||
+                                 method == StackMethod::Median || method == StackMethod::PercentileClip;
+        const bool streamSelected = !directCache && !o.sensorPattern && !o.cfaDrizzle;
+        const auto suffix = directCache ? ".f32" : ".fits";
+        std::vector<detail::RegisteredFrame> registered(inputs.size());
+        std::atomic<std::uint64_t> residentBytes{0};
+        std::uint64_t registeredCacheBudget = 0;
+        const auto saveAligned = [&](std::size_t index, const ImageBuffer& image) {
+            if (o.quality.overrides.size() == inputs.size() &&
+                o.quality.overrides[index] == FrameSelectionOverride::Reject) return;
+            if (o.cfaDrizzle || streamSelected) return; // Only the measured transform is used; raw CFA is accumulated later.
+            aligned[index] = work.path / (std::to_string(index) + suffix);
+            if (directCache) {
+                const auto bytes = image.pixels.size() * sizeof(float);
+                auto used = residentBytes.load();
+                bool resident = false;
+                while (bytes <= registeredCacheBudget - used) {
+                    if (residentBytes.compare_exchange_weak(used, used + bytes)) { resident = true; break; }
+                }
+                const auto r = detail::writeRegisteredFrame(aligned[index], image, o.stack.normalizeBackground,
+                                                             registered[index], resident);
+                if (resident && !registered[index].resident) residentBytes.fetch_sub(bytes);
+                ensure(r.ok, r.errorCode, r.message);
+            } else write(image, aligned[index]);
+        };
+        const bool assessNativeGrid = !alignFrames;
         // Analysis ends after assessment. Reserve the stack/finish range only
         // for full runs, so the review progress bar uses its full scale.
-        const double measureEnd = assessNativeGrid ? .96 : (o.analysisOnly ? .40 : .20);
+        const double measureEnd = o.analysisOnly ? (assessNativeGrid ? .96 : .40) : .20;
         const double alignEnd = o.analysisOnly ? .98 : .55;
         std::vector<SequenceFrameSample> samples(inputs.size());
         std::size_t reference = 0;
         double best = -1;
-        const auto cpuLimit = std::min<std::size_t>(std::thread::hardware_concurrency(),
-            o.analysisWorkers == 0 ? 4 : o.analysisWorkers);
+        const auto cpuLimit = std::min<std::size_t>(detail::hardwareWorkerLimit(),
+            o.analysisWorkers == 0 ? detail::hardwareWorkerLimit() : o.analysisWorkers);
         const auto available = cpuLimit > 1 ? detail::workingMemoryBudget() : 0;
         const auto masterBytes = (masterDark.pixels.size() + masterBias.pixels.size() + masterFlat.pixels.size()) * sizeof(float);
         const auto reserved = masterBytes + (guardReplay.empty() ? 0 : replayBudget);
@@ -430,22 +470,33 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         const auto stars = std::uint64_t(o.stack.registration.starDetection.maxStars);
         // The translation vote tie path can retain a hash bin for every pair.
         const auto matchingBytes = stars > 8192 ? available : std::max<std::uint64_t>(128ULL << 20, 128 * stars * stars);
-        const auto memoryBudget = available > reserved ? available - reserved : 0;
+        const auto unreserved = available > reserved ? available - reserved : 0;
+        const auto cacheBudget = (!alignFrames && (!streamSelected || o.analysisOnly)) ? 0 :
+            std::min<std::uint64_t>(unreserved / 8, 2ULL << 30);
+        // Registered frames are immutable and revisited by every stack tile.
+        // Retain a bounded subset rather than an LRU that would cycle the full sequence.
+        registeredCacheBudget = directCache && !o.analysisOnly ? std::min<std::uint64_t>(unreserved / 8, 2ULL << 30) : 0;
+        const auto memoryBudget = unreserved - cacheBudget - registeredCacheBudget;
+        std::uint64_t retainedBytes = 0;
+        std::vector<ImageReadResult> decodedCache(inputs.size());
+        const auto takeLight = [&](std::size_t i) {
+            if (decodedCache[i].image.empty()) return readLight(i);
+            return std::move(decodedCache[i]);
+        };
         const auto frameCapacity = [&](std::size_t i, std::uint64_t referencePixels) -> std::size_t {
             const auto& f = result.frames[i];
             const auto admitted = [&](std::size_t n, const char* reason) {
-                if (detail::currentStage.profile && n < (o.analysisWorkers ? o.analysisWorkers : 4))
+                if (detail::currentStage.profile && n < cpuLimit)
                     detail::currentStage.profile->admissionReason = reason;
                 return n;
             };
-            if (!isFitsPath(f.input)) return admitted(1, "serial decoder or analysis mode");
             if (!memoryBudget) return admitted(1, cpuLimit <= 1 ? "CPU limit" : "memory budget unavailable");
             auto width = f.native.width, height = f.native.height;
             if (!width || !height) {
                 // Admission uses the header, not compressed/file byte size.
                 // Unsupported geometry retains the normal serial decode/error path.
-                const auto header = FitsCodec().inspect(f.input);
-                if (!header.ok) return admitted(1, "unknown FITS dimensions");
+                const auto header = ImageInspector().inspect(f.input);
+                if (!header.ok) return admitted(1, "unknown image dimensions");
                 width = header.metadata.width;
                 height = header.metadata.height;
             }
@@ -453,11 +504,12 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             // minimum proxy width. Their scratch use is outside this estimate.
             if (width < 16 || height < 16) return admitted(1, "small or narrow frame");
             return admitted(detail::analysisFrameCapacity(std::uint64_t(width) * height, referencePixels, inputs.size(), o.quality.sampleSide,
-                                                  memoryBudget, cpuLimit, pixelBytes, matchingBytes), "frame size, CPU and memory admission");
+                                                  memoryBudget, cpuLimit, pixelBytes + (isFitsPath(f.input) ? 0 : 64), matchingBytes), "frame size, CPU and memory admission");
         };
         const auto prepareMeasurement = [&](std::size_t i) {
             auto& f = result.frames[i];
             f.input = fs::canonical(inputs[i]);
+            inputVersions[i] = regularFileVersion(f.input);
             ensure(unique.insert(f.input).second, "DuplicateInput", "A light was supplied more than once");
             ensure(fs::is_regular_file(f.input), "InputInvalid", "Expected a regular image file");
             f.bytes = fs::file_size(f.input); f.modifiedTicks = fs::last_write_time(f.input).time_since_epoch().count();
@@ -479,18 +531,27 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         struct Measurement {
             SequenceFrameSample native;
             std::string readError, readMessage;
+            ImageReadResult decoded;
         };
         const auto measure = [&](std::size_t i) -> Measurement {
             const detail::FrameActivity activity;
-            const auto decoded = readLight(i);
-            if (!decoded.ok) return {{}, decoded.errorCode, decoded.message};
-            return {analyzer.sample(decoded.image, o.quality), {}, {}};
+            auto decoded = readLight(i);
+            if (!decoded.ok) return {{}, decoded.errorCode, decoded.message, {}};
+            auto native = analyzer.sample(decoded.image, o.quality, {}, assessNativeGrid);
+            if (native.ok && assessNativeGrid && !o.analysisOnly && !o.sensorPattern)
+                saveAligned(i, decoded.image);
+            return {std::move(native), {}, {}, cacheBudget ? std::move(decoded) : ImageReadResult{}};
         };
         const auto recordMeasurement = [&](std::size_t i, Measurement measured) {
             auto& f = result.frames[i];
             checkLight(i);
             if (!measured.readError.empty()) { f.errorCode = measured.readError; f.message = measured.readMessage; return; }
             f.native = std::move(measured.native);
+            const auto bytes = measured.decoded.image.pixels.size() * sizeof(float);
+            if (f.native.ok && bytes && bytes <= cacheBudget - retainedBytes) {
+                decodedCache[i] = std::move(measured.decoded);
+                retainedBytes += bytes;
+            }
             // Reports retain scalar evidence only. With alignment disabled,
             // this is already the final temporal grid; move it into assessment.
             std::vector<float> luminance, coverage;
@@ -519,7 +580,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         result.referenceIndex = reference; result.frames[reference].reference = true;
         ImageReadResult ref;
         if (!assessNativeGrid) {
-            ref = readLight(reference);
+            ref = takeLight(reference);
             ensure(ref.ok, ref.errorCode, ref.message);
         }
         checkLight(reference);
@@ -530,20 +591,6 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             prepared.emplace(registration.prepareReference(std::move(ref.image), o.stack.registration, o.stack.alignDistortion));
         const auto& referenceImage = prepared ? prepared->image() : ref.image;
         std::vector<double> registeredVariances(inputs.size(),0);
-        std::vector<fs::path> aligned(inputs.size());
-        const auto method = o.stack.method;
-        const bool directCache = method == StackMethod::WinsorizedSigmaClip || method == StackMethod::SigmaClip ||
-                                 method == StackMethod::Median || method == StackMethod::PercentileClip;
-        const auto suffix = directCache ? ".f32" : ".fits";
-        std::vector<detail::RegisteredFrame> registered(inputs.size());
-        const auto saveAligned = [&](std::size_t index, const ImageBuffer& image) {
-            if (o.cfaDrizzle) return; // Only the measured transform is used; raw CFA is accumulated later.
-            aligned[index] = work.path / (std::to_string(index) + suffix);
-            if (directCache) {
-                const auto r = detail::writeRegisteredFrame(aligned[index], image, o.stack.normalizeBackground, registered[index]);
-                ensure(r.ok, r.errorCode, r.message);
-            } else write(image, aligned[index]);
-        };
         std::vector<DistortionTransform> distortions(inputs.size());
         const auto prepareAlignment = [&](std::size_t i) {
             auto& f = result.frames[i];
@@ -553,6 +600,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             if (assessNativeGrid) {
                 f.registration.ok = true;
                 f.alignedCoverage = samples[i].validFraction;
+                if (independentNoise) registeredVariances[i] = samples[i].noise * samples[i].noise;
                 return false;
             }
             return true;
@@ -561,14 +609,13 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             RegistrationResult registration;
             DistortionTransform distortion;
             SequenceFrameSample sample;
-            ImageBuffer pixelsToWrite;
         };
         const auto align = [&](std::size_t i) {
             const detail::FrameActivity activity;
             AlignedMeasurement measured;
             ImageReadResult decoded;
             if (i != reference) {
-                decoded = readLight(i);
+                decoded = takeLight(i);
                 ensure(decoded.ok, decoded.errorCode, decoded.message);
             }
             const auto& source = i == reference ? referenceImage : decoded.image;
@@ -598,7 +645,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                     if (o.stack.alignSimilarity) return registration.applySimilarity(source, measured.registration.transform, grid);
                     return registration.applyTranslation(source, measured.registration.translation, grid);
                 };
-                if (o.analysisOnly || o.sensorPattern) {
+                if (o.analysisOnly || o.sensorPattern || (streamSelected && backend != ComputeBackend::Metal)) {
                     measured.sample = analyzer.sample(source, sampleOptions,
                         [&](const RegistrationPixelGrid& grid) { return render(&grid); });
                 } else {
@@ -609,8 +656,8 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                 measured.registration.ok = true;
                 measured.sample = analyzer.sample(source, sampleOptions);
             }
-            if (!o.analysisOnly && !o.sensorPattern && i != reference)
-                measured.pixelsToWrite = needsAlignment ? std::move(registeredImage) : std::move(decoded.image);
+            if (measured.sample.ok && !o.analysisOnly && !o.sensorPattern)
+                saveAligned(i, needsAlignment ? registeredImage : source);
             return measured;
         };
         const auto recordAlignment = [&](std::size_t i, AlignedMeasurement measured) {
@@ -636,9 +683,6 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             samples[i].medianFwhm = f.native.medianFwhm;
             samples[i].medianEccentricity = f.native.medianEccentricity;
             if (!samples[i].ok) { f.errorCode = samples[i].errorCode; f.message = samples[i].message; return; }
-            if (!o.analysisOnly && !o.sensorPattern) {
-                saveAligned(i, i == reference ? referenceImage : measured.pixelsToWrite);
-            }
         };
         detail::orderedAnalysisFrames(inputs.size(), prepareAlignment,
             [&](std::size_t i) { return frameCapacity(i, referenceImage.pixelCount()); }, align, recordAlignment);
@@ -694,10 +738,7 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                 const double x=sensorIdentity.width*.5-dx, y=sensorIdentity.height*.5-dy;
                 patternOptions.sensorPositions.push_back({(d*x-b*y)/determinant, (a*y-c*x)/determinant});
             }
-            for (const auto i : trainingIndices) {
-                checkLight(i);
-                ensure(fileSHA256(result.frames[i].input)==result.frames[i].sha256, "InputChanged", "Sensor training source bytes changed");
-            }
+            for (const auto i : trainingIndices) checkLight(i);
             auto patterns = SensorPatternBuilder().build(training, patternOptions);
             ensure(patterns.ok, patterns.errorCode, patterns.message);
             // This is a run-owned model. Persist provenance, never load an
@@ -725,10 +766,10 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             }
             provenance.close(); ensure(bool(provenance), "WriteFailed", "Cannot write sensor provenance");
             result.sensorPatternReport = reportPath;
-            for (std::size_t slot=0; slot<usable.size(); ++slot) {
+            const auto correctSensor = [&](std::size_t slot) {
+                const detail::FrameActivity activity;
                 const auto i=usable[slot]; auto& f=result.frames[i];
                 checkLight(i);
-                ensure(fileSHA256(f.input)==f.sha256, "InputChanged", "Source bytes changed before sensor correction");
                 if (f.sensorPatternModel < 0) f.sensorPatternModel = int(slot%3);
                 const auto& model=patterns.models[std::size_t(f.sensorPatternModel)].correction;
                 auto decoded=FitsCodec().read(f.input, readOptions.fits, nullptr, &model);
@@ -748,20 +789,33 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                     registeredVariances[i]=measured.noise*measured.noise;
                 }
                 saveAligned(i, image);
-                emit("sensor-pattern-apply", .64 + .06*(slot+1)/usable.size(), slot+1, usable.size());
-            }
+                return i;
+            };
+            detail::orderedAnalysisFrames(usable.size(), [](std::size_t) { return true; },
+                [&](std::size_t slot) {
+                    return frameCapacity(usable[slot], patterns.models.front().correction.pixelCount());
+                }, correctSensor, [&](std::size_t slot, std::size_t) {
+                    emit("sensor-pattern-apply", .64 + .06*(slot+1)/usable.size(), slot+1, usable.size());
+                });
         }
         std::vector<fs::path> selected;
         std::vector<std::size_t> selectedIndices;
         auto stackOptions = o.stack;
-        stackOptions.preferMetalCombine = backend == ComputeBackend::Metal;
+        // Combining operates on registered float samples, independent of the
+        // original codec/demosaic/calibration path. Keep warp promotion separate.
+        const bool automaticCombine = backend == ComputeBackend::Automatic && inputs.size() >= 16 &&
+            std::uint64_t(result.frames[reference].native.width) * result.frames[reference].native.height >= 16384 &&
+            (o.stack.method == StackMethod::WinsorizedSigmaClip ||
+             (o.stack.method == StackMethod::SigmaClip && o.stack.sigma.medianMad));
+        stackOptions.preferMetalCombine = o.gpuAcceleration &&
+            (backend == ComputeBackend::Metal || automaticCombine);
         stackOptions.temporaryDirectory = work.path;
         stackOptions.alignTranslation = stackOptions.alignSimilarity = stackOptions.alignAffine = stackOptions.alignDistortion = false;
         stackOptions.registration.refineSimilarityCentroids = false;
         stackOptions.alignmentReference.clear(); stackOptions.frameWeights.clear();
         for (std::size_t i = 0; i < inputs.size(); ++i) if (result.frames[i].assessment.selected) {
-            ensure(o.cfaDrizzle || !aligned[i].empty(), "SelectionInvalid", "A selected frame has no valid registration output");
-            selected.push_back(o.cfaDrizzle ? result.frames[i].input : aligned[i]); selectedIndices.push_back(i);
+            ensure(o.cfaDrizzle || streamSelected || !aligned[i].empty(), "SelectionInvalid", "A selected frame has no valid registration output");
+            selected.push_back(o.cfaDrizzle || streamSelected ? result.frames[i].input : aligned[i]); selectedIndices.push_back(i);
             if (!o.stack.frameWeights.empty()) {
                 ensure(o.stack.frameWeights.size() == inputs.size(), "ArgumentInvalid", "One weight is required per input");
                 stackOptions.frameWeights.push_back(o.stack.frameWeights[i]);
@@ -778,6 +832,10 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             }
         }
         const auto releaseAligned = [&](std::size_t sourceIndex) {
+            if (registered.at(sourceIndex).resident) {
+                registered[sourceIndex].resident.reset();
+                return;
+            }
             const auto& path = aligned.at(sourceIndex);
             ensure(path.parent_path() == work.path && path.filename() == std::to_string(sourceIndex) + suffix &&
                 !fs::is_symlink(path), "TemporaryStorageInvalid", "Aligned input is not an owned work file");
@@ -785,6 +843,8 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
             const bool removed = fs::remove(path, error);
             ensure(removed && !error, "TemporaryStorageReleaseFailed", "Unable to release aligned work file: " + path.string());
         };
+        for (std::size_t i = 0; i < decodedCache.size(); ++i)
+            if (!result.frames[i].assessment.selected) decodedCache[i] = {};
         // Rejected images are no longer needed. Selected ones are released only
         // when Stacker guarantees it has consumed every sample from that file.
         for (std::size_t i = 0; i < aligned.size(); ++i)
@@ -796,6 +856,25 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
                 emit("stack-combine", fraction, p.row, p.rowCount);
             else emit("stack", fraction, p.frame, p.frameCount);
         };
+        if (streamSelected) {
+            std::map<fs::path, std::size_t> indices;
+            for (auto i : selectedIndices) indices.emplace(result.frames[i].input, i);
+            stackOptions.inputConsumed = {};
+            stackOptions.readFrame = [&, indices = std::move(indices)](const fs::path& path) {
+                const auto i = indices.at(path);
+                checkLight(i);
+                auto decoded = takeLight(i);
+                if (decoded.ok && alignFrames && i != reference) {
+                    const auto& fit = result.frames[i].registration;
+                    if (o.stack.alignDistortion) decoded.image = registration.applyDistortion(decoded.image, distortions[i]);
+                    else if (o.stack.alignAffine) decoded.image = registration.applyAffine(decoded.image, fit.affine);
+                    else if (o.stack.alignSimilarity) decoded.image = registration.applySimilarity(decoded.image, fit.transform);
+                    else decoded.image = registration.applyTranslation(decoded.image, fit.translation);
+                }
+                checkLight(i);
+                return decoded;
+            };
+        }
         std::vector<detail::RegisteredFrame> metadata;
         if (directCache) {
             for (const auto i : selectedIndices) metadata.push_back(registered[i]);
@@ -808,9 +887,13 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         } else {
             stacked=directCache ? detail::combineRegisteredFrames(selected, metadata, stackOptions)
                                : Stacker().stack(selected, stackOptions);
-            if (directCache && stacked.ok) for (auto i:selectedIndices) releaseAligned(i);
+            if (directCache && stacked.ok) {
+                metadata.clear();
+                for (auto i:selectedIndices) releaseAligned(i);
+            }
         }
         ensure(stacked.ok, stacked.errorCode, stacked.message);
+        decodedCache.clear();
         if (!o.cfaDrizzle) { result.master = directory / "stack-linear.fits"; write(stacked.image, result.master); }
         ImageBuffer noise;
         if(independentNoise) {
@@ -846,10 +929,8 @@ DeepSkyWorkflowResult DeepSkyWorkflow::run(const std::vector<fs::path>& inputs, 
         finishImage(std::move(masterImage), directory, o, result,
             [&](const std::string& stage, double fraction) { emit(stage, fraction); },std::move(noise));
         for (std::size_t i = 0; i < inputs.size(); ++i) checkLight(i);
-        if (o.sensorPattern || independentNoise || o.cfaDrizzle) for (const auto& f : result.frames)
-            ensure(fileSHA256(f.input)==f.sha256, "InputChanged", "Source bytes changed during independent-noise or sensor-corrected processing");
-        if(independentNoise) for(const auto& f:calibrationIdentities)
-            ensure(fileSHA256(f.input)==f.sha256,"InputChanged","Calibration source bytes changed during processing");
+        for (const auto& [path, version] : calibrationVersions)
+            ensure(regularFileVersion(path) == version, "InputChanged", "Calibration source changed during processing");
         result.ok = true; emit("complete", 1);
     } catch (const WorkflowFailure& e) { result.errorCode = e.code; result.message = e.what(); }
       catch (const std::exception& e) { result.errorCode = "WorkflowFailed"; result.message = e.what(); }

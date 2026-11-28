@@ -99,12 +99,12 @@ float sampleBilinear(const ImageBuffer& image, float x, float y, std::uint16_t c
 // Catmull-Rom reconstruction with a central-cell range clamp. Use the
 // existing straight-alpha bilinear sampler near boundaries or incomplete
 // coverage; negative kernel weights must never extrapolate through masks.
-float sampleRegistered(const ImageBuffer& image, float x, float y, std::uint16_t channel,
-                       RegistrationInterpolation interpolation) {
+void sampleRegisteredPixel(const ImageBuffer& image, float x, float y, RegistrationInterpolation interpolation, float* out) {
     if (interpolation == RegistrationInterpolation::Bilinear || !std::isfinite(x) || !std::isfinite(y) ||
-        x < 1 || y < 1 || x >= static_cast<float>(image.width) - 2 || y >= static_cast<float>(image.height) - 2 ||
-        (image.channels == 4 && channel == 3))
-        return sampleBilinear(image, x, y, channel);
+        x < 1 || y < 1 || x >= static_cast<float>(image.width) - 2 || y >= static_cast<float>(image.height) - 2) {
+        detail::sampleBilinearPixel(image, x, y, false, out);
+        return;
+    }
     const int ix = static_cast<int>(std::floor(x)), iy = static_cast<int>(std::floor(y));
     const auto weights = [](float t) {
         return std::array<double, 4>{-.5*t + t*t - .5*t*t*t,
@@ -113,21 +113,38 @@ float sampleRegistered(const ImageBuffer& image, float x, float y, std::uint16_t
                                     -.5*t*t + .5*t*t*t};
     };
     const auto wx = weights(x-ix), wy = weights(y-iy);
-    double value = 0;
-    float low = std::numeric_limits<float>::infinity(), high = -low;
-    for (int j = 0; j < 4; ++j) {
-        for (int i = 0; i < 4; ++i) {
-            const auto offset = (static_cast<std::size_t>(iy+j-1)*image.width + ix+i-1)*image.channels;
-            const float sample = image.pixels[offset+channel];
-            if (!std::isfinite(sample) || (image.channels == 4 && image.pixels[offset+3] != 1.0F))
-                return sampleBilinear(image, x, y, channel);
-            value += wx[i]*wy[j]*sample;
-            if (i >= 1 && i <= 2 && j >= 1 && j <= 2) {
-                low = std::min(low, sample); high = std::max(high, sample);
+    // The alpha sample is always bilinear. It can round below unity even
+    // when all four contributing alphas are one.
+    if (image.channels == 4) out[3] = sampleBilinear(image, x, y, 3);
+    const unsigned colors = image.channels == 4 ? 3 : image.channels;
+    // Visit each stencil position once for RGB, keeping each channel's
+    // accumulation order identical to the scalar sampler.
+    for (unsigned base = 0; base < colors; base += 4) {
+        const unsigned count = std::min(4U, colors - base);
+        std::array<double, 4> sums{};
+        std::array<float, 4> lows, highs;
+        lows.fill(std::numeric_limits<float>::infinity());
+        highs.fill(-std::numeric_limits<float>::infinity());
+        std::array<bool, 4> valid{true, true, true, true};
+        for (int j = 0; j < 4; ++j) {
+            const auto* source = image.pixels.data() + ((std::size_t(iy + j - 1) * image.width + ix - 1) * image.channels);
+            for (int i = 0; i < 4; ++i, source += image.channels) {
+                const double weight = wx[i] * wy[j];
+                const bool covered = image.channels != 4 || source[3] == 1.F;
+                for (unsigned c = 0; c < count; ++c) {
+                    const float v = source[base + c];
+                    valid[c] = valid[c] && covered && std::isfinite(v);
+                    sums[c] += weight * v;
+                    if (i >= 1 && i <= 2 && j >= 1 && j <= 2) {
+                        lows[c] = std::min(lows[c], v); highs[c] = std::max(highs[c], v);
+                    }
+                }
             }
         }
+        for (unsigned c = 0; c < count; ++c)
+            out[base + c] = valid[c] ? std::clamp(float(sums[c]), lows[c], highs[c])
+                                  : sampleBilinear(image, x, y, base + c);
     }
-    return std::clamp(static_cast<float>(value), low, high);
 }
 
 struct MatchedStarPair {
@@ -439,7 +456,7 @@ float projectiveResidual(const MatchedStarPair& pair, const ProjectiveTransform&
     return std::sqrt(residualX * residualX + residualY * residualY);
 }
 
-std::pair<float, float> inverseProjectivePoint(float x, float y, ProjectiveTransform transform) {
+std::array<double, 9> inverseProjectiveMatrix(ProjectiveTransform transform) {
     const double h00 = transform.h00;
     const double h01 = transform.h01;
     const double h02 = transform.h02;
@@ -461,26 +478,26 @@ std::pair<float, float> inverseProjectivePoint(float x, float y, ProjectiveTrans
     const double c22 = h00 * h11 - h01 * h10;
     const double determinant = h00 * c00 + h01 * c10 + h02 * c20;
     if (!std::isfinite(determinant) || std::fabs(determinant) < 1.0e-12) {
-        return {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::quiet_NaN()};
+        return {};
     }
 
-    const double inv00 = c00 / determinant;
-    const double inv01 = c01 / determinant;
-    const double inv02 = c02 / determinant;
-    const double inv10 = c10 / determinant;
-    const double inv11 = c11 / determinant;
-    const double inv12 = c12 / determinant;
-    const double inv20 = c20 / determinant;
-    const double inv21 = c21 / determinant;
-    const double inv22 = c22 / determinant;
-    const double denominator = inv20 * x + inv21 * y + inv22;
+    return {c00 / determinant, c01 / determinant, c02 / determinant,
+            c10 / determinant, c11 / determinant, c12 / determinant,
+            c20 / determinant, c21 / determinant, c22 / determinant};
+}
+std::pair<float, float> applyInverseProjective(float x, float y, const std::array<double, 9>& m) {
+    const double denominator = m[6] * x + m[7] * y + m[8];
     if (!std::isfinite(denominator) || std::fabs(denominator) < 1.0e-9) {
         return {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::quiet_NaN()};
     }
     return {
-        static_cast<float>((inv00 * x + inv01 * y + inv02) / denominator),
-        static_cast<float>((inv10 * x + inv11 * y + inv12) / denominator),
+        static_cast<float>((m[0] * x + m[1] * y + m[2]) / denominator),
+        static_cast<float>((m[3] * x + m[4] * y + m[5]) / denominator),
     };
+}
+
+std::pair<float, float> inverseProjectivePoint(float x, float y, ProjectiveTransform t) {
+    return applyInverseProjective(x, y, inverseProjectiveMatrix(t));
 }
 
 void multiply3x3(const double left[3][3], const double right[3][3], double output[3][3]) {
@@ -1698,12 +1715,43 @@ std::vector<Translation> legacyPeakOffsets(const RegistrationCatalogs& catalogs,
     return best ? best->offsets : std::vector<Translation>{};
 }
 
+// Count packed integer bins without allocating an offset vector/string for
+// every candidate pair. Only a true tied maximum needs the legacy tie break.
+std::vector<Translation> sparsePeakOffsets(const RegistrationCatalogs& catalogs, float tolerance) {
+    const auto key = [&](float dx, float dy) {
+        const auto x = static_cast<std::uint32_t>(static_cast<int>(std::lround(dx / tolerance)));
+        const auto y = static_cast<std::uint32_t>(static_cast<int>(std::lround(dy / tolerance)));
+        return (std::uint64_t(x) << 32) | y;
+    };
+    std::uint64_t best = 0;
+    std::size_t maximum = 0;
+    bool tied = false;
+    {
+        std::unordered_map<std::uint64_t, std::size_t> votes;
+        votes.reserve(catalogs.referenceStars.size() * catalogs.movingStars.size());
+        for (const auto& m : catalogs.movingStars) for (const auto& r : catalogs.referenceStars) {
+            const auto bin = key(r.x - m.x, r.y - m.y);
+            const auto count = ++votes[bin];
+            if (count > maximum) { best = bin; maximum = count; tied = false; }
+            else if (count == maximum) tied = true;
+        }
+    }
+    if (tied) return legacyPeakOffsets(catalogs, tolerance);
+    std::vector<Translation> offsets;
+    offsets.reserve(maximum);
+    for (const auto& m : catalogs.movingStars) for (const auto& r : catalogs.referenceStars) {
+        const float dx = r.x - m.x, dy = r.y - m.y;
+        if (key(dx, dy) == best) offsets.push_back({dx, dy});
+    }
+    return offsets;
+}
+
 std::vector<Translation> peakTranslationOffsets(const RegistrationCatalogs& catalogs, float tolerance) {
     const auto& reference = catalogs.referenceStars;
     const auto& moving = catalogs.movingStars;
     const auto pairs = reference.size() * moving.size();
     // Use a bounded rectangular accumulator for sensor-sized offset ranges.
-    // For sparse or very wide coordinate ranges, preserve the original path.
+    // For sparse or very wide coordinate ranges, use packed integer bins.
     constexpr std::size_t maximumCells = 4 * 1024 * 1024;
     const auto extent = [&](std::uint32_t size) { return std::llround(float(size) / tolerance); };
     const auto xOrigin = extent(catalogs.moving.width), yOrigin = extent(catalogs.moving.height);
@@ -1711,7 +1759,7 @@ std::vector<Translation> peakTranslationOffsets(const RegistrationCatalogs& cata
     const auto height = std::uint64_t(yOrigin + extent(catalogs.reference.height)) + 1;
     if (pairs < 1024 || pairs > std::numeric_limits<std::uint32_t>::max() ||
         width > maximumCells / height || width * height / 8 > pairs) {
-        return legacyPeakOffsets(catalogs, tolerance);
+        return sparsePeakOffsets(catalogs, tolerance);
     }
     const auto cell = [&](float dx, float dy) {
         const auto x = std::lround(dx / tolerance) + xOrigin;
@@ -2507,8 +2555,8 @@ bool renderMappedRows(const ImageBuffer& image, const RegistrationRowConsumer& c
                         float* out = strip.data() + row * rowSamples;
                         for (std::uint32_t x = 0; x < width; ++x) {
                             const auto source = mapper(targetX(x), sy);
-                            for (std::uint16_t c = 0; c < image.channels; ++c)
-                                *out++ = sampler(source.first, source.second, c);
+                            sampler(source.first, source.second, out);
+                            out += image.channels;
                         }
                     }
                 });
@@ -2552,7 +2600,9 @@ ImageBuffer collectRegisteredRows(const ImageBuffer& image, const RegistrationPi
 class DistortionCoordinateMapper {
   public:
     DistortionCoordinateMapper(const DistortionTransform& transform, std::uint32_t width, std::uint32_t height)
-        : transform_(transform), width_(width), height_(height),
+        : transform_(transform), inverse_(inverseProjectiveMatrix(transform.projective)),
+          cosine_(std::cos(transform.global.rotationRadians)), sine_(std::sin(transform.global.rotationRadians)),
+          width_(width), height_(height),
           imageCenterX_(static_cast<float>(width - 1) * 0.5F),
           imageCenterY_(static_cast<float>(height - 1) * 0.5F),
           normalization_(std::max<float>(1.0F, std::max(width, height))) {
@@ -2572,7 +2622,9 @@ class DistortionCoordinateMapper {
 
         const float sigma = std::max(1.0F, transform_.influenceRadius);
         const float sigmaSquared = sigma * sigma;
-        for (std::uint32_t gy = 0; gy < gridHeight_; ++gy) {
+        detail::parallelRanges(gridHeight_, 2, [&](std::size_t first, std::size_t last) {
+            for (auto row = first; row < last; ++row) {
+                const auto gy = static_cast<std::uint32_t>(row);
             for (std::uint32_t gx = 0; gx < gridWidth_; ++gx) {
                 const float x = static_cast<float>(std::min(gx * gridSpacing_, width_ - 1));
                 const float y = static_cast<float>(std::min(gy * gridSpacing_, height_ - 1));
@@ -2646,13 +2698,19 @@ class DistortionCoordinateMapper {
                 gridDyDv_[index] = correction.dyDv;
                 gridDyOffset_[index] = correction.dyOffset;
             }
-        }
+            }
+        });
     }
 
     std::pair<float, float> sourceForTarget(float targetX, float targetY) const {
         const auto base = baselineSourceForTarget(targetX, targetY);
-        const auto correction = correctionForTarget(targetX, targetY);
-        return {base.first + correction.first, base.second + correction.second};
+        const auto polynomial = polynomialForTarget(targetX, targetY);
+        if (transform_.controlPoints.empty())
+            return {base.first + polynomial.first, base.second + polynomial.second};
+        const auto local = localCorrectionForTarget(targetX, targetY);
+        // Keep the inverse-warp Float32 evaluation order. Forward iteration
+        // uses the combined correction, but regrouping this sum moves pixels.
+        return {base.first + polynomial.first + local.first, base.second + polynomial.second + local.second};
     }
 
     std::pair<float, float> targetForSource(float sourceX, float sourceY) const {
@@ -2681,16 +2739,18 @@ class DistortionCoordinateMapper {
     static constexpr std::uint32_t gridSpacing_ = 32;
 
     std::pair<float, float> baselineSourceForTarget(float targetX, float targetY) const {
-        return transform_.useProjective ? inverseProjectivePoint(targetX, targetY, transform_.projective)
-                                        : inverseSimilarityPoint(targetX, targetY, transform_.global);
+        if (transform_.useProjective) return applyInverseProjective(targetX, targetY, inverse_);
+        const float x = targetX - transform_.global.dx, y = targetY - transform_.global.dy;
+        const float scale = std::max(1.e-6F, transform_.global.scale);
+        return {(cosine_ * x + sine_ * y) / scale, (-sine_ * x + cosine_ * y) / scale};
     }
 
     std::pair<float, float> baselineTargetForSource(float sourceX, float sourceY) const {
         if (transform_.useProjective) {
             return applyProjectivePoint(sourceX, sourceY, transform_.projective);
         }
-        const float cosTheta = std::cos(transform_.global.rotationRadians);
-        const float sinTheta = std::sin(transform_.global.rotationRadians);
+        const float cosTheta = cosine_;
+        const float sinTheta = sine_;
         return {
             transform_.global.scale * (cosTheta * sourceX - sinTheta * sourceY) + transform_.global.dx,
             transform_.global.scale * (sinTheta * sourceX + cosTheta * sourceY) + transform_.global.dy,
@@ -2719,15 +2779,20 @@ class DistortionCoordinateMapper {
         return top + (bottom - top) * ty;
     }
 
-    std::pair<float, float> correctionForTarget(float targetX, float targetY) const {
-        const auto polynomial = transform_.usePolynomial
-                                    ? evaluatePolynomialCorrection(targetX, targetY, width_, height_,
-                                                                   transform_.polynomialDx, transform_.polynomialDy)
-                                    : std::pair<float, float>{0.0F, 0.0F};
-        if (transform_.controlPoints.empty()) {
-            return polynomial;
-        }
+    std::pair<float, float> polynomialForTarget(float targetX, float targetY) const {
+        return transform_.usePolynomial
+            ? evaluatePolynomialCorrection(targetX, targetY, width_, height_, transform_.polynomialDx, transform_.polynomialDy)
+            : std::pair<float, float>{0.F, 0.F};
+    }
 
+    std::pair<float, float> correctionForTarget(float targetX, float targetY) const {
+        const auto polynomial = polynomialForTarget(targetX, targetY);
+        if (transform_.controlPoints.empty()) return polynomial;
+        const auto local = localCorrectionForTarget(targetX, targetY);
+        return {polynomial.first + local.first, polynomial.second + local.second};
+    }
+
+    std::pair<float, float> localCorrectionForTarget(float targetX, float targetY) const {
         const float normalizedX = (targetX - imageCenterX_) / normalization_;
         const float normalizedY = (targetY - imageCenterY_) / normalization_;
         const float localX = sampleGrid(gridDxDu_, targetX, targetY) * normalizedX +
@@ -2736,10 +2801,12 @@ class DistortionCoordinateMapper {
         const float localY = sampleGrid(gridDyDu_, targetX, targetY) * normalizedX +
                              sampleGrid(gridDyDv_, targetX, targetY) * normalizedY +
                              sampleGrid(gridDyOffset_, targetX, targetY);
-        return {polynomial.first + localX, polynomial.second + localY};
+        return {localX, localY};
     }
 
     const DistortionTransform& transform_;
+    const std::array<double, 9> inverse_;
+    const float cosine_, sine_;
     std::uint32_t width_ = 0;
     std::uint32_t height_ = 0;
     std::uint32_t gridWidth_ = 0;
@@ -2772,8 +2839,8 @@ bool Registration::renderTranslationRows(const ImageBuffer& image, Translation t
                 static_cast<int>(std::lround(static_cast<float>(y) - translation.dy)),
             };
         },
-        [&](int sourceX, int sourceY, std::uint16_t channel) {
-            return sampleNearest(image, sourceX, sourceY, channel);
+        [&](int sourceX, int sourceY, float* out) {
+            for (unsigned c = 0; c < image.channels; ++c) out[c] = sampleNearest(image, sourceX, sourceY, c);
         });
 }
 
@@ -2795,8 +2862,8 @@ bool Registration::renderSimilarityRows(const ImageBuffer& image, SimilarityTran
                 (-sinTheta * targetX + cosTheta * targetY) / scale,
             };
         },
-        [&](float sourceX, float sourceY, std::uint16_t channel) {
-            return sampleRegistered(image, sourceX, sourceY, channel, interpolation_);
+        [&](float sourceX, float sourceY, float* out) {
+            sampleRegisteredPixel(image, sourceX, sourceY, interpolation_, out);
         });
 }
 
@@ -2809,7 +2876,7 @@ bool Registration::renderAffineRows(const ImageBuffer& image, AffineTransform tr
     if (std::fabs(determinant) < 1.0e-8F) {
         return renderMappedRows(
             image, consumer, grid, [](std::uint32_t, std::uint32_t) { return std::pair<float, float>{0.0F, 0.0F}; },
-            [](float, float, std::uint16_t) { return 0.0F; });
+            [&](float, float, float* out) { std::fill_n(out, image.channels, 0.F); });
     }
     const float invA = transform.d / determinant;
     const float invB = -transform.b / determinant;
@@ -2822,8 +2889,8 @@ bool Registration::renderAffineRows(const ImageBuffer& image, AffineTransform tr
             const float targetY = static_cast<float>(y) - transform.dy;
             return std::pair<float, float>{invA * targetX + invB * targetY, invC * targetX + invD * targetY};
         },
-        [&](float sourceX, float sourceY, std::uint16_t channel) {
-            return sampleRegistered(image, sourceX, sourceY, channel, interpolation_);
+        [&](float sourceX, float sourceY, float* out) {
+            sampleRegisteredPixel(image, sourceX, sourceY, interpolation_, out);
         });
 }
 
@@ -2832,163 +2899,13 @@ bool Registration::renderDistortionRows(const ImageBuffer& image, const Distorti
     if (!validImageBuffer(image) || !finiteDistortionTransform(transform)) {
         return false;
     }
-    if (transform.controlPoints.empty()) {
-        if (!transform.useProjective) {
-            return renderSimilarityRows(image, transform.global, consumer, grid);
-        }
-
-        return renderMappedRows(
-            image, consumer, grid,
-            [&](std::uint32_t x, std::uint32_t y) {
-                const auto [baseSourceX, baseSourceY] =
-                    inverseProjectivePoint(static_cast<float>(x), static_cast<float>(y), transform.projective);
-                const auto [polynomialDx, polynomialDy] =
-                    transform.usePolynomial
-                        ? evaluatePolynomialCorrection(static_cast<float>(x), static_cast<float>(y), image.width,
-                                                       image.height, transform.polynomialDx, transform.polynomialDy)
-                        : std::pair<float, float>{0.0F, 0.0F};
-                return std::pair<float, float>{baseSourceX + polynomialDx, baseSourceY + polynomialDy};
-            },
-            [&](float sourceX, float sourceY, std::uint16_t channel) {
-                return sampleRegistered(image, sourceX, sourceY, channel, interpolation_);
-            }, backend_ == ComputeBackend::Metal ? std::optional(interpolation_) : std::nullopt);
-    }
-
-    constexpr std::uint32_t gridSpacing = 32;
-    const std::uint32_t gridWidth = image.width / gridSpacing + 2;
-    const std::uint32_t gridHeight = image.height / gridSpacing + 2;
-    const auto gridSize = static_cast<std::size_t>(gridWidth) * gridHeight;
-    std::vector<float> gridDxDu(gridSize, 0.0F);
-    std::vector<float> gridDxDv(gridSize, 0.0F);
-    std::vector<float> gridDxOffset(gridSize, 0.0F);
-    std::vector<float> gridDyDu(gridSize, 0.0F);
-    std::vector<float> gridDyDv(gridSize, 0.0F);
-    std::vector<float> gridDyOffset(gridSize, 0.0F);
-    const float sigma = std::max(1.0F, transform.influenceRadius);
-    const float sigmaSquared = sigma * sigma;
-    const float imageCenterX = static_cast<float>(image.width - 1) * 0.5F;
-    const float imageCenterY = static_cast<float>(image.height - 1) * 0.5F;
-    const float normalization = std::max<float>(1.0F, std::max(image.width, image.height));
-
-    for (std::uint32_t gy = 0; gy < gridHeight; ++gy) {
-        for (std::uint32_t gx = 0; gx < gridWidth; ++gx) {
-            const float x = static_cast<float>(std::min(gx * gridSpacing, image.width - 1));
-            const float y = static_cast<float>(std::min(gy * gridSpacing, image.height - 1));
-            std::vector<LocalGridControl> nearby;
-            nearby.reserve(transform.controlPoints.size());
-            for (const auto& point : transform.controlPoints) {
-                const float dx = x - point.x;
-                const float dy = y - point.y;
-                const float distanceSquared = dx * dx + dy * dy;
-                nearby.push_back({
-                    .distanceSquared = distanceSquared,
-                    .x = point.x,
-                    .y = point.y,
-                    .dx = point.dx,
-                    .dy = point.dy,
-                });
-            }
-            const auto index = static_cast<std::size_t>(gy) * gridWidth + gx;
-            const std::size_t keepCount = std::min<std::size_t>(nearby.size(), 28);
-            if (keepCount == 0) {
-                continue;
-            }
-            if (keepCount < nearby.size()) {
-                std::nth_element(nearby.begin(), nearby.begin() + static_cast<std::ptrdiff_t>(keepCount), nearby.end(),
-                                 [](const LocalGridControl& left, const LocalGridControl& right) {
-                                     return left.distanceSquared < right.distanceSquared;
-                                 });
-            }
-            nearby.resize(keepCount);
-
-            std::vector<float> localDx;
-            std::vector<float> localDy;
-            localDx.reserve(nearby.size());
-            localDy.reserve(nearby.size());
-            for (const auto& point : nearby) {
-                localDx.push_back(point.dx);
-                localDy.push_back(point.dy);
-            }
-            auto median = [](std::vector<float>& values) {
-                const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2);
-                std::nth_element(values.begin(), middle, values.end());
-                return *middle;
-            };
-            const float medianDx = median(localDx);
-            const float medianDy = median(localDy);
-
-            std::vector<LocalGridControl> filtered;
-            filtered.reserve(nearby.size());
-            const float correctionLimit = std::max(8.0F, sigma * 0.14F);
-            for (const auto& point : nearby) {
-                const float correctionDx = point.dx - medianDx;
-                const float correctionDy = point.dy - medianDy;
-                if (correctionDx * correctionDx + correctionDy * correctionDy > correctionLimit * correctionLimit) {
-                    continue;
-                }
-                filtered.push_back(point);
-            }
-            if (filtered.size() < 6) {
-                filtered = std::move(nearby);
-            }
-
-            const auto correction =
-                fitLocalAffineCorrection(filtered, x, y, imageCenterX, imageCenterY, normalization, sigmaSquared);
-            if (correction.ok) {
-                gridDxDu[index] = correction.dxDu;
-                gridDxDv[index] = correction.dxDv;
-                gridDxOffset[index] = correction.dxOffset;
-                gridDyDu[index] = correction.dyDu;
-                gridDyDv[index] = correction.dyDv;
-                gridDyOffset[index] = correction.dyOffset;
-            }
-        }
-    }
-
-    const auto sampleGrid = [&](const std::vector<float>& grid, float x, float y) {
-        const float gx = std::clamp(x / static_cast<float>(gridSpacing), 0.0F, static_cast<float>(gridWidth - 1));
-        const float gy = std::clamp(y / static_cast<float>(gridSpacing), 0.0F, static_cast<float>(gridHeight - 1));
-        const auto x0 = static_cast<std::uint32_t>(std::floor(gx));
-        const auto y0 = static_cast<std::uint32_t>(std::floor(gy));
-        const auto x1 = std::min<std::uint32_t>(x0 + 1, gridWidth - 1);
-        const auto y1 = std::min<std::uint32_t>(y0 + 1, gridHeight - 1);
-        const float tx = gx - static_cast<float>(x0);
-        const float ty = gy - static_cast<float>(y0);
-        const auto gridIndex = [&](std::uint32_t px, std::uint32_t py) {
-            return static_cast<std::size_t>(py) * gridWidth + px;
-        };
-        const float top = grid[gridIndex(x0, y0)] + (grid[gridIndex(x1, y0)] - grid[gridIndex(x0, y0)]) * tx;
-        const float bottom = grid[gridIndex(x0, y1)] + (grid[gridIndex(x1, y1)] - grid[gridIndex(x0, y1)]) * tx;
-        return top + (bottom - top) * ty;
-    };
-
-    return renderMappedRows(
-        image, consumer, grid,
-        [&](std::uint32_t x, std::uint32_t y) {
-            const auto [baseSourceX, baseSourceY] =
-                transform.useProjective
-                    ? inverseProjectivePoint(static_cast<float>(x), static_cast<float>(y), transform.projective)
-                    : inverseSimilarityPoint(static_cast<float>(x), static_cast<float>(y), transform.global);
-            const auto [polynomialDx, polynomialDy] =
-                transform.usePolynomial
-                    ? evaluatePolynomialCorrection(static_cast<float>(x), static_cast<float>(y), image.width,
-                                                   image.height, transform.polynomialDx, transform.polynomialDy)
-                    : std::pair<float, float>{0.0F, 0.0F};
-            const float normalizedX = (static_cast<float>(x) - imageCenterX) / normalization;
-            const float normalizedY = (static_cast<float>(y) - imageCenterY) / normalization;
-            const float correctionX = sampleGrid(gridDxDu, static_cast<float>(x), static_cast<float>(y)) * normalizedX +
-                                      sampleGrid(gridDxDv, static_cast<float>(x), static_cast<float>(y)) * normalizedY +
-                                      sampleGrid(gridDxOffset, static_cast<float>(x), static_cast<float>(y));
-            const float correctionY = sampleGrid(gridDyDu, static_cast<float>(x), static_cast<float>(y)) * normalizedX +
-                                      sampleGrid(gridDyDv, static_cast<float>(x), static_cast<float>(y)) * normalizedY +
-                                      sampleGrid(gridDyOffset, static_cast<float>(x), static_cast<float>(y));
-            const float sourceX = baseSourceX + polynomialDx + correctionX;
-            const float sourceY = baseSourceY + polynomialDy + correctionY;
-            return std::pair<float, float>{sourceX, sourceY};
-        },
-        [&](float sourceX, float sourceY, std::uint16_t channel) {
-            return sampleRegistered(image, sourceX, sourceY, channel, interpolation_);
-        }, backend_ == ComputeBackend::Metal ? std::optional(interpolation_) : std::nullopt);
+    if (transform.controlPoints.empty() && !transform.useProjective)
+        return renderSimilarityRows(image, transform.global, consumer, grid);
+    const DistortionCoordinateMapper mapper(transform, image.width, image.height);
+    return renderMappedRows(image, consumer, grid,
+        [&](std::uint32_t x, std::uint32_t y) { return mapper.sourceForTarget(float(x), float(y)); },
+        [&](float x, float y, float* out) { sampleRegisteredPixel(image, x, y, interpolation_, out); },
+        backend_ == ComputeBackend::Metal ? std::optional(interpolation_) : std::nullopt);
 }
 
 bool Registration::renderDistortionForwardRows(const ImageBuffer& image, const DistortionTransform& transform,

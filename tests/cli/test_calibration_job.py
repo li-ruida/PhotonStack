@@ -33,6 +33,35 @@ class CalibrationJobs(unittest.TestCase):
             if math.isnan(b): self.assertTrue(math.isnan(a))
             else: self.assertAlmostEqual(a, b, delta=max(2e-5, abs(b)*2e-7))
 
+    def test_reused_master_session_tracks_flat_and_bias_assignments(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            biases = [[10 + p / 8 for p in range(120)], [20 + p / 4 for p in range(120)]]
+            flats = [[100 + p * 2 for p in range(120)], [200 + p * 3 for p in range(120)]]
+            masters = []
+            for i, values in enumerate(biases):
+                path = frame(root / f'b{i}.fits', values, 'Master Bias', EXPTIME=0, PSBIAS="'included'")
+                masters.append((f'b{i}', 'bias', path, 'included'))
+            for i, values in enumerate(flats):
+                path = frame(root / f'f{i}.fits', values, 'Master Flat', PSBIAS="'included'")
+                masters.append((f'f{i}', 'flat', path, 'included'))
+            assignments = [(0, 0), (0, 0), (1, 0), (0, 1), (0, 0)]
+            lights = []
+            for i, (b, f) in enumerate(assignments):
+                light = frame(root / f'l{i}.fits', [100 + i + p for p in range(120)], 'Light')
+                lights.append((light, f'b{b}', '-', f'f{f}'))
+            job = root / 'job'
+            run('calibration-run', '--manifest', manifest(root, lights, masters), '--output-dir', job)
+            phase = lambda p: 2 * ((p // 12) % 2) + p % 2
+            for i, (b, f) in enumerate(assignments):
+                response = [v - bias for v, bias in zip(flats[f], biases[b])]
+                means = [sum(v for p, v in enumerate(response) if phase(p) == q) / 30 for q in range(4)]
+                expected = [(100 + i + p - biases[b][p]) / (v / means[phase(p)])
+                            for p, v in enumerate(response)]
+                output = job / f'frame-{i + 1:06}'
+                self.assertPixels(output / 'calibrated.fits', expected)
+                self.assertEqual(json.loads((output / 'report.json').read_text())['flatMeans'], means)
+
     def test_physical_cfa_math_negative_values_masks_and_wcs(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

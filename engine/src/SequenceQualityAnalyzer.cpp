@@ -143,7 +143,7 @@ std::vector<SequenceTransientTrail> detectResidualLines(const std::vector<std::s
 
 SequenceFrameSample SequenceQualityAnalyzer::sample(const ImageBuffer& image,
                                                     const SequenceQualityOptions& o,
-                                                    const RegisteredGridRenderer& renderer) const {
+                                                    const RegisteredGridRenderer& renderer, bool keepGrid) const {
     const detail::StageScope timer(detail::Stage::Quality);
     SequenceFrameSample result;
     if (!validOptions(o) || (renderer && o.measureStars)) {
@@ -181,8 +181,10 @@ SequenceFrameSample SequenceQualityAnalyzer::sample(const ImageBuffer& image,
     const auto gridSamples = static_cast<std::size_t>(result.columns) * result.rows;
     // Grid dimensions are known. Exact capacity avoids geometric growth in two
     // arrays retained for every exposure during temporal assessment.
-    result.luminance.reserve(gridSamples);
-    result.coverage.reserve(gridSamples);
+    if (keepGrid) {
+        result.luminance.reserve(gridSamples);
+        result.coverage.reserve(gridSamples);
+    }
     skySamples.reserve(gridSamples);
     differences.reserve(gridSamples);
     double valid = 0;
@@ -192,8 +194,10 @@ SequenceFrameSample SequenceQualityAnalyzer::sample(const ImageBuffer& image,
             const double c = coverageAt(pixels, p);
             const double value = c > 0 ? luminanceAt(pixels, p) : 0;
             const bool representable = std::isfinite(value) && std::abs(value) <= std::numeric_limits<float>::max();
-            result.luminance.push_back(representable ? float(value) : 0);
-            result.coverage.push_back(representable ? float(c) : 0);
+            if (keepGrid) {
+                result.luminance.push_back(representable ? float(value) : 0);
+                result.coverage.push_back(representable ? float(c) : 0);
+            }
             valid += representable ? c : 0;
             if (!representable || c < .99) continue;
             skySamples.push_back(value);
@@ -208,7 +212,7 @@ SequenceFrameSample SequenceQualityAnalyzer::sample(const ImageBuffer& image,
             }
         }
     }
-    result.validFraction = valid / result.luminance.size();
+    result.validFraction = valid / gridSamples;
     if (skySamples.size() < 16 || differences.size() < 8) {
         result.errorCode = "InsufficientValidSamples";
         result.message = "Too little complete pixel coverage for scientific noise estimation";
@@ -341,20 +345,23 @@ SequenceQualityResult SequenceQualityAnalyzer::assess(const std::vector<Sequence
             values.emplace_back(value, i);
         }
         if (values.size() <= o.minimumTemporalPeers) continue;
-        std::sort(values.begin(), values.end());
-        const auto middle = values.size() / 2;
-        const double center = values.size() % 2 ? values[middle].first
-            : (values[middle].first + values[middle - 1].first) * .5;
+        auto middle = values.begin() + values.size() / 2;
+        std::nth_element(values.begin(), middle, values.end());
+        const auto pivot = *middle;
+        const double lower = std::max_element(values.begin(), middle)->first;
+        const bool odd = values.size() % 2 != 0;
+        const double upper = odd ? std::min_element(middle + 1, values.end())->first : pivot.first;
+        const double center = odd ? pivot.first : (pivot.first + lower) * .5;
         deviations.clear();
         for (const auto& sample : values) deviations.push_back(std::abs(sample.first - center));
         const double scatter = medianInPlace(deviations) * madScale;
         const std::size_t peerCount = values.size() - 1;
         const double peerNoise = result.medianNoise / std::sqrt(double(peerCount));
-        for (std::size_t rank = 0; rank < values.size(); ++rank) {
-            const auto [value, i] = values[rank];
-            const auto peerAt = [&](std::size_t k) { return values[k >= rank ? k + 1 : k].first; };
-            const double peerMedian = peerCount % 2 ? peerAt(peerCount / 2)
-                : (peerAt(peerCount / 2 - 1) + peerAt(peerCount / 2)) * .5;
+        for (const auto& sample : values) {
+            const auto [value, i] = sample;
+            const double peerMedian = odd
+                ? ((sample < pivot ? pivot.first : lower) + (sample > pivot ? pivot.first : upper)) * .5
+                : (sample < pivot ? pivot.first : lower);
             const double noiseFloor = std::hypot(frames[i].noise, peerNoise);
             const double threshold = o.residualSigma * std::max({scatter, noiseFloor, 1.e-6}) +
                 o.signalTolerance * std::abs(peerMedian);

@@ -56,17 +56,22 @@ class SHA256 {
         return text;
     }
 };
-bool same(const struct stat& a, const struct stat& b) {
-    if (a.st_dev != b.st_dev || a.st_ino != b.st_ino || a.st_size != b.st_size) return false;
+FileVersion version(const struct stat& s) {
 #ifdef __APPLE__
-    return a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec &&
-           a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec;
+    const auto m = s.st_mtimespec, c = s.st_ctimespec;
 #else
-    return a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec == b.st_mtim.tv_nsec &&
-           a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
+    const auto m = s.st_mtim, c = s.st_ctim;
 #endif
+    return {std::uint64_t(s.st_dev), std::uint64_t(s.st_ino), std::uint64_t(s.st_size),
+            m.tv_sec, m.tv_nsec, c.tv_sec, c.tv_nsec};
 }
 } // namespace
+
+std::optional<FileVersion> regularFileVersion(const std::filesystem::path& path) {
+    struct stat s{};
+    if (stat(path.c_str(), &s) || !S_ISREG(s.st_mode) || s.st_size < 0) return std::nullopt;
+    return version(s);
+}
 
 struct DigestingFileReader::Impl {
     std::filesystem::path path;
@@ -128,7 +133,7 @@ std::string DigestingFileReader::finish() {
     struct stat named{};
     if (fstat(reader.fd, &after) != 0 ||
         (reader.follow ? stat(reader.path.c_str(), &named) : lstat(reader.path.c_str(), &named)) != 0 ||
-        !same(reader.before, after) || !same(reader.before, named))
+        version(reader.before) != version(after) || version(reader.before) != version(named))
         throw std::runtime_error("Source changed during SHA-256: " + reader.path.string());
     if (reader.digest.empty()) reader.digest = reader.hash.finish();
     return reader.digest;

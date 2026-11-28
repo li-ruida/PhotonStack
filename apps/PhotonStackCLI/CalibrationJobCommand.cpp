@@ -510,13 +510,14 @@ int runCalibrationJob(const std::vector<std::string>& args) {
     if (!inspect) {
         if (!fresh)
             bind(job, true);
+        SensorCalibrationSession calibrationSession;
         std::size_t computed = 0;
         for (std::size_t i = 0; i < job.lights.size() && computed < maximum; ++i)
             if (!completed[i]) {
                 check();
                 Stage stage(root);
                 const auto begin = std::chrono::steady_clock::now();
-                const auto result = calibrateSensorFrame(job.lights[i].source, selection(job, job.lights[i]));
+                const auto result = calibrationSession.calibrate(job.lights[i].source, selection(job, job.lights[i]));
                 writeCalibratedSensor(result, stage.path / "calibrated.fits");
                 const auto mask = FitsCodec().write(result.valid, stage.path / "valid.fits");
                 require(mask.ok, mask.message);

@@ -19,6 +19,7 @@
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/ImageCodec.hpp"
 #include "photonstack/ImageResizer.hpp"
+#include "photonstack/ImageInspector.hpp"
 #include "photonstack/ParallelRanges.hpp"
 #include "photonstack/Registration.hpp"
 #include "photonstack/StarDetector.hpp"
@@ -174,26 +175,39 @@ float sampleBilinear(const ImageBuffer& image, float x, float y, std::uint16_t c
 
 ImageBuffer cylindricalWarp(const ImageBuffer& image, MosaicProgressReporter& progress,
                             std::size_t panel, double start, double end) {
-    ImageBuffer output = image;
+    ImageBuffer output;
+    output.width = image.width;
+    output.height = image.height;
+    output.channels = image.channels;
+    output.format = image.format;
+    output.colorEncoding = image.colorEncoding;
+    output.sourceBitsPerChannel = image.sourceBitsPerChannel;
     output.pixels.assign(output.sampleCount(), 0.0F);
 
     const float focalLength = std::max(1.0F, static_cast<float>(image.width) * 0.65F);
     const float centerX = static_cast<float>(image.width - 1) * 0.5F;
     const float centerY = static_cast<float>(image.height - 1) * 0.5F;
 
-    for (std::uint32_t y = 0; y < image.height; ++y) {
+    std::vector<float> sourceColumns(image.width), cosines(image.width);
+    for (std::uint32_t x = 0; x < image.width; ++x) {
+        const float theta = (static_cast<float>(x) - centerX) / focalLength;
+        cosines[x] = std::max(1.0e-6F, std::cos(theta));
+        sourceColumns[x] = focalLength * std::tan(theta) + centerX;
+    }
+    blendRows(0, image.height, image.width, [&](int y) {
         for (std::uint32_t x = 0; x < image.width; ++x) {
-            const float theta = (static_cast<float>(x) - centerX) / focalLength;
-            const float cosTheta = std::max(1.0e-6F, std::cos(theta));
-            const float sourceX = focalLength * std::tan(theta) + centerX;
+            const float cosTheta = cosines[x];
+            const float sourceX = sourceColumns[x];
             const float sourceY = (static_cast<float>(y) - centerY) / cosTheta + centerY;
             const auto outputOffset = (static_cast<std::size_t>(y) * image.width + x) * image.channels;
             for (std::uint16_t channel = 0; channel < image.channels; ++channel) {
                 output.pixels[outputOffset + channel] = sampleBilinear(image, sourceX, sourceY, channel);
             }
         }
-        progress.reportRow(MosaicProgressStage::Projecting, y + 1, image.height, start, end, panel);
-    }
+        return true;
+    }, [&](std::uint32_t completed) {
+        progress.reportRow(MosaicProgressStage::Projecting, completed, image.height, start, end, panel);
+    });
 
     return output;
 }
@@ -1222,82 +1236,79 @@ ImageBuffer gaussianDownsample(const ImageBuffer& image, const ExposureCorrectio
     const auto width = std::max<std::uint32_t>(1, (image.width + 1) / 2);
     const auto height = std::max<std::uint32_t>(1, (image.height + 1) / 2);
     auto output = emptyLike(image, width, height);
-    constexpr std::array<float, 5> kernel = {1.0F / 16.0F, 4.0F / 16.0F, 6.0F / 16.0F,
-                                              4.0F / 16.0F, 1.0F / 16.0F};
-    std::array<std::vector<float>, 5> horizontalRows;
-    std::array<int, 5> horizontalRowIDs;
-    horizontalRowIDs.fill(-1);
-    for (auto& row : horizontalRows) {
-        row.assign(static_cast<std::size_t>(width) * image.channels, 0.0F);
-    }
+    constexpr std::array<float, 5> kernel = {1.0F / 16.0F, 4.0F / 16.0F, 6.0F / 16.0F, 4.0F / 16.0F, 1.0F / 16.0F};
+    detail::parallelRanges(height, std::max<std::size_t>(1, 16384 / width), [&](std::size_t first, std::size_t last) {
+        std::array<std::vector<float>, 5> horizontalRows;
+        std::array<int, 5> horizontalRowIDs;
+        horizontalRowIDs.fill(-1);
+        for (auto& row : horizontalRows) {
+            row.assign(static_cast<std::size_t>(width) * image.channels, 0.0F);
+        }
 
-    const auto fillHorizontalRow = [&](std::vector<float>& row, int sourceY) {
-        for (std::uint32_t x = 0; x < width; ++x) {
-            const int centerX = static_cast<int>(x * 2);
-            const auto rowOffset = static_cast<std::size_t>(x) * image.channels;
-            for (std::uint16_t channel = 0; channel < image.channels; ++channel) {
-                double value = 0.0;
-                for (int kernelX = -2; kernelX <= 2; ++kernelX) {
-                    const auto sourceX = static_cast<std::uint32_t>(std::clamp(
-                        centerX + kernelX, 0, static_cast<int>(image.width) - 1));
-                    const auto sourceOffset =
-                        (static_cast<std::size_t>(sourceY) * image.width + sourceX) * image.channels + channel;
-                    double sample = image.pixels[sourceOffset];
-                    if (correction != nullptr && channel < correction->offsets.size()) {
-                        sample = sample * correction->gains[channel] + correction->offsets[channel];
-                        if (clampColor) {
-                            sample = std::clamp(sample, 0.0, 1.0);
+        const auto fillHorizontalRow = [&](std::vector<float>& row, int sourceY) {
+            for (std::uint32_t x = 0; x < width; ++x) {
+                const int centerX = static_cast<int>(x * 2);
+                const auto rowOffset = static_cast<std::size_t>(x) * image.channels;
+                for (std::uint16_t channel = 0; channel < image.channels; ++channel) {
+                    double value = 0.0;
+                    for (int kernelX = -2; kernelX <= 2; ++kernelX) {
+                        const auto sourceX = static_cast<std::uint32_t>(
+                            std::clamp(centerX + kernelX, 0, static_cast<int>(image.width) - 1));
+                        const auto sourceOffset =
+                            (static_cast<std::size_t>(sourceY) * image.width + sourceX) * image.channels + channel;
+                        double sample = image.pixels[sourceOffset];
+                        if (correction != nullptr && channel < correction->offsets.size()) {
+                            sample = sample * correction->gains[channel] + correction->offsets[channel];
+                            if (clampColor) {
+                                sample = std::clamp(sample, 0.0, 1.0);
+                            }
                         }
+                        value += sample * kernel[kernelX + 2];
                     }
-                    value += sample * kernel[kernelX + 2];
+                    row[rowOffset + channel] = static_cast<float>(value);
                 }
-                row[rowOffset + channel] = static_cast<float>(value);
             }
-        }
-    };
+        };
 
-    for (std::uint32_t y = 0; y < height; ++y) {
-        const int centerY = static_cast<int>(y * 2);
-        std::array<int, 5> neededRows;
-        for (int kernelY = -2; kernelY <= 2; ++kernelY) {
-            neededRows[kernelY + 2] = std::clamp(
-                centerY + kernelY, 0, static_cast<int>(image.height) - 1);
-        }
-        for (const int neededRow : neededRows) {
-            if (std::find(horizontalRowIDs.begin(), horizontalRowIDs.end(), neededRow) != horizontalRowIDs.end()) {
-                continue;
+        for (std::uint32_t y = first; y < last; ++y) {
+            const int centerY = static_cast<int>(y * 2);
+            std::array<int, 5> neededRows;
+            for (int kernelY = -2; kernelY <= 2; ++kernelY) {
+                neededRows[kernelY + 2] = std::clamp(centerY + kernelY, 0, static_cast<int>(image.height) - 1);
             }
-            const auto reusable = std::find_if(
-                horizontalRowIDs.begin(), horizontalRowIDs.end(),
-                [&](int existingRow) {
-                    return std::find(neededRows.begin(), neededRows.end(), existingRow) == neededRows.end();
+            for (const int neededRow : neededRows) {
+                if (std::find(horizontalRowIDs.begin(), horizontalRowIDs.end(), neededRow) != horizontalRowIDs.end()) {
+                    continue;
                 }
-            );
-            const auto slot = static_cast<std::size_t>(std::distance(horizontalRowIDs.begin(), reusable));
-            horizontalRowIDs[slot] = neededRow;
-            fillHorizontalRow(horizontalRows[slot], neededRow);
-        }
-        std::array<std::size_t, 5> rowSlots;
-        for (std::size_t rowIndex = 0; rowIndex < neededRows.size(); ++rowIndex) {
-            rowSlots[rowIndex] = static_cast<std::size_t>(std::distance(
-                horizontalRowIDs.begin(),
-                std::find(horizontalRowIDs.begin(), horizontalRowIDs.end(), neededRows[rowIndex])
-            ));
-        }
+                const auto reusable =
+                    std::find_if(horizontalRowIDs.begin(), horizontalRowIDs.end(), [&](int existingRow) {
+                        return std::find(neededRows.begin(), neededRows.end(), existingRow) == neededRows.end();
+                    });
+                const auto slot = static_cast<std::size_t>(std::distance(horizontalRowIDs.begin(), reusable));
+                horizontalRowIDs[slot] = neededRow;
+                fillHorizontalRow(horizontalRows[slot], neededRow);
+            }
+            std::array<std::size_t, 5> rowSlots;
+            for (std::size_t rowIndex = 0; rowIndex < neededRows.size(); ++rowIndex) {
+                rowSlots[rowIndex] = static_cast<std::size_t>(
+                    std::distance(horizontalRowIDs.begin(),
+                                  std::find(horizontalRowIDs.begin(), horizontalRowIDs.end(), neededRows[rowIndex])));
+            }
 
-        for (std::uint32_t x = 0; x < width; ++x) {
-            const auto outputOffset = (static_cast<std::size_t>(y) * width + x) * output.channels;
-            for (std::uint16_t channel = 0; channel < output.channels; ++channel) {
-                double value = 0.0;
-                for (int kernelY = -2; kernelY <= 2; ++kernelY) {
-                    value += horizontalRows[rowSlots[kernelY + 2]]
-                                           [static_cast<std::size_t>(x) * image.channels + channel] *
-                             kernel[kernelY + 2];
+            for (std::uint32_t x = 0; x < width; ++x) {
+                const auto outputOffset = (static_cast<std::size_t>(y) * width + x) * output.channels;
+                for (std::uint16_t channel = 0; channel < output.channels; ++channel) {
+                    double value = 0.0;
+                    for (int kernelY = -2; kernelY <= 2; ++kernelY) {
+                        value += horizontalRows[rowSlots[kernelY + 2]]
+                                               [static_cast<std::size_t>(x) * image.channels + channel] *
+                                 kernel[kernelY + 2];
+                    }
+                    output.pixels[outputOffset + channel] = static_cast<float>(value);
                 }
-                output.pixels[outputOffset + channel] = static_cast<float>(value);
             }
         }
-    }
+    });
     return output;
 }
 
@@ -1316,16 +1327,10 @@ struct MultibandLevel {
     std::vector<float> weights;
 };
 
-MosaicResult composeMultiband(
-    const std::vector<ImageBuffer>& images,
-    std::vector<MosaicPlacement> placements,
-    const std::vector<ExposureCorrection>& corrections,
-    std::uint32_t width,
-    std::uint32_t height,
-    bool exposureMatched,
-    MosaicProgressReporter& progress,
-    bool clampColor
-) {
+MosaicResult composeMultiband(const std::vector<ImageBuffer>& images, std::vector<MosaicPlacement> placements,
+                              const std::vector<ExposureCorrection>& corrections, std::uint32_t width,
+                              std::uint32_t height, bool exposureMatched, MosaicProgressReporter& progress,
+                              bool clampColor) {
     try {
         const auto levelCount = multibandLevelCount(width, height);
         std::vector<MultibandLevel> levels;
@@ -1907,7 +1912,7 @@ MosaicResult composeMosaic(
 }
 
 MosaicResult loadInputs(const std::vector<std::filesystem::path>& inputs, const FitsDecodeMode fitsDecodeMode,
-                        std::vector<ImageBuffer>& images, MosaicProgressReporter& progress) {
+                        std::vector<ImageBuffer>& images, MosaicProgressReporter& progress, double scale = 1.0) {
     if (inputs.empty()) {
         return mosaicError("InputMissing", "At least one input image is required");
     }
@@ -1925,6 +1930,13 @@ MosaicResult loadInputs(const std::vector<std::filesystem::path>& inputs, const 
             auto read = codec.read(input, readOptions);
             if (!read.ok) {
                 return mosaicError(read.errorCode, "Failed to read " + input.string() + ": " + read.message);
+            }
+            if (scale < 1.0) {
+                const auto targetWidth = static_cast<std::uint32_t>(std::max(
+                    1.0, std::round(static_cast<double>(read.image.width) * scale)));
+                auto resized = ImageResizer{}.resizeToWidth(read.image, targetWidth);
+                if (!resized.ok) return mosaicError(resized.errorCode, resized.message);
+                read.image = std::move(resized.image);
             }
             images.push_back(std::move(read.image));
             progress.report(
@@ -1966,7 +1978,26 @@ MosaicResult MosaicBuilder::stitchHorizontal(const std::vector<std::filesystem::
     }
     std::vector<ImageBuffer> images;
     MosaicProgressReporter progress(options, inputs.size());
-    const auto loadResult = loadInputs(inputs, options.fitsDecodeMode, images, progress);
+    std::uint32_t inspectedWidest = 0;
+    double loadScale = 1.0;
+    if (options.previewWidth > 0 && options.alignment != MosaicAlignment::Wcs) {
+        for (const auto& path : inputs) {
+            const auto inspected = ImageInspector{}.inspect(path);
+            // RAW decoder cropping and rotated metadata may have different output dimensions.
+            // Preserve the existing decode-first path when header dimensions are insufficient.
+            if (!inspected.ok || inspected.metadata.width == 0 ||
+                inspected.metadata.format == ImageFormat::RAW || inspected.metadata.orientation >= 5) {
+                inspectedWidest = 0;
+                break;
+            }
+            inspectedWidest = std::max(inspectedWidest, inspected.metadata.width);
+        }
+        const auto registrationWidth = options.alignment == MosaicAlignment::Auto && options.alignmentWidth > 0
+            ? options.alignmentWidth : options.previewWidth;
+        if (inspectedWidest > 0)
+            loadScale = std::min(1.0, double(std::max(options.previewWidth, registrationWidth)) / inspectedWidest);
+    }
+    const auto loadResult = loadInputs(inputs, options.fitsDecodeMode, images, progress, loadScale);
     if (!loadResult.ok) {
         return loadResult;
     }
@@ -2025,9 +2056,14 @@ MosaicResult MosaicBuilder::stitchHorizontal(const std::vector<std::filesystem::
             return result;
         }
         MosaicOptions effectiveOptions = options;
-        std::uint32_t sourceWidest = 0;
+        std::uint32_t sourceWidest = inspectedWidest;
         std::uint32_t workingWidest = 0;
-        if (options.previewWidth > 0) {
+        if (loadScale < 1.0) {
+            workingWidest = std::max_element(images.begin(), images.end(),
+                [](const auto& a, const auto& b) { return a.width < b.width; })->width;
+            effectiveOptions.overlapPixels = static_cast<std::uint32_t>(
+                std::max(0.0, std::round(double(options.overlapPixels) * loadScale)));
+        } else if (options.previewWidth > 0) {
             const ImageResizer resizer;
             sourceWidest = std::max_element(
                 images.begin(), images.end(),

@@ -11,7 +11,7 @@
 
 namespace photonstack::detail {
 
-inline constexpr std::size_t maximumAnalysisFrameWorkers = 8;
+inline constexpr std::size_t maximumAnalysisFrameWorkers = 32;
 
 inline std::size_t analysisFrameCapacity(std::uint64_t pixels, std::uint64_t referencePixels,
                                          std::size_t frames, std::uint32_t sampleSide,
@@ -19,10 +19,14 @@ inline std::size_t analysisFrameCapacity(std::uint64_t pixels, std::uint64_t ref
                                          std::uint64_t pixelBytes = 64, std::uint64_t matchingBytes = 128ULL << 20) {
     constexpr std::uint64_t mib = 1024 * 1024;
     if (!pixels || pixels > (1ULL << 32) || referencePixels > (1ULL << 32) ||
-        frames > 2000 || sampleSide > 512) return 1;
+        !frames || sampleSide > 512 || !pixelBytes) return 1;
     // Keep room for all retained temporal grids and the shared float RGBA reference.
     // Per worker allow decoded pixels, Bayer/stellar scratch and matching bins.
-    const auto shared = 64 * mib + referencePixels * 16 + frames * std::uint64_t(sampleSide) * sampleSide * 8;
+    const auto gridBytes = std::uint64_t(sampleSide) * sampleSide * 8;
+    const auto referenceBytes = 64 * mib + referencePixels * 16;
+    if (referenceBytes >= memoryBudget ||
+        (gridBytes && frames > (memoryBudget - referenceBytes) / gridBytes)) return 1;
+    const auto shared = referenceBytes + frames * gridBytes;
     // Projected star matching builds indexes on the reference canvas, even
     // when an individual light has different dimensions.
     const auto perFrame = matchingBytes + std::max(pixels, referencePixels) * pixelBytes;

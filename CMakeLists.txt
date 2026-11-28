@@ -45,6 +45,18 @@ set(CMAKE_OBJCXX_STANDARD 20)
 set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 set(CMAKE_OBJCXX_EXTENSIONS OFF)
 
+option(PHOTONSTACK_ENABLE_IPO "Use supported interprocedural optimization in Release builds" ON)
+if(PHOTONSTACK_ENABLE_IPO)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT PHOTONSTACK_IPO_SUPPORTED OUTPUT PHOTONSTACK_IPO_ERROR LANGUAGES CXX)
+  if(PHOTONSTACK_IPO_SUPPORTED)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+  else()
+    message(STATUS "IPO unavailable; keeping standard optimization: ${PHOTONSTACK_IPO_ERROR}")
+  endif()
+endif()
+
 option(PHOTONSTACK_BUILD_TESTS "Build PhotonStack tests" ON)
 
 add_subdirectory(engine)

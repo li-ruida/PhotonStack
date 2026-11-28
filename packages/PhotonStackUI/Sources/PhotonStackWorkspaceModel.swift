@@ -542,7 +542,8 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         pendingPhotoInput != nil && pendingPhotoInput == currentInputURL
     }
 
-    @Published private(set) var interactiveCurveURL: URL?
+    let interactiveCurve = InteractiveCurvePreview()
+    var interactiveCurveURL: URL? { interactiveCurve.frame?.file }
     private var curvePreviewBaseInputURL: URL?
     private var curvePreviewReferenceHistogram: HistogramSnapshot?
     private var pendingCurvePreviewPoints: [CurveEditorPoint]?
@@ -551,8 +552,6 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     private let previewCacheSchemaVersion = "preview-cache-v4"
     private let previewCacheReceiptSchemaVersion = "preview-cache-receipt-v2"
     private let artifactRemovalCacheRevision = "artifact-trails-v22-chromatic-beacon-foreground"
-    private let artifactMarkerRendererRevision = "labels-v12-global-declutter-overflow-summary"
-    private let cloudMarkerRendererRevision = "labels-v3-global-declutter-overflow-summary"
     static let maximumCurvePresetImportBytes: UInt64 = 4 * 1_024 * 1_024
     static let maximumImportedCurvePresetCount = 1_000
 
@@ -648,6 +647,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     }
 
     public var currentInputURL: URL? {
+        // Until the queued composite is ready, do not feed the previous layer
+        // state into a new edit. The canvas can keep displaying previewURL.
+        guard layerPreviewTask == nil else { return nil }
         switch canvasMode {
         case .sourcePreview:
             return previewURL ?? selectedAsset?.originalURL
@@ -1568,11 +1570,16 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         canvasMode == .sourcePreview && previewURL != nil && previewURL?.standardizedFileURL == mosaicQualityReportSourceURL && !isShowingMosaicResult
     }
 
+    private var cachedMosaicReport: (String, MosaicQualityReport?)?
+
     var visibleMosaicReport: MosaicQualityReport? {
         guard canvasMode == .sourcePreview else { return nil }
         if previewURL?.standardizedFileURL == mosaicQualityReportSourceURL { return mosaicQualityReport }
         guard isShowingMosaicResult, let json = latestMosaicOperation?.parameters["alignmentReport"] else { return nil }
-        return try? JSONDecoder().decode(MosaicQualityReport.self, from: Data(json.utf8))
+        if let cachedMosaicReport, cachedMosaicReport.0 == json { return cachedMosaicReport.1 }
+        let report = try? JSONDecoder().decode(MosaicQualityReport.self, from: Data(json.utf8))
+        cachedMosaicReport = (json, report)
+        return report
     }
 
     /// Trace explicit image inputs. A panel preview recorded after the mosaic can
@@ -1934,32 +1941,19 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 let rawOptions = parameters.rawProcessingOptions
                 let channel = parameters.curveChannel
                 let interactiveWidth = interactiveCurvePreviewWidth(for: parameters.previewWidth)
-                let output = previewDirectory.appendingPathComponent("curves-interactive-\(UUID().uuidString).png")
-                defer {
-                    if interactiveCurveURL != output { try? FileManager.default.removeItem(at: output) }
-                }
-
-                // Interactive previews bypass runProcessingJob, whose normal setup
-                // creates this directory. A fresh unsaved project therefore needs
-                // the same setup before the native bridge opens its PNG destination.
-                try FileManager.default.createDirectory(
-                    at: previewDirectory,
-                    withIntermediateDirectories: true
-                )
-
-                var executionPath = "processing-service"
                 let pointPairs = normalizedPoints.map { ($0.input, $0.output) }
-                if try await EngineCurvePreview.runIfAvailableAsync(
-                    using: processingService, input: input, output: output,
-                    width: interactiveWidth, rawOptions: rawOptions, points: pointPairs,
-                    channel: channel, retainDecodedSource: true
-                ) != nil {
-                    executionPath = "engine-bridge"
-                } else {
-                    _ = try await processingService.makeCurvePreview(
-                        input: input, output: output, width: interactiveWidth,
-                        rawOptions: rawOptions, points: pointPairs, channel: channel
-                    )
+                let image = try await EngineCurvePreview.interactiveImage(using: processingService, input: input,
+                    width: interactiveWidth, rawOptions: rawOptions, points: pointPairs, channel: channel)
+                var fallbackFile: URL?
+                defer {
+                    if let fallbackFile, interactiveCurveURL != fallbackFile { try? FileManager.default.removeItem(at: fallbackFile) }
+                }
+                if image == nil {
+                    try FileManager.default.createDirectory(at: previewDirectory, withIntermediateDirectories: true)
+                    let output = previewDirectory.appendingPathComponent("curves-interactive-\(UUID().uuidString).png")
+                    fallbackFile = output
+                    _ = try await processingService.makeCurvePreview(input: input, output: output, width: interactiveWidth,
+                        rawOptions: rawOptions, points: pointPairs, channel: channel)
                 }
                 try Task.checkCancellation()
                 guard channel == parameters.curveChannel,
@@ -1970,16 +1964,16 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 logCurveTelemetry(
                     event: "interactive-preview-complete",
                     startedAt: startedAt,
-                    source: executionPath,
+                    source: image == nil ? "processing-service" : "engine-bridge",
                     width: interactiveWidth,
                     points: normalizedPoints.count
                 )
                 guard currentInputURL == input else { return }
                 let previous = interactiveCurveURL
-                interactiveCurveURL = output
+                interactiveCurve.frame = .init(input: input, image: image, file: fallbackFile)
                 if let previous { try? FileManager.default.removeItem(at: previous) }
-                commandOutput = "Curve preview"
-                errorMessage = nil
+                if commandOutput != "Curve preview" { commandOutput = "Curve preview" }
+                if errorMessage != nil { errorMessage = nil }
             } catch is CancellationError {
                 return
             } catch {
@@ -4755,6 +4749,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 report: report,
                 selectedIndices: selected
             )
+            await self.markedPreviewTask?.value
             return result
         }
     }
@@ -5052,6 +5047,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
                 report: report,
                 selectedIndices: []
             )
+            await self.markedPreviewTask?.value
             return result
         }
     }
@@ -5081,6 +5077,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             }
             self.cloudRegionReport = report
             self.updateCloudMarkedPreview(input: input, report: report, selectedIndices: [])
+            await self.markedPreviewTask?.value
             return result
         }
     }
@@ -5645,10 +5642,17 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
+    private let layerPreviewWorker = LayerPreviewWorker()
+    private var layerPreviewTask: Task<Void, Never>?
+    private var layerPreviewGeneration = 0
+
+    func waitForLayerStackPreview() async { await layerPreviewTask?.value }
+
     @discardableResult
     private func refreshVisibleLayerStackPreview(
         trackHistory: Bool = false,
-        allowWhileProcessing: Bool = false
+        allowWhileProcessing: Bool = false,
+        onFailure: (() -> Void)? = nil
     ) -> Bool {
         guard allowWhileProcessing || isProcessing == false else {
             return false
@@ -5686,20 +5690,59 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             ]
         )
 
-        do {
-            if visibleLayers.isEmpty {
-                try Self.renderEmptyLayerStack(sourceURL: firstURL, output: output, format: .RGBA8)
-            } else {
-                try renderLayerStackPreview(layers: visibleLayers, output: output)
+        layerPreviewGeneration += 1
+        let revision = layerPreviewGeneration
+        layerPreviewTask?.cancel()
+        let projectID = project.id
+        let selection = selectedAssetID
+        let layers = project.layers
+        let masks = previewMasks(visibleLayers)
+        layerPreviewTask = Task {
+            defer { if revision == layerPreviewGeneration { layerPreviewTask = nil } }
+            do {
+                try await Task.sleep(for: .milliseconds(32))
+                try await layerPreviewWorker.render {
+                    if visibleLayers.isEmpty {
+                        try Self.renderEmptyLayerStack(sourceURL: firstURL, output: output, format: .RGBA8)
+                    } else {
+                        try Self.renderLayerStack(layers: visibleLayers, output: output, format: .RGBA8, maskInputURLs: masks)
+                    }
+                }
+                try Task.checkCancellation()
+                guard revision == layerPreviewGeneration, project.id == projectID,
+                      selectedAssetID == selection, project.layers == layers,
+                      previewMasks(visibleLayers) == masks else { return }
+                setPreview(output, trackHistory: trackHistory, canvasMode: .layerComposite)
+                commandOutput = "\(localized(.previewLayerStack)): \(visibleLayers.count)"
+                errorMessage = nil
+                triggerAutosave()
+            } catch {
+                guard !Task.isCancelled, revision == layerPreviewGeneration,
+                      project.id == projectID, project.layers == layers else { return }
+                if onFailure != nil || processingService.requiresExistingInputFiles {
+                    if let onFailure {
+                        onFailure()
+                    } else {
+                        // A destructive source/artifact change cannot be rolled
+                        // back here; never leave its obsolete composite visible.
+                        previewURL = nil
+                        previewOperationID = nil
+                        editGraphNeedsReplay = false
+                        artifactTrailReport = nil
+                        cloudRegionReport = nil
+                        detectedStarCount = nil
+                        replaceMarkedPreview(nil)
+                        histogram = nil
+                        curveReferenceHistogram = nil
+                    }
+                    errorMessage = processingErrorMessage(error)
+                    triggerAutosave()
+                } else {
+                    canvasMode = .layerComposite
+                }
             }
-            setPreview(output, trackHistory: trackHistory, canvasMode: .layerComposite)
-            commandOutput = "\(localized(.previewLayerStack)): \(visibleLayers.count)"
-            errorMessage = nil
-            return true
-        } catch {
-            errorMessage = processingErrorMessage(error)
-            return false
         }
+        return true
     }
 
     @discardableResult
@@ -5711,7 +5754,15 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         let errorMessageSnapshot = errorMessage
 
         mutation()
-        guard refreshVisibleLayerStackPreview() else {
+        let expectedGeneration = projectChangeGeneration + 1
+        let rollback = {
+            guard self.projectChangeGeneration == expectedGeneration else { return }
+            self.project = projectSnapshot
+            self.activeLayerID = activeLayerSnapshot
+            self.previewHistory = previewHistorySnapshot
+            self.canStepBack = canStepBackSnapshot
+        }
+        guard refreshVisibleLayerStackPreview(onFailure: processingService.requiresExistingInputFiles ? rollback : nil) else {
             if processingService.requiresExistingInputFiles == false {
                 canvasMode = .layerComposite
                 errorMessage = errorMessageSnapshot
@@ -7507,6 +7558,13 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             return false
         }
 
+        if let missing = visiblePreviewLayers.first(where: { layer in
+            guard let input = layer.inputURL else { return true }
+            return !FileManager.default.fileExists(atPath: input.path)
+        }) {
+            errorMessage = "\(localized(.missingWorkspaceSourceError)): \(missing.name)"
+            return false
+        }
         do {
             try FileManager.default.createDirectory(at: previewDirectory, withIntermediateDirectories: true)
             let output = makePreviewOutput(prefix: "mask-brush", extension: "png")
@@ -7535,7 +7593,18 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
             project.appendArtifact(artifact)
             project.layers[layerIndex].maskArtifactID = artifact.id
             project.updatedAt = Date()
-            guard refreshVisibleLayerStackPreview() else {
+            let expectedGeneration = projectChangeGeneration + 1
+            let rollback = {
+                guard self.projectChangeGeneration == expectedGeneration else { return }
+                self.project = projectSnapshot
+                self.activeLayerID = activeLayerSnapshot
+                if self.previewHistory.count > previewHistoryCount {
+                    self.previewHistory.removeLast(self.previewHistory.count - previewHistoryCount)
+                }
+                self.canStepBack = canStepBackSnapshot
+                try? FileManager.default.removeItem(at: output)
+            }
+            guard refreshVisibleLayerStackPreview(onFailure: rollback) else {
                 project = projectSnapshot
                 activeLayerID = activeLayerSnapshot
                 if previewHistory.count > previewHistoryCount {
@@ -8659,6 +8728,9 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         operationID: EditOperation.ID? = nil,
         canvasMode: WorkspaceCanvasMode = .sourcePreview
     ) {
+        layerPreviewGeneration += 1
+        layerPreviewTask?.cancel()
+        layerPreviewTask = nil
         cancelCurvePreview()
         if trackHistory {
             appendPreviewHistoryState()
@@ -8691,7 +8763,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
     private func cancelCurvePreviewTask() {
         pendingCurvePreviewPoints = nil
         if let interactiveCurveURL { try? FileManager.default.removeItem(at: interactiveCurveURL) }
-        interactiveCurveURL = nil
+        if interactiveCurve.frame != nil { interactiveCurve.frame = nil }
         curvePreviewLoopID = nil
         curvePreviewTask?.cancel()
         curvePreviewTask = nil
@@ -12636,7 +12708,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
         try AtomicLocalImageWriter.write(
             to: output,
-            validate: { Self.isUsableCachedOutput($0) }
+            validate: { Self.hasCompleteRenderedImageHeader($0) }
         ) { temporaryOutput in
             try context.writePNGRepresentation(
                 of: composite,
@@ -12658,7 +12730,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
         try AtomicLocalImageWriter.write(
             to: output,
-            validate: { Self.isUsableCachedOutput($0) }
+            validate: { Self.hasCompleteRenderedImageHeader($0) }
         ) { temporaryOutput in
             try context.writePNGRepresentation(
                 of: transparent,
@@ -12807,7 +12879,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
         try AtomicLocalImageWriter.write(
             to: output,
-            validate: { Self.isUsableCachedOutput($0) }
+            validate: { Self.hasCompleteRenderedImageHeader($0) }
         ) { temporaryOutput in
             guard let destination = CGImageDestinationCreateWithURL(
                 temporaryOutput as CFURL,
@@ -13748,7 +13820,21 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         return result
     }
 
-    nonisolated private static func isUsableCachedOutput(_ output: URL) -> Bool {
+    // Only used after our encoder has successfully finalized a new image.
+    // Cache reuse still decodes below, so an externally damaged cache is not
+    // accepted just because it has a valid header.
+    nonisolated fileprivate static func hasCompleteRenderedImageHeader(_ output: URL) -> Bool {
+        guard let source = CGImageSourceCreateWithURL(output as CFURL,
+                [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetStatus(source) == .statusComplete,
+              CGImageSourceGetCount(source) > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+              let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else { return false }
+        return width.intValue > 0 && height.intValue > 0
+    }
+
+    nonisolated fileprivate static func isUsableCachedOutput(_ output: URL) -> Bool {
         var isDirectory = ObjCBool(false)
         guard FileManager.default.fileExists(atPath: output.path, isDirectory: &isDirectory),
               isDirectory.boolValue == false,
@@ -14791,48 +14877,48 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         ]
     }
 
-    private func updateArtifactMarkedPreview(
-        input: URL,
-        report: ArtifactTrailReport,
-        selectedIndices: Set<Int>
-    ) {
-        updateMarkedPreview {
-            try createArtifactMarkedPreview(
-                input: input,
-                report: report,
-                selectedIndices: selectedIndices
-            )
-        }
+    private let markedPreviewWorker = MarkedPreviewWorker()
+    private var markedPreviewTask: Task<Void, Never>?
+    private var markedPreviewGeneration = 0
+
+    private func updateArtifactMarkedPreview(input: URL, report: ArtifactTrailReport, selectedIndices: Set<Int>) {
+        updateMarkedPreview(.artifact(input, report, selectedIndices))
     }
 
-    private func updateCloudMarkedPreview(
-        input: URL,
-        report: CloudRegionReport,
-        selectedIndices: Set<Int>
-    ) {
-        updateMarkedPreview {
-            try createCloudMarkedPreview(
-                input: input,
-                report: report,
-                selectedIndices: selectedIndices
-            )
-        }
+    private func updateCloudMarkedPreview(input: URL, report: CloudRegionReport, selectedIndices: Set<Int>) {
+        updateMarkedPreview(.cloud(input, report, selectedIndices))
     }
 
-    private func updateMarkedPreview(_ render: () throws -> URL?) {
+    private func updateMarkedPreview(_ request: MarkedPreviewRequest) {
+        markedPreviewGeneration += 1
+        let revision = markedPreviewGeneration
+        markedPreviewTask?.cancel()
+        let directory = previewDirectory
         let renderFailureMessage = localized(.markedPreviewRenderFailed)
-        do {
-            replaceMarkedPreview(try render())
-            if errorMessage == renderFailureMessage {
-                errorMessage = nil
+        markedPreviewTask = Task {
+            do {
+                // Coalesce toggles before serial background decode/drawing/encoding.
+                try await Task.sleep(for: .milliseconds(32))
+                let output = try await markedPreviewWorker.render(request, directory: directory)
+                guard !Task.isCancelled, revision == markedPreviewGeneration else {
+                    if let output { try? FileManager.default.removeItem(at: output) }
+                    return
+                }
+                replaceMarkedPreview(output)
+                if errorMessage == renderFailureMessage { errorMessage = nil }
+            } catch {
+                guard !Task.isCancelled, revision == markedPreviewGeneration else { return }
+                replaceMarkedPreview(nil)
+                errorMessage = renderFailureMessage
             }
-        } catch {
-            replaceMarkedPreview(nil)
-            errorMessage = renderFailureMessage
         }
     }
 
     private func replaceMarkedPreview(_ url: URL?) {
+        // Any preview/source replacement also invalidates queued marker work.
+        markedPreviewGeneration += 1
+        markedPreviewTask?.cancel()
+        markedPreviewTask = nil
         let previous = artifactMarkedPreviewURL
         artifactMarkedPreviewURL = url
         guard previous?.standardizedFileURL != url?.standardizedFileURL,
@@ -14845,6 +14931,781 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
         try? FileManager.default.removeItem(at: previous)
     }
+
+    func createArtifactMarkedPreview(input: URL, report: ArtifactTrailReport, selectedIndices: Set<Int>) throws -> URL? {
+        try MarkedPreviewRenderer(directory: previewDirectory).createArtifactMarkedPreview(input: input, report: report, selectedIndices: selectedIndices)
+    }
+
+    func createCloudMarkedPreview(input: URL, report: CloudRegionReport, selectedIndices: Set<Int>) throws -> URL? {
+        try MarkedPreviewRenderer(directory: previewDirectory).createCloudMarkedPreview(input: input, report: report, selectedIndices: selectedIndices)
+    }
+
+    func artifactMarkerLabelPlacements(for items: [ArtifactTrailItem], selectedIndices: Set<Int>, imageSize: CGSize) -> [Int: ArtifactMarkerLabelPlacement] {
+        MarkedPreviewRenderer(directory: previewDirectory).artifactMarkerLabelPlacements(for: items, selectedIndices: selectedIndices, imageSize: imageSize)
+    }
+
+    func artifactMarkerLabelLayout(for items: [ArtifactTrailItem], selectedIndices: Set<Int>, imageSize: CGSize) -> MarkerLabelLayout {
+        MarkedPreviewRenderer(directory: previewDirectory).artifactMarkerLabelLayout(for: items, selectedIndices: selectedIndices, imageSize: imageSize)
+    }
+
+    func cloudMarkerLabelPlacements(for items: [CloudRegionItem], selectedIndices: Set<Int>, imageSize: CGSize) -> [Int: ArtifactMarkerLabelPlacement] {
+        MarkedPreviewRenderer(directory: previewDirectory).cloudMarkerLabelPlacements(for: items, selectedIndices: selectedIndices, imageSize: imageSize)
+    }
+
+    func cloudMarkerLabelLayout(for items: [CloudRegionItem], selectedIndices: Set<Int>, imageSize: CGSize) -> MarkerLabelLayout {
+        MarkedPreviewRenderer(directory: previewDirectory).cloudMarkerLabelLayout(for: items, selectedIndices: selectedIndices, imageSize: imageSize)
+    }
+
+    func makeArtifactLabelImage(_ text: String, color: CGColor, selected: Bool) -> CGImage? {
+        MarkedPreviewRenderer(directory: previewDirectory).makeArtifactLabelImage(text, color: color, selected: selected)
+    }
+
+    private func parseJSONObject(from output: String) throws -> [String: Any]? {
+        try WorkspaceReportDecoder.parseJSONObject(from: output)
+    }
+
+    private func registeredSequenceArtifact(
+        from object: [String: Any],
+        items: [[String: Any]],
+        reference: PhotonStackAsset,
+        movingFrames: [PhotonStackAsset],
+        outputDirectory: URL,
+        mode: AlignmentMethod,
+        sourceArtifactIDs: [UUID]
+    ) -> ProcessingArtifact {
+        let frames = items.compactMap { item -> ProcessingArtifactFrame? in
+            guard (item["ok"] as? Bool) == true else {
+                return nil
+            }
+            let sourceURL = (item["input"] as? String).map { URL(fileURLWithPath: $0) }
+            let outputURL = (item["output"] as? String).map { URL(fileURLWithPath: $0) }
+            var metrics: [String: String] = [:]
+            for key in ["matches", "detectedReferenceStars", "detectedMovingStars", "inlierRatio", "usedFallback", "message"] {
+                if let value = item[key] {
+                    metrics[key] = metricString(value)
+                }
+            }
+            return ProcessingArtifactFrame(
+                sourceURL: sourceURL,
+                outputURL: outputURL,
+                isReference: item["reference"] as? Bool ?? false,
+                metrics: metrics
+            )
+        }
+        let outputURLs = frames.compactMap(\.outputURL)
+        return ProcessingArtifact(
+            kind: .registeredSequence,
+            name: "Registered \(reference.displayName)",
+            operationKind: .register,
+            sourceArtifactIDs: sourceArtifactIDs,
+            outputDirectory: outputDirectory,
+            outputURLs: outputURLs,
+            frames: frames,
+            parameters: [
+                "reference": reference.displayName,
+                "referenceID": reference.id.uuidString,
+                "alignment": mode.rawValue,
+                "movingFrames": movingFrames.map(\.displayName).joined(separator: ", "),
+                "movingFrameIDs": movingFrames.map(\.id.uuidString).joined(separator: ","),
+                "sourceFrameIDs": ([reference] + movingFrames).map(\.id.uuidString).joined(separator: ","),
+            ],
+            metrics: [
+                "frames": metricString(object["frames"] ?? frames.count),
+                "alignedFrames": metricString(object["alignedFrames"] ?? outputURLs.count),
+                "failedFrames": metricString(object["failedFrames"] ?? 0),
+            ]
+        )
+    }
+
+    private func cleanedTimelapseSequenceArtifact(
+        from object: [String: Any],
+        items: [[String: Any]],
+        sourceFrames: [PhotonStackAsset],
+        outputDirectory: URL,
+        sourceArtifactIDs: [UUID]
+    ) -> ProcessingArtifact {
+        let frames = items.compactMap { item -> ProcessingArtifactFrame? in
+            guard (item["ok"] as? Bool) == true else {
+                return nil
+            }
+            let sourceURL = (item["input"] as? String).map { URL(fileURLWithPath: $0) }
+            let outputURL = (item["output"] as? String).map { URL(fileURLWithPath: $0) }
+            var metrics: [String: String] = [:]
+            for key in ["trails", "removedTrails", "protectedMeteors", "recurrentTrails", "selectedIndices", "message"] {
+                if let value = item[key] {
+                    metrics[key] = metricString(value)
+                }
+            }
+            return ProcessingArtifactFrame(
+                sourceURL: sourceURL,
+                outputURL: outputURL,
+                isReference: false,
+                metrics: metrics
+            )
+        }
+        let outputURLs = frames.compactMap(\.outputURL)
+        return ProcessingArtifact(
+            kind: .cleanedTimelapseSequence,
+            name: localized(.cleanTimelapseTrails),
+            operationKind: .artifactRemove,
+            sourceArtifactIDs: sourceArtifactIDs,
+            outputDirectory: outputDirectory,
+            outputURLs: outputURLs,
+            frames: frames,
+            parameters: [
+                "sourceFrames": sourceFrames.map(\.displayName).joined(separator: ", "),
+                "sourceFrameIDs": sourceFrames.map(\.id.uuidString).joined(separator: ","),
+                "outputFormat": object["outputFormat"] as? String ?? "",
+            ],
+            metrics: [
+                "frames": metricString(object["frames"] ?? frames.count),
+                "cleanedFrames": metricString(object["cleanedFrames"] ?? 0),
+                "failedFrames": metricString(object["failedFrames"] ?? 0),
+                "trails": metricString(object["trails"] ?? 0),
+                "selectedTrails": metricString(object["selectedTrails"] ?? 0),
+                "removedTrails": metricString(object["removedTrails"] ?? 0),
+                "recurrentTrails": metricString(object["recurrentTrails"] ?? 0),
+            ]
+        )
+    }
+
+    private func metricString(_ value: Any) -> String {
+        if let number = value as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return number.boolValue ? "true" : "false"
+            }
+            return number.stringValue
+        }
+        if let bool = value as? Bool {
+            return String(bool)
+        }
+        return String(describing: value)
+    }
+
+    private func parseRegistrationReport(
+        _ result: ProcessingCommandResult,
+        reference: PhotonStackAsset,
+        moving: PhotonStackAsset,
+        mode: AlignmentMethod,
+        output: URL
+    ) throws -> RegistrationReport {
+        let metrics = try parseRegistrationMetrics(result, mode: mode, output: output)
+
+        return RegistrationReport(
+            referenceName: reference.displayName,
+            movingName: moving.displayName,
+            mode: metrics.mode,
+            dx: metrics.dx,
+            dy: metrics.dy,
+            scale: metrics.scale,
+            rotationDegrees: metrics.rotationRadians * 180.0 / .pi,
+            matches: metrics.matches,
+            outputURL: output
+        )
+    }
+
+    private func parseRegistrationMetrics(
+        _ result: ProcessingCommandResult,
+        mode: AlignmentMethod,
+        output: URL
+    ) throws -> ParsedRegistrationMetrics {
+        try WorkspaceReportDecoder.parseRegistrationMetrics(result, mode: mode, output: output)
+    }
+
+    private func jsonFiniteDouble(_ value: Any?) -> Double? {
+        WorkspaceReportDecoder.jsonFiniteDouble(value)
+    }
+
+    private func jsonInteger(_ value: Any?) -> Int? {
+        WorkspaceReportDecoder.jsonInteger(value)
+    }
+
+    private func jsonBoolean(_ value: Any?) -> Bool? {
+        WorkspaceReportDecoder.jsonBoolean(value)
+    }
+
+    private func runProcessingJob(
+        title: String,
+        kind: ProcessingOperationKind,
+        outputURL: URL? = nil,
+        operation: @escaping @MainActor () async throws -> ProcessingCommandResult
+    ) async {
+        await runJob(title: title, kind: kind, outputURL: outputURL) {
+            try FileManager.default.createDirectory(at: self.previewDirectory, withIntermediateDirectories: true)
+            let result = try await operation()
+            if title == "Console", let executable = result.command.first {
+                let output = result.standardOutput.isEmpty ? result.command.joined(separator: " ") : result.standardOutput
+                return "CLI: \(executable)\n\(output)"
+            }
+            return result.standardOutput.isEmpty ? result.command.joined(separator: " ") : result.standardOutput
+        }
+    }
+
+    private func runLocalJob(
+        title: String,
+        kind: ProcessingOperationKind,
+        operation: @escaping @MainActor () async throws -> String
+    ) async {
+        await runJob(title: title, kind: kind, operation: operation)
+    }
+
+    private func runJob(
+        title: String,
+        kind: ProcessingOperationKind,
+        outputURL: URL? = nil,
+        operation: @escaping @MainActor () async throws -> String
+    ) async {
+        guard activeProgressJobID == nil, isBatchRunning == false else {
+            return
+        }
+
+        let jobID = UUID()
+        let startedAt = Date()
+        let job = ProcessingJob(id: jobID, title: title, kind: kind, status: .running, outputURL: outputURL)
+        jobs.append(job)
+        activeProgressJobID = jobID
+        isProcessing = true
+        canCancel = true
+        updateProgress(0, message: language.processingJobTitle(title))
+        errorMessage = nil
+
+        do {
+            let progressScope = ProcessingProgressScope()
+            let message = try await ProcessingProgressContext.$jobID.withValue(jobID) {
+                try await ProcessingProgressContext.$progressScope.withValue(progressScope) {
+                    try await operation()
+                }
+            }
+            await layerPreviewTask?.value
+            try Task.checkCancellation()
+            guard activeProgressJobID == jobID else {
+                throw CancellationError()
+            }
+            if let outputURL {
+                recordValidatedCacheOutput(outputURL)
+            }
+            updateProgress(1, message: language.processingJobTitle(title))
+            let duration = Date().timeIntervalSince(startedAt) * 1000.0
+            let cacheHit = isCacheHitMessage(message)
+            let displayMessage = appendPerformanceSummary(to: message, durationMilliseconds: duration, cacheHit: cacheHit)
+            commandOutput = displayMessage
+            finishJob(
+                id: jobID,
+                status: .succeeded,
+                message: displayMessage,
+                outputURL: outputURL,
+                durationMilliseconds: duration,
+                cacheHit: cacheHit
+            )
+        } catch is CancellationError {
+            invalidateCacheReceipt(for: outputURL)
+            let message = localized(.cancelledTask)
+            if activeProgressJobID == jobID {
+                commandOutput = message
+            }
+            finishJob(id: jobID, status: .cancelled, message: message, outputURL: outputURL, durationMilliseconds: Date().timeIntervalSince(startedAt) * 1000.0)
+        } catch {
+            invalidateCacheReceipt(for: outputURL)
+            let message = error.localizedDescription
+            if activeProgressJobID == jobID {
+                errorMessage = processingErrorMessage(error)
+            }
+            finishJob(id: jobID, status: .failed, message: message, outputURL: outputURL, durationMilliseconds: Date().timeIntervalSince(startedAt) * 1000.0)
+        }
+
+        guard activeProgressJobID == jobID else {
+            return
+        }
+        isProcessing = jobs.contains { $0.status == .running }
+        canCancel = isProcessing
+        if isProcessing == false {
+            progressFraction = nil
+            progressMessage = nil
+        }
+        activeProgressJobID = nil
+        activeTask = nil
+    }
+
+    private func updateProgress(_ fraction: Double, message: String? = nil) {
+        guard fraction.isFinite else {
+            return
+        }
+        let incoming = min(max(fraction, 0), 1)
+        if isProcessing,
+           let progressFraction,
+           incoming < progressFraction
+        {
+            if let message {
+                progressMessage = message
+            }
+            return
+        }
+        progressFraction = incoming
+        if let message {
+            progressMessage = message
+        }
+    }
+
+    private func handleProcessingProgress(_ event: ProcessingProgressEvent) {
+        guard event.progress.isFinite else {
+            return
+        }
+        if isBatchRunning,
+           let jobID = event.jobID,
+           let itemID = batchProgressJobItems[jobID],
+           activeBatchItemIDs.contains(itemID)
+        {
+            let incomingProgress = min(max(event.progress, 0), 1)
+            if incomingProgress < batchItemProgress[itemID, default: 0] {
+                return
+            }
+            batchItemProgress[itemID] = incomingProgress
+            updateBatchAggregateProgress(message: processingProgressDetail(for: event))
+            return
+        }
+
+        guard isProcessing,
+              isBatchRunning == false,
+              let activeProgressJobID,
+              event.jobID == activeProgressJobID
+        else {
+            return
+        }
+
+        let incomingProgress = min(max(event.progress, 0), 1)
+        if incomingProgress < progressFraction ?? 0 {
+            return
+        }
+
+        updateProgress(incomingProgress, message: processingProgressDetail(for: event))
+    }
+
+    private func processingProgressDetail(for event: ProcessingProgressEvent) -> String {
+        if event.command == "deep-sky" {
+            if event.stage == "stack-combine", let detail = DeepSkyProcessingPresentation.combinationDetail(
+                step: event.step, total: event.total, overall: event.progress, chinese: language == .simplifiedChinese) {
+                return detail
+            }
+            let stage = language.progressStage(event.stage) ?? event.stage
+            let percent = Int((min(max(event.progress, 0), 1) * 100).rounded())
+            if let step = event.step, let total = event.total, step > 0, total > 0 {
+                return "\(stage) \(step)/\(total) · \(percent)%"
+            }
+            return "\(stage) · \(percent)%"
+        }
+        let stage = language.progressStage(event.stage) ?? "\(event.command) \(event.stage)"
+        if let step = event.step, let total = event.total {
+            return "\(stage) \(step)/\(total)"
+        }
+        return stage
+    }
+
+    private func updateBatchAggregateProgress(message: String? = nil) {
+        let total = activeBatchItemIDs.count
+        guard total > 0 else {
+            updateProgress(0, message: localized(.batchQueueSection))
+            return
+        }
+
+        let progress = activeBatchItemIDs.reduce(0.0) { partial, itemID in
+            partial + (batchItemProgress[itemID] ?? 0)
+        } / Double(total)
+        let completed = activeBatchItemIDs.reduce(0) { partial, itemID in
+            partial + ((batchItemProgress[itemID] ?? 0) >= 1 ? 1 : 0)
+        }
+        let summary = "\(localized(.batchQueueSection)) \(completed)/\(total)"
+        updateProgress(progress, message: message.map { "\(summary) · \($0)" } ?? summary)
+    }
+
+    private func isCacheHitMessage(_ message: String) -> Bool {
+        message.localizedCaseInsensitiveContains("Using cached")
+    }
+
+    private func appendPerformanceSummary(to message: String, durationMilliseconds: Double, cacheHit: Bool) -> String {
+        let seconds = durationMilliseconds / 1000.0
+        let source = cacheHit ? "cache hit" : "executed"
+        let summary = String(format: "[%@, %.2fs]", source, seconds)
+        return message.isEmpty ? summary : "\(message)\n\(summary)"
+    }
+
+    private func finishJob(
+        id: UUID,
+        status: ProcessingJobStatus,
+        message: String,
+        outputURL: URL?,
+        durationMilliseconds: Double? = nil,
+        cacheHit: Bool = false
+    ) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        jobs[index].status = status
+        jobs[index].finishedAt = Date()
+        jobs[index].message = message
+        jobs[index].outputURL = outputURL
+        jobs[index].durationMilliseconds = durationMilliseconds
+        jobs[index].cacheHit = cacheHit
+    }
+}
+
+private struct RecordedArtifactTrailSelection: Codable, Equatable {
+    static let pathSampleCount = 9
+
+    var kind: String
+    var x1: Double
+    var y1: Double
+    var x2: Double
+    var y2: Double
+    var length: Double
+    var width: Double
+    var path: [RecordedArtifactTrailPoint]? = nil
+
+    var isValid: Bool {
+        let coordinates = [x1, y1, x2, y2]
+        let pathIsValid = path.map {
+            $0.count == Self.pathSampleCount && $0.allSatisfy(\.isValid)
+        } ?? true
+        return kind.isEmpty == false &&
+            coordinates.allSatisfy { $0.isFinite && (-0.5...1.5).contains($0) } &&
+            length.isFinite && length > 0 && length <= 2 &&
+            width.isFinite && width > 0 && width <= 1 &&
+            pathIsValid
+    }
+
+    func matchScore(to candidate: RecordedArtifactTrailSelection) -> Double {
+        let direct = (
+            hypot(x1 - candidate.x1, y1 - candidate.y1) +
+                hypot(x2 - candidate.x2, y2 - candidate.y2)
+        ) * 0.5
+        let reversed = (
+            hypot(x1 - candidate.x2, y1 - candidate.y2) +
+            hypot(x2 - candidate.x1, y2 - candidate.y1)
+        ) * 0.5
+        return min(direct, reversed) +
+            abs(length - candidate.length) * 0.30 +
+            abs(width - candidate.width) * 0.05 +
+            pathDistance(to: candidate) * 0.35
+    }
+
+    private func pathDistance(to candidate: RecordedArtifactTrailSelection) -> Double {
+        guard let path,
+              let candidatePath = candidate.path,
+              path.count == candidatePath.count,
+              path.isEmpty == false
+        else {
+            return 0
+        }
+        let targetResiduals = pathResiduals(path)
+        let directResiduals = pathResiduals(candidatePath)
+        let reversedResiduals = pathResiduals(Array(candidatePath.reversed()))
+        let direct = zip(targetResiduals, directResiduals).reduce(0.0) { partial, pair in
+            partial + hypot(pair.0.x - pair.1.x, pair.0.y - pair.1.y)
+        } / Double(path.count)
+        let reversed = zip(targetResiduals, reversedResiduals).reduce(0.0) { partial, pair in
+            partial + hypot(pair.0.x - pair.1.x, pair.0.y - pair.1.y)
+        } / Double(path.count)
+        return min(direct, reversed)
+    }
+
+    private func pathResiduals(
+        _ points: [RecordedArtifactTrailPoint]
+    ) -> [RecordedArtifactTrailPoint] {
+        guard let first = points.first, let last = points.last, points.count >= 2 else {
+            return points
+        }
+        return points.enumerated().map { index, point in
+            let fraction = Double(index) / Double(points.count - 1)
+            let baselineX = first.x + (last.x - first.x) * fraction
+            let baselineY = first.y + (last.y - first.y) * fraction
+            return RecordedArtifactTrailPoint(
+                x: point.x - baselineX,
+                y: point.y - baselineY
+            )
+        }
+    }
+}
+
+private struct RecordedArtifactTrailPoint: Codable, Equatable {
+    var x: Double
+    var y: Double
+
+    var isValid: Bool {
+        x.isFinite && (-0.5...1.5).contains(x) &&
+            y.isFinite && (-0.5...1.5).contains(y)
+    }
+}
+
+private struct RecordedCloudRegionSelection: Codable, Equatable {
+    var x: Double
+    var y: Double
+    var width: Double
+    var height: Double
+    var coverage: Double
+
+    var isValid: Bool {
+        x.isFinite && (-0.25...1.25).contains(x) &&
+            y.isFinite && (-0.25...1.25).contains(y) &&
+            width.isFinite && (0...1.5).contains(width) &&
+            height.isFinite && (0...1.5).contains(height) &&
+            coverage.isFinite && (0...1).contains(coverage)
+    }
+
+    func matchScore(to candidate: RecordedCloudRegionSelection) -> Double {
+        let centerX = x + width * 0.5
+        let centerY = y + height * 0.5
+        let candidateCenterX = candidate.x + candidate.width * 0.5
+        let candidateCenterY = candidate.y + candidate.height * 0.5
+        let centerDistance = hypot(centerX - candidateCenterX, centerY - candidateCenterY)
+        let sizeDistance = abs(width - candidate.width) + abs(height - candidate.height)
+        return centerDistance + sizeDistance * 0.25 + abs(coverage - candidate.coverage) * 0.05
+    }
+}
+
+enum AtomicLocalImageWriter {
+    static func write(
+        to destinationURL: URL,
+        validate: (URL) throws -> Bool,
+        body: (URL) throws -> Void
+    ) throws {
+        let fileManager = FileManager.default
+        let directory = destinationURL.deletingLastPathComponent()
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let extensionSuffix = destinationURL.pathExtension.isEmpty
+            ? ""
+            : ".\(destinationURL.pathExtension)"
+        let baseName = destinationURL.deletingPathExtension().lastPathComponent
+        let temporaryURL = directory.appendingPathComponent(
+            ".\(baseName).photonstack-render-\(UUID().uuidString)\(extensionSuffix)"
+        )
+        defer {
+            try? fileManager.removeItem(at: temporaryURL)
+        }
+
+        try body(temporaryURL)
+        guard try validate(temporaryURL) else {
+            throw AtomicLocalImageWriterError.invalidOutput
+        }
+
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            _ = try fileManager.replaceItemAt(
+                destinationURL,
+                withItemAt: temporaryURL,
+                backupItemName: nil,
+                options: .usingNewMetadataOnly
+            )
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+        }
+    }
+}
+
+enum AtomicLocalImageWriterError: LocalizedError {
+    case invalidOutput
+
+    var errorDescription: String? {
+        "生成的图像不完整或无法读取 / Rendered image output is incomplete or unreadable"
+    }
+}
+
+private struct EditGraphReplayError: LocalizedError {
+    let message: String
+
+    var errorDescription: String? {
+        message
+    }
+}
+
+private enum BatchQueueError: LocalizedError {
+    case unsupportedOperation
+
+    var errorDescription: String? {
+        "批处理队列不支持此操作 / Unsupported batch queue operation"
+    }
+}
+
+private enum LayerStackPreviewError: LocalizedError {
+    case noVisibleLayers
+    case cannotReadLayer(String)
+    case cannotReadMask(String)
+    case cannotRender
+
+    var errorDescription: String? {
+        switch self {
+        case .noVisibleLayers:
+            return "没有可预览的可见图层 / No visible layers with preview images"
+        case let .cannotReadLayer(name):
+            return "无法读取图层图像 / Could not read layer image\n\(name)"
+        case let .cannotReadMask(name):
+            return "无法读取图层蒙版 / Could not read mask for layer\n\(name)"
+        case .cannotRender:
+            return "无法生成图层合成预览 / Could not render layer stack preview"
+        }
+    }
+}
+
+private enum MarkedPreviewRenderingError: Error {
+    case cannotDecodeInput
+    case cannotCreateContext
+    case cannotCreateDestination
+    case cannotFinalizeDestination
+}
+
+private enum MaskEditingError: LocalizedError {
+    case cannotReadMask
+    case cannotRenderMask
+    case cannotEncodeStrokes
+    case cannotDecodeStrokes
+
+    var errorDescription: String? {
+        switch self {
+        case .cannotReadMask:
+            return "无法读取图层蒙版 / Could not read the layer mask"
+        case .cannotRenderMask:
+            return "无法生成调整后的蒙版 / Could not render the edited layer mask"
+        case .cannotEncodeStrokes:
+            return "无法保存蒙版笔迹 / Could not save layer mask brush strokes"
+        case .cannotDecodeStrokes:
+            return "无法读取已保存的蒙版笔迹 / Could not read saved layer mask brush strokes"
+        }
+    }
+}
+
+private enum ConsoleCommandError: Error {
+    case empty
+    case unclosedQuote
+}
+
+private struct PreviewHistoryState {
+    var previewURL: URL?
+    var previewOperationID: EditOperation.ID?
+    var editGraphNeedsReplay: Bool
+    var canvasMode: WorkspaceCanvasMode
+    var activeLayerID: ProcessingLayer.ID?
+    var layers: [ProcessingLayer]
+    var editGraph: EditGraph
+}
+
+private struct LayerAdjustmentSession {
+    var layerID: ProcessingLayer.ID
+    var historyState: PreviewHistoryState
+}
+
+private struct EditGraphHistoryState: Equatable {
+    var editGraph: EditGraph
+    var previewOperationID: EditOperation.ID?
+    var layers: [ProcessingLayer]
+    var activeLayerID: ProcessingLayer.ID?
+}
+
+private struct ReplayRegisteredSequence {
+    let artifactID: UUID?
+    let outputs: [URL]
+}
+
+private struct ExportDependencyTraversal {
+    var assetIDs: Set<PhotonStackAsset.ID> = []
+    var layerIDs: Set<ProcessingLayer.ID> = []
+    var artifactIDs: Set<ProcessingArtifact.ID> = []
+    var operationIDs: Set<EditOperation.ID> = []
+}
+
+private struct EditOperationBranch {
+    var operationIDs: [EditOperation.ID]
+    var rootInputPath: String?
+}
+
+private struct EditGraphReplayPlan {
+    var input: URL
+    var operations: [EditOperation]
+    var anchorOperationID: EditOperation.ID?
+}
+
+private final class FullResolutionLayerReplayContext {
+    var assetOutputs: [PhotonStackAsset.ID: URL] = [:]
+    var layerOutputs: [ProcessingLayer.ID: URL] = [:]
+    var operationOutputs: [EditOperation.ID: URL] = [:]
+    var maskOutputs: [String: URL] = [:]
+    var compositingOutputs: [String: URL] = [:]
+    var resolvingLayerIDs: Set<ProcessingLayer.ID> = []
+    var resolvingOperationIDs: Set<EditOperation.ID> = []
+}
+
+private enum EditGraphReplayMode {
+    case preview
+    case fullResolutionExport
+
+    var cacheKey: String {
+        switch self {
+        case .preview:
+            return "preview"
+        case .fullResolutionExport:
+            return "fullResolutionExport"
+        }
+    }
+
+    var outputExtension: String {
+        switch self {
+        case .preview:
+            return "png"
+        case .fullResolutionExport:
+            return "tiff"
+        }
+    }
+
+    var scientificOutputExtension: String {
+        switch self {
+        case .preview:
+            return "png"
+        case .fullResolutionExport:
+            return "fits"
+        }
+    }
+
+    func outputExtension(preservingScientificValuesFrom input: URL) -> String {
+        guard self == .fullResolutionExport,
+              AssetKind.detect(from: input) == .fits
+        else {
+            return outputExtension
+        }
+        return scientificOutputExtension
+    }
+}
+
+public enum EditOperationMoveDirection: Sendable {
+    case up
+    case down
+}
+
+private enum MarkedPreviewRequest: Sendable {
+    case artifact(URL, ArtifactTrailReport, Set<Int>)
+    case cloud(URL, CloudRegionReport, Set<Int>)
+}
+
+private actor MarkedPreviewWorker {
+    private var renderer: MarkedPreviewRenderer?
+
+    func render(_ request: MarkedPreviewRequest, directory: URL) throws -> URL? {
+        try Task.checkCancellation()
+        if renderer?.previewDirectory != directory { renderer = MarkedPreviewRenderer(directory: directory) }
+        guard let renderer else { return nil }
+        switch request {
+        case let .artifact(input, report, indices):
+            return try renderer.createArtifactMarkedPreview(input: input, report: report, selectedIndices: indices)
+        case let .cloud(input, report, indices):
+            return try renderer.createCloudMarkedPreview(input: input, report: report, selectedIndices: indices)
+        }
+    }
+}
+
+/// Owned by the serial marker worker; Core Graphics work and its decoded-source
+/// cache stay off the main actor. Synchronous wrappers are used by rendering tests.
+private final class MarkedPreviewRenderer {
+    let previewDirectory: URL
+    private let artifactMarkerRendererRevision = "labels-v12-global-declutter-overflow-summary"
+    private let cloudMarkerRendererRevision = "labels-v3-global-declutter-overflow-summary"
+    init(directory: URL) { previewDirectory = directory }
 
     func createArtifactMarkedPreview(
         input: URL,
@@ -14907,7 +15768,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
         try AtomicLocalImageWriter.write(
             to: output,
-            validate: { Self.isUsableCachedOutput($0) }
+            validate: { PhotonStackWorkspaceModel.hasCompleteRenderedImageHeader($0) }
         ) { temporaryOutput in
             guard let destination = CGImageDestinationCreateWithURL(
                 temporaryOutput as CFURL,
@@ -14988,7 +15849,7 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
 
         try AtomicLocalImageWriter.write(
             to: output,
-            validate: { Self.isUsableCachedOutput($0) }
+            validate: { PhotonStackWorkspaceModel.hasCompleteRenderedImageHeader($0) }
         ) { temporaryOutput in
             guard let destination = CGImageDestinationCreateWithURL(
                 temporaryOutput as CFURL,
@@ -15684,719 +16545,11 @@ public final class PhotonStackWorkspaceModel: ObservableObject {
         }
     }
 
-    private func parseJSONObject(from output: String) throws -> [String: Any]? {
-        try WorkspaceReportDecoder.parseJSONObject(from: output)
-    }
-
-    private func registeredSequenceArtifact(
-        from object: [String: Any],
-        items: [[String: Any]],
-        reference: PhotonStackAsset,
-        movingFrames: [PhotonStackAsset],
-        outputDirectory: URL,
-        mode: AlignmentMethod,
-        sourceArtifactIDs: [UUID]
-    ) -> ProcessingArtifact {
-        let frames = items.compactMap { item -> ProcessingArtifactFrame? in
-            guard (item["ok"] as? Bool) == true else {
-                return nil
-            }
-            let sourceURL = (item["input"] as? String).map { URL(fileURLWithPath: $0) }
-            let outputURL = (item["output"] as? String).map { URL(fileURLWithPath: $0) }
-            var metrics: [String: String] = [:]
-            for key in ["matches", "detectedReferenceStars", "detectedMovingStars", "inlierRatio", "usedFallback", "message"] {
-                if let value = item[key] {
-                    metrics[key] = metricString(value)
-                }
-            }
-            return ProcessingArtifactFrame(
-                sourceURL: sourceURL,
-                outputURL: outputURL,
-                isReference: item["reference"] as? Bool ?? false,
-                metrics: metrics
-            )
-        }
-        let outputURLs = frames.compactMap(\.outputURL)
-        return ProcessingArtifact(
-            kind: .registeredSequence,
-            name: "Registered \(reference.displayName)",
-            operationKind: .register,
-            sourceArtifactIDs: sourceArtifactIDs,
-            outputDirectory: outputDirectory,
-            outputURLs: outputURLs,
-            frames: frames,
-            parameters: [
-                "reference": reference.displayName,
-                "referenceID": reference.id.uuidString,
-                "alignment": mode.rawValue,
-                "movingFrames": movingFrames.map(\.displayName).joined(separator: ", "),
-                "movingFrameIDs": movingFrames.map(\.id.uuidString).joined(separator: ","),
-                "sourceFrameIDs": ([reference] + movingFrames).map(\.id.uuidString).joined(separator: ","),
-            ],
-            metrics: [
-                "frames": metricString(object["frames"] ?? frames.count),
-                "alignedFrames": metricString(object["alignedFrames"] ?? outputURLs.count),
-                "failedFrames": metricString(object["failedFrames"] ?? 0),
-            ]
-        )
-    }
-
-    private func cleanedTimelapseSequenceArtifact(
-        from object: [String: Any],
-        items: [[String: Any]],
-        sourceFrames: [PhotonStackAsset],
-        outputDirectory: URL,
-        sourceArtifactIDs: [UUID]
-    ) -> ProcessingArtifact {
-        let frames = items.compactMap { item -> ProcessingArtifactFrame? in
-            guard (item["ok"] as? Bool) == true else {
-                return nil
-            }
-            let sourceURL = (item["input"] as? String).map { URL(fileURLWithPath: $0) }
-            let outputURL = (item["output"] as? String).map { URL(fileURLWithPath: $0) }
-            var metrics: [String: String] = [:]
-            for key in ["trails", "removedTrails", "protectedMeteors", "recurrentTrails", "selectedIndices", "message"] {
-                if let value = item[key] {
-                    metrics[key] = metricString(value)
-                }
-            }
-            return ProcessingArtifactFrame(
-                sourceURL: sourceURL,
-                outputURL: outputURL,
-                isReference: false,
-                metrics: metrics
-            )
-        }
-        let outputURLs = frames.compactMap(\.outputURL)
-        return ProcessingArtifact(
-            kind: .cleanedTimelapseSequence,
-            name: localized(.cleanTimelapseTrails),
-            operationKind: .artifactRemove,
-            sourceArtifactIDs: sourceArtifactIDs,
-            outputDirectory: outputDirectory,
-            outputURLs: outputURLs,
-            frames: frames,
-            parameters: [
-                "sourceFrames": sourceFrames.map(\.displayName).joined(separator: ", "),
-                "sourceFrameIDs": sourceFrames.map(\.id.uuidString).joined(separator: ","),
-                "outputFormat": object["outputFormat"] as? String ?? "",
-            ],
-            metrics: [
-                "frames": metricString(object["frames"] ?? frames.count),
-                "cleanedFrames": metricString(object["cleanedFrames"] ?? 0),
-                "failedFrames": metricString(object["failedFrames"] ?? 0),
-                "trails": metricString(object["trails"] ?? 0),
-                "selectedTrails": metricString(object["selectedTrails"] ?? 0),
-                "removedTrails": metricString(object["removedTrails"] ?? 0),
-                "recurrentTrails": metricString(object["recurrentTrails"] ?? 0),
-            ]
-        )
-    }
-
-    private func metricString(_ value: Any) -> String {
-        if let number = value as? NSNumber {
-            if CFGetTypeID(number) == CFBooleanGetTypeID() {
-                return number.boolValue ? "true" : "false"
-            }
-            return number.stringValue
-        }
-        if let bool = value as? Bool {
-            return String(bool)
-        }
-        return String(describing: value)
-    }
-
-    private func parseRegistrationReport(
-        _ result: ProcessingCommandResult,
-        reference: PhotonStackAsset,
-        moving: PhotonStackAsset,
-        mode: AlignmentMethod,
-        output: URL
-    ) throws -> RegistrationReport {
-        let metrics = try parseRegistrationMetrics(result, mode: mode, output: output)
-
-        return RegistrationReport(
-            referenceName: reference.displayName,
-            movingName: moving.displayName,
-            mode: metrics.mode,
-            dx: metrics.dx,
-            dy: metrics.dy,
-            scale: metrics.scale,
-            rotationDegrees: metrics.rotationRadians * 180.0 / .pi,
-            matches: metrics.matches,
-            outputURL: output
-        )
-    }
-
-    private func parseRegistrationMetrics(
-        _ result: ProcessingCommandResult,
-        mode: AlignmentMethod,
-        output: URL
-    ) throws -> ParsedRegistrationMetrics {
-        try WorkspaceReportDecoder.parseRegistrationMetrics(result, mode: mode, output: output)
-    }
-
-    private func jsonFiniteDouble(_ value: Any?) -> Double? {
-        WorkspaceReportDecoder.jsonFiniteDouble(value)
-    }
-
-    private func jsonInteger(_ value: Any?) -> Int? {
-        WorkspaceReportDecoder.jsonInteger(value)
-    }
-
-    private func jsonBoolean(_ value: Any?) -> Bool? {
-        WorkspaceReportDecoder.jsonBoolean(value)
-    }
-
-    private func runProcessingJob(
-        title: String,
-        kind: ProcessingOperationKind,
-        outputURL: URL? = nil,
-        operation: @escaping @MainActor () async throws -> ProcessingCommandResult
-    ) async {
-        await runJob(title: title, kind: kind, outputURL: outputURL) {
-            try FileManager.default.createDirectory(at: self.previewDirectory, withIntermediateDirectories: true)
-            let result = try await operation()
-            if title == "Console", let executable = result.command.first {
-                let output = result.standardOutput.isEmpty ? result.command.joined(separator: " ") : result.standardOutput
-                return "CLI: \(executable)\n\(output)"
-            }
-            return result.standardOutput.isEmpty ? result.command.joined(separator: " ") : result.standardOutput
-        }
-    }
-
-    private func runLocalJob(
-        title: String,
-        kind: ProcessingOperationKind,
-        operation: @escaping @MainActor () async throws -> String
-    ) async {
-        await runJob(title: title, kind: kind, operation: operation)
-    }
-
-    private func runJob(
-        title: String,
-        kind: ProcessingOperationKind,
-        outputURL: URL? = nil,
-        operation: @escaping @MainActor () async throws -> String
-    ) async {
-        guard activeProgressJobID == nil, isBatchRunning == false else {
-            return
-        }
-
-        let jobID = UUID()
-        let startedAt = Date()
-        let job = ProcessingJob(id: jobID, title: title, kind: kind, status: .running, outputURL: outputURL)
-        jobs.append(job)
-        activeProgressJobID = jobID
-        isProcessing = true
-        canCancel = true
-        updateProgress(0, message: language.processingJobTitle(title))
-        errorMessage = nil
-
-        do {
-            let progressScope = ProcessingProgressScope()
-            let message = try await ProcessingProgressContext.$jobID.withValue(jobID) {
-                try await ProcessingProgressContext.$progressScope.withValue(progressScope) {
-                    try await operation()
-                }
-            }
-            try Task.checkCancellation()
-            guard activeProgressJobID == jobID else {
-                throw CancellationError()
-            }
-            if let outputURL {
-                recordValidatedCacheOutput(outputURL)
-            }
-            updateProgress(1, message: language.processingJobTitle(title))
-            let duration = Date().timeIntervalSince(startedAt) * 1000.0
-            let cacheHit = isCacheHitMessage(message)
-            let displayMessage = appendPerformanceSummary(to: message, durationMilliseconds: duration, cacheHit: cacheHit)
-            commandOutput = displayMessage
-            finishJob(
-                id: jobID,
-                status: .succeeded,
-                message: displayMessage,
-                outputURL: outputURL,
-                durationMilliseconds: duration,
-                cacheHit: cacheHit
-            )
-        } catch is CancellationError {
-            invalidateCacheReceipt(for: outputURL)
-            let message = localized(.cancelledTask)
-            if activeProgressJobID == jobID {
-                commandOutput = message
-            }
-            finishJob(id: jobID, status: .cancelled, message: message, outputURL: outputURL, durationMilliseconds: Date().timeIntervalSince(startedAt) * 1000.0)
-        } catch {
-            invalidateCacheReceipt(for: outputURL)
-            let message = error.localizedDescription
-            if activeProgressJobID == jobID {
-                errorMessage = processingErrorMessage(error)
-            }
-            finishJob(id: jobID, status: .failed, message: message, outputURL: outputURL, durationMilliseconds: Date().timeIntervalSince(startedAt) * 1000.0)
-        }
-
-        guard activeProgressJobID == jobID else {
-            return
-        }
-        isProcessing = jobs.contains { $0.status == .running }
-        canCancel = isProcessing
-        if isProcessing == false {
-            progressFraction = nil
-            progressMessage = nil
-        }
-        activeProgressJobID = nil
-        activeTask = nil
-    }
-
-    private func updateProgress(_ fraction: Double, message: String? = nil) {
-        guard fraction.isFinite else {
-            return
-        }
-        let incoming = min(max(fraction, 0), 1)
-        if isProcessing,
-           let progressFraction,
-           incoming < progressFraction
-        {
-            if let message {
-                progressMessage = message
-            }
-            return
-        }
-        progressFraction = incoming
-        if let message {
-            progressMessage = message
-        }
-    }
-
-    private func handleProcessingProgress(_ event: ProcessingProgressEvent) {
-        guard event.progress.isFinite else {
-            return
-        }
-        if isBatchRunning,
-           let jobID = event.jobID,
-           let itemID = batchProgressJobItems[jobID],
-           activeBatchItemIDs.contains(itemID)
-        {
-            let incomingProgress = min(max(event.progress, 0), 1)
-            if incomingProgress < batchItemProgress[itemID, default: 0] {
-                return
-            }
-            batchItemProgress[itemID] = incomingProgress
-            updateBatchAggregateProgress(message: processingProgressDetail(for: event))
-            return
-        }
-
-        guard isProcessing,
-              isBatchRunning == false,
-              let activeProgressJobID,
-              event.jobID == activeProgressJobID
-        else {
-            return
-        }
-
-        let incomingProgress = min(max(event.progress, 0), 1)
-        if incomingProgress < progressFraction ?? 0 {
-            return
-        }
-
-        updateProgress(incomingProgress, message: processingProgressDetail(for: event))
-    }
-
-    private func processingProgressDetail(for event: ProcessingProgressEvent) -> String {
-        if event.command == "deep-sky" {
-            if event.stage == "stack-combine", let detail = DeepSkyProcessingPresentation.combinationDetail(
-                step: event.step, total: event.total, overall: event.progress, chinese: language == .simplifiedChinese) {
-                return detail
-            }
-            let stage = language.progressStage(event.stage) ?? event.stage
-            let percent = Int((min(max(event.progress, 0), 1) * 100).rounded())
-            if let step = event.step, let total = event.total, step > 0, total > 0 {
-                return "\(stage) \(step)/\(total) · \(percent)%"
-            }
-            return "\(stage) · \(percent)%"
-        }
-        let stage = language.progressStage(event.stage) ?? "\(event.command) \(event.stage)"
-        if let step = event.step, let total = event.total {
-            return "\(stage) \(step)/\(total)"
-        }
-        return stage
-    }
-
-    private func updateBatchAggregateProgress(message: String? = nil) {
-        let total = activeBatchItemIDs.count
-        guard total > 0 else {
-            updateProgress(0, message: localized(.batchQueueSection))
-            return
-        }
-
-        let progress = activeBatchItemIDs.reduce(0.0) { partial, itemID in
-            partial + (batchItemProgress[itemID] ?? 0)
-        } / Double(total)
-        let completed = activeBatchItemIDs.reduce(0) { partial, itemID in
-            partial + ((batchItemProgress[itemID] ?? 0) >= 1 ? 1 : 0)
-        }
-        let summary = "\(localized(.batchQueueSection)) \(completed)/\(total)"
-        updateProgress(progress, message: message.map { "\(summary) · \($0)" } ?? summary)
-    }
-
-    private func isCacheHitMessage(_ message: String) -> Bool {
-        message.localizedCaseInsensitiveContains("Using cached")
-    }
-
-    private func appendPerformanceSummary(to message: String, durationMilliseconds: Double, cacheHit: Bool) -> String {
-        let seconds = durationMilliseconds / 1000.0
-        let source = cacheHit ? "cache hit" : "executed"
-        let summary = String(format: "[%@, %.2fs]", source, seconds)
-        return message.isEmpty ? summary : "\(message)\n\(summary)"
-    }
-
-    private func finishJob(
-        id: UUID,
-        status: ProcessingJobStatus,
-        message: String,
-        outputURL: URL?,
-        durationMilliseconds: Double? = nil,
-        cacheHit: Bool = false
-    ) {
-        guard let index = jobs.firstIndex(where: { $0.id == id }) else {
-            return
-        }
-
-        jobs[index].status = status
-        jobs[index].finishedAt = Date()
-        jobs[index].message = message
-        jobs[index].outputURL = outputURL
-        jobs[index].durationMilliseconds = durationMilliseconds
-        jobs[index].cacheHit = cacheHit
-    }
 }
 
-private struct RecordedArtifactTrailSelection: Codable, Equatable {
-    static let pathSampleCount = 9
-
-    var kind: String
-    var x1: Double
-    var y1: Double
-    var x2: Double
-    var y2: Double
-    var length: Double
-    var width: Double
-    var path: [RecordedArtifactTrailPoint]? = nil
-
-    var isValid: Bool {
-        let coordinates = [x1, y1, x2, y2]
-        let pathIsValid = path.map {
-            $0.count == Self.pathSampleCount && $0.allSatisfy(\.isValid)
-        } ?? true
-        return kind.isEmpty == false &&
-            coordinates.allSatisfy { $0.isFinite && (-0.5...1.5).contains($0) } &&
-            length.isFinite && length > 0 && length <= 2 &&
-            width.isFinite && width > 0 && width <= 1 &&
-            pathIsValid
+private actor LayerPreviewWorker {
+    func render(_ body: @Sendable () throws -> Void) throws {
+        try Task.checkCancellation()
+        try body()
     }
-
-    func matchScore(to candidate: RecordedArtifactTrailSelection) -> Double {
-        let direct = (
-            hypot(x1 - candidate.x1, y1 - candidate.y1) +
-                hypot(x2 - candidate.x2, y2 - candidate.y2)
-        ) * 0.5
-        let reversed = (
-            hypot(x1 - candidate.x2, y1 - candidate.y2) +
-            hypot(x2 - candidate.x1, y2 - candidate.y1)
-        ) * 0.5
-        return min(direct, reversed) +
-            abs(length - candidate.length) * 0.30 +
-            abs(width - candidate.width) * 0.05 +
-            pathDistance(to: candidate) * 0.35
-    }
-
-    private func pathDistance(to candidate: RecordedArtifactTrailSelection) -> Double {
-        guard let path,
-              let candidatePath = candidate.path,
-              path.count == candidatePath.count,
-              path.isEmpty == false
-        else {
-            return 0
-        }
-        let targetResiduals = pathResiduals(path)
-        let directResiduals = pathResiduals(candidatePath)
-        let reversedResiduals = pathResiduals(Array(candidatePath.reversed()))
-        let direct = zip(targetResiduals, directResiduals).reduce(0.0) { partial, pair in
-            partial + hypot(pair.0.x - pair.1.x, pair.0.y - pair.1.y)
-        } / Double(path.count)
-        let reversed = zip(targetResiduals, reversedResiduals).reduce(0.0) { partial, pair in
-            partial + hypot(pair.0.x - pair.1.x, pair.0.y - pair.1.y)
-        } / Double(path.count)
-        return min(direct, reversed)
-    }
-
-    private func pathResiduals(
-        _ points: [RecordedArtifactTrailPoint]
-    ) -> [RecordedArtifactTrailPoint] {
-        guard let first = points.first, let last = points.last, points.count >= 2 else {
-            return points
-        }
-        return points.enumerated().map { index, point in
-            let fraction = Double(index) / Double(points.count - 1)
-            let baselineX = first.x + (last.x - first.x) * fraction
-            let baselineY = first.y + (last.y - first.y) * fraction
-            return RecordedArtifactTrailPoint(
-                x: point.x - baselineX,
-                y: point.y - baselineY
-            )
-        }
-    }
-}
-
-private struct RecordedArtifactTrailPoint: Codable, Equatable {
-    var x: Double
-    var y: Double
-
-    var isValid: Bool {
-        x.isFinite && (-0.5...1.5).contains(x) &&
-            y.isFinite && (-0.5...1.5).contains(y)
-    }
-}
-
-private struct RecordedCloudRegionSelection: Codable, Equatable {
-    var x: Double
-    var y: Double
-    var width: Double
-    var height: Double
-    var coverage: Double
-
-    var isValid: Bool {
-        x.isFinite && (-0.25...1.25).contains(x) &&
-            y.isFinite && (-0.25...1.25).contains(y) &&
-            width.isFinite && (0...1.5).contains(width) &&
-            height.isFinite && (0...1.5).contains(height) &&
-            coverage.isFinite && (0...1).contains(coverage)
-    }
-
-    func matchScore(to candidate: RecordedCloudRegionSelection) -> Double {
-        let centerX = x + width * 0.5
-        let centerY = y + height * 0.5
-        let candidateCenterX = candidate.x + candidate.width * 0.5
-        let candidateCenterY = candidate.y + candidate.height * 0.5
-        let centerDistance = hypot(centerX - candidateCenterX, centerY - candidateCenterY)
-        let sizeDistance = abs(width - candidate.width) + abs(height - candidate.height)
-        return centerDistance + sizeDistance * 0.25 + abs(coverage - candidate.coverage) * 0.05
-    }
-}
-
-enum AtomicLocalImageWriter {
-    static func write(
-        to destinationURL: URL,
-        validate: (URL) throws -> Bool,
-        body: (URL) throws -> Void
-    ) throws {
-        let fileManager = FileManager.default
-        let directory = destinationURL.deletingLastPathComponent()
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-
-        let extensionSuffix = destinationURL.pathExtension.isEmpty
-            ? ""
-            : ".\(destinationURL.pathExtension)"
-        let baseName = destinationURL.deletingPathExtension().lastPathComponent
-        let temporaryURL = directory.appendingPathComponent(
-            ".\(baseName).photonstack-render-\(UUID().uuidString)\(extensionSuffix)"
-        )
-        defer {
-            try? fileManager.removeItem(at: temporaryURL)
-        }
-
-        try body(temporaryURL)
-        guard try validate(temporaryURL) else {
-            throw AtomicLocalImageWriterError.invalidOutput
-        }
-
-        if fileManager.fileExists(atPath: destinationURL.path) {
-            _ = try fileManager.replaceItemAt(
-                destinationURL,
-                withItemAt: temporaryURL,
-                backupItemName: nil,
-                options: .usingNewMetadataOnly
-            )
-        } else {
-            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
-        }
-    }
-}
-
-enum AtomicLocalImageWriterError: LocalizedError {
-    case invalidOutput
-
-    var errorDescription: String? {
-        "生成的图像不完整或无法读取 / Rendered image output is incomplete or unreadable"
-    }
-}
-
-private struct EditGraphReplayError: LocalizedError {
-    let message: String
-
-    var errorDescription: String? {
-        message
-    }
-}
-
-private enum BatchQueueError: LocalizedError {
-    case unsupportedOperation
-
-    var errorDescription: String? {
-        "批处理队列不支持此操作 / Unsupported batch queue operation"
-    }
-}
-
-private enum LayerStackPreviewError: LocalizedError {
-    case noVisibleLayers
-    case cannotReadLayer(String)
-    case cannotReadMask(String)
-    case cannotRender
-
-    var errorDescription: String? {
-        switch self {
-        case .noVisibleLayers:
-            return "没有可预览的可见图层 / No visible layers with preview images"
-        case let .cannotReadLayer(name):
-            return "无法读取图层图像 / Could not read layer image\n\(name)"
-        case let .cannotReadMask(name):
-            return "无法读取图层蒙版 / Could not read mask for layer\n\(name)"
-        case .cannotRender:
-            return "无法生成图层合成预览 / Could not render layer stack preview"
-        }
-    }
-}
-
-private enum MarkedPreviewRenderingError: Error {
-    case cannotDecodeInput
-    case cannotCreateContext
-    case cannotCreateDestination
-    case cannotFinalizeDestination
-}
-
-private enum MaskEditingError: LocalizedError {
-    case cannotReadMask
-    case cannotRenderMask
-    case cannotEncodeStrokes
-    case cannotDecodeStrokes
-
-    var errorDescription: String? {
-        switch self {
-        case .cannotReadMask:
-            return "无法读取图层蒙版 / Could not read the layer mask"
-        case .cannotRenderMask:
-            return "无法生成调整后的蒙版 / Could not render the edited layer mask"
-        case .cannotEncodeStrokes:
-            return "无法保存蒙版笔迹 / Could not save layer mask brush strokes"
-        case .cannotDecodeStrokes:
-            return "无法读取已保存的蒙版笔迹 / Could not read saved layer mask brush strokes"
-        }
-    }
-}
-
-private enum ConsoleCommandError: Error {
-    case empty
-    case unclosedQuote
-}
-
-private struct PreviewHistoryState {
-    var previewURL: URL?
-    var previewOperationID: EditOperation.ID?
-    var editGraphNeedsReplay: Bool
-    var canvasMode: WorkspaceCanvasMode
-    var activeLayerID: ProcessingLayer.ID?
-    var layers: [ProcessingLayer]
-    var editGraph: EditGraph
-}
-
-private struct LayerAdjustmentSession {
-    var layerID: ProcessingLayer.ID
-    var historyState: PreviewHistoryState
-}
-
-private struct EditGraphHistoryState: Equatable {
-    var editGraph: EditGraph
-    var previewOperationID: EditOperation.ID?
-    var layers: [ProcessingLayer]
-    var activeLayerID: ProcessingLayer.ID?
-}
-
-private struct ReplayRegisteredSequence {
-    let artifactID: UUID?
-    let outputs: [URL]
-}
-
-private struct ExportDependencyTraversal {
-    var assetIDs: Set<PhotonStackAsset.ID> = []
-    var layerIDs: Set<ProcessingLayer.ID> = []
-    var artifactIDs: Set<ProcessingArtifact.ID> = []
-    var operationIDs: Set<EditOperation.ID> = []
-}
-
-private struct EditOperationBranch {
-    var operationIDs: [EditOperation.ID]
-    var rootInputPath: String?
-}
-
-private struct EditGraphReplayPlan {
-    var input: URL
-    var operations: [EditOperation]
-    var anchorOperationID: EditOperation.ID?
-}
-
-private final class FullResolutionLayerReplayContext {
-    var assetOutputs: [PhotonStackAsset.ID: URL] = [:]
-    var layerOutputs: [ProcessingLayer.ID: URL] = [:]
-    var operationOutputs: [EditOperation.ID: URL] = [:]
-    var maskOutputs: [String: URL] = [:]
-    var compositingOutputs: [String: URL] = [:]
-    var resolvingLayerIDs: Set<ProcessingLayer.ID> = []
-    var resolvingOperationIDs: Set<EditOperation.ID> = []
-}
-
-private enum EditGraphReplayMode {
-    case preview
-    case fullResolutionExport
-
-    var cacheKey: String {
-        switch self {
-        case .preview:
-            return "preview"
-        case .fullResolutionExport:
-            return "fullResolutionExport"
-        }
-    }
-
-    var outputExtension: String {
-        switch self {
-        case .preview:
-            return "png"
-        case .fullResolutionExport:
-            return "tiff"
-        }
-    }
-
-    var scientificOutputExtension: String {
-        switch self {
-        case .preview:
-            return "png"
-        case .fullResolutionExport:
-            return "fits"
-        }
-    }
-
-    func outputExtension(preservingScientificValuesFrom input: URL) -> String {
-        guard self == .fullResolutionExport,
-              AssetKind.detect(from: input) == .fits
-        else {
-            return outputExtension
-        }
-        return scientificOutputExtension
-    }
-}
-
-public enum EditOperationMoveDirection: Sendable {
-    case up
-    case down
 }

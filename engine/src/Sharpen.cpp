@@ -1,6 +1,9 @@
 #include "photonstack/Sharpen.hpp"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include "photonstack/ParallelRanges.hpp"
 #include <cmath>
 #include <limits>
 #include <string>
@@ -35,7 +38,8 @@ SharpenResult Sharpen::unsharpMask(const ImageBuffer& image, const SharpenOption
     ImageBuffer output = image;
     const int radius = static_cast<int>(options.radius);
     const auto colorChannels = detail::colorChannelCount(image);
-    for (std::uint32_t y = 0; y < image.height; ++y) {
+    std::atomic<bool> overflow{false};
+    detail::parallelRows(image.width, image.height, [&](int y) noexcept {
         for (std::uint32_t x = 0; x < image.width; ++x) {
             const auto pixel = static_cast<std::size_t>(y) * image.width + x;
             const auto offset = pixel * image.channels;
@@ -43,43 +47,38 @@ SharpenResult Sharpen::unsharpMask(const ImageBuffer& image, const SharpenOption
                 detail::clearMaskedPixel(output, pixel);
                 continue;
             }
-            for (std::uint16_t channel = 0; channel < colorChannels; ++channel) {
-                double sum = 0.0;
-                double weightSum = 0.0;
-                for (int dy = -radius; dy <= radius; ++dy) {
-                    for (int dx = -radius; dx <= radius; ++dx) {
-                        float sample = 0.0F;
-                        float coverage = 0.0F;
-                        if (!detail::sampleClampedCovered(
-                                image,
-                                static_cast<int>(x) + dx,
-                                static_cast<int>(y) + dy,
-                                channel,
-                                sample,
-                                coverage
-                            )) {
-                            continue;
-                        }
-                        sum += static_cast<double>(sample) * coverage;
-                        weightSum += coverage;
-                    }
+            std::array<double, 3> sums{};
+            double weightSum = 0;
+            for (int dy = -radius; dy <= radius; ++dy) {
+                for (int dx = -radius; dx <= radius; ++dx) {
+                    const auto neighbor = detail::clampedPixelIndex(image, static_cast<int>(x) + dx, y + dy);
+                    const float coverage = detail::pixelCoverage(image, neighbor);
+                    if (coverage <= 1e-6F) continue;
+                    const auto base = neighbor * image.channels;
+                    for (std::uint16_t c = 0; c < colorChannels; ++c)
+                        sums[c] += static_cast<double>(image.pixels[base + c]) * coverage;
+                    weightSum += coverage;
                 }
+            }
+            for (std::uint16_t channel = 0; channel < colorChannels; ++channel) {
                 const float center = image.pixels[offset + channel];
-                const double blurred = weightSum <= 0.0 ? center : sum / weightSum;
+                const double blurred = weightSum <= 0.0 ? center : sums[channel] / weightSum;
                 const double detailValue = static_cast<double>(center) - blurred;
                 const double adjusted = std::fabs(detailValue) < options.threshold
                                             ? center
                                             : static_cast<double>(center) + detailValue * options.amount;
                 if (!options.clampOutput &&
                     (!std::isfinite(adjusted) || std::fabs(adjusted) > std::numeric_limits<float>::max())) {
-                    return sharpenError("ImageValueInvalid", "Sharpen output exceeds Float32 range");
+                    overflow.store(true, std::memory_order_relaxed);
+                    return;
                 }
                 output.pixels[offset + channel] = options.clampOutput
                                                       ? static_cast<float>(std::clamp(adjusted, 0.0, 1.0))
                                                       : static_cast<float>(adjusted);
             }
         }
-    }
+    });
+    if (overflow.load(std::memory_order_relaxed)) return sharpenError("ImageValueInvalid", "Sharpen output exceeds Float32 range");
 
     SharpenResult result;
     result.ok = true;

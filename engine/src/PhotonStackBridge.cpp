@@ -202,6 +202,7 @@ struct CurvePreviewSourceKey {
 };
 
 struct CurvePreviewDecodedSource {
+    std::uint64_t cacheGeneration = 0;
     photonstack::ImageBuffer display;
     std::optional<photonstack::ImageBuffer> scientific;
     photonstack::ImageReadBackend backend = photonstack::ImageReadBackend::Unknown;
@@ -237,6 +238,7 @@ struct CurvePreviewResizeCacheEntry {
 };
 
 std::mutex curvePreviewCacheMutex;
+std::uint64_t curvePreviewCacheGeneration = 0;
 std::optional<CurvePreviewSourceKey> curvePreviewDecodedKey;
 std::shared_ptr<const CurvePreviewDecodedSource> curvePreviewDecodedSource;
 std::vector<CurvePreviewResizeCacheEntry> curvePreviewResizeCache;
@@ -309,11 +311,13 @@ std::shared_ptr<const CurvePreviewDecodedSource> loadCurvePreviewDecodedSource(
     const CurvePreviewSourceKey& key,
     std::string& errorMessage
 ) {
-    std::scoped_lock lock(curvePreviewCacheMutex);
+    std::unique_lock lock(curvePreviewCacheMutex);
     if (curvePreviewDecodedKey.has_value() && *curvePreviewDecodedKey == key && curvePreviewDecodedSource) {
         return curvePreviewDecodedSource;
     }
 
+    const auto generation = ++curvePreviewCacheGeneration;
+    lock.unlock();
     const photonstack::ImageCodec codec;
     auto readOptions = bridgeCurvePreviewReadOptions(request);
     readOptions.maximumDecodePixelSize = key.maximumDecodePixelSize;
@@ -324,6 +328,7 @@ std::shared_ptr<const CurvePreviewDecodedSource> loadCurvePreviewDecodedSource(
     }
 
     auto decoded = std::make_shared<CurvePreviewDecodedSource>();
+    decoded->cacheGeneration = generation;
     decoded->display = std::move(readResult.image);
     decoded->backend = readResult.backend;
     decoded->usedFallback = readResult.usedFallback;
@@ -342,6 +347,8 @@ std::shared_ptr<const CurvePreviewDecodedSource> loadCurvePreviewDecodedSource(
         decoded->scientific = std::move(scientificRead.image);
     }
 
+    lock.lock();
+    if (generation != curvePreviewCacheGeneration) return decoded;
     curvePreviewResizeCache.clear();
     if (sourceStorageBytes(decoded->display, decoded->scientific) <= kMaximumCachedCurvePreviewDecodedBytes) {
         curvePreviewDecodedKey = key;
@@ -359,11 +366,11 @@ std::shared_ptr<const CurvePreviewResizedSource> loadCurvePreviewResizedSource(
     std::uint32_t width,
     std::string& errorMessage
 ) {
-    std::scoped_lock lock(curvePreviewCacheMutex);
+    std::unique_lock lock(curvePreviewCacheMutex);
     const auto cached = std::find_if(
         curvePreviewResizeCache.begin(),
         curvePreviewResizeCache.end(),
-        [&](const CurvePreviewResizeCacheEntry& entry) { return entry.key == key && entry.width == width; }
+        [&](const CurvePreviewResizeCacheEntry& entry) { return entry.key == key && entry.width == width && decoded->cacheGeneration == curvePreviewCacheGeneration; }
     );
     if (cached != curvePreviewResizeCache.end()) {
         const auto result = cached->source;
@@ -375,6 +382,7 @@ std::shared_ptr<const CurvePreviewResizedSource> loadCurvePreviewResizedSource(
         return result;
     }
 
+    lock.unlock();
     auto resized = std::make_shared<CurvePreviewResizedSource>();
     if (width == decoded->display.width) {
         resized->decodedOwner = decoded;
@@ -399,7 +407,8 @@ std::shared_ptr<const CurvePreviewResizedSource> loadCurvePreviewResizedSource(
     const auto resizedBytes = resized->resizedDisplay.has_value()
         ? sourceStorageBytes(*resized->resizedDisplay, resized->resizedScientific)
         : sourceStorageBytes(decoded->display, decoded->scientific);
-    if (resizedBytes <= kMaximumCachedCurvePreviewResizeBytes) {
+    lock.lock();
+    if (decoded->cacheGeneration == curvePreviewCacheGeneration && resizedBytes <= kMaximumCachedCurvePreviewResizeBytes) {
         curvePreviewResizeCache.push_back({.key = key, .width = width, .source = resized});
         if (curvePreviewResizeCache.size() > kMaximumCurvePreviewResizeEntries) {
             curvePreviewResizeCache.erase(curvePreviewResizeCache.begin());
@@ -473,6 +482,7 @@ extern "C" PhotonStackCurvePreviewRequest photonstack_default_curve_preview_requ
 
 extern "C" void photonstack_clear_curve_preview_cache(void) {
     std::scoped_lock lock(curvePreviewCacheMutex);
+    ++curvePreviewCacheGeneration;
     curvePreviewDecodedKey.reset();
     curvePreviewDecodedSource.reset();
     curvePreviewResizeCache.clear();
@@ -568,7 +578,8 @@ extern "C" PhotonStackMosaicRunResult photonstack_mosaic_paths(
     return bridgeResult;
 }
 
-extern "C" PhotonStackCurvePreviewRunResult photonstack_curve_preview_path(
+static PhotonStackCurvePreviewRunResult renderCurvePreview(
+    std::vector<std::uint8_t>* rgba,
     const char* input,
     const char* output,
     PhotonStackCurvePreviewRequest request,
@@ -584,11 +595,11 @@ extern "C" PhotonStackCurvePreviewRunResult photonstack_curve_preview_path(
     writeError(errorBuffer, errorBufferSize, {});
     writeError(fallbackErrorCodeBuffer, fallbackErrorCodeBufferSize, {});
     writeError(fallbackErrorMessageBuffer, fallbackErrorMessageBufferSize, {});
-    if (input == nullptr || output == nullptr) {
+    if (input == nullptr || (!rgba && output == nullptr)) {
         writeError(errorBuffer, errorBufferSize, "curve preview requires input and output paths");
         return bridgeResult;
     }
-    if (input[0] == '\0' || output[0] == '\0') {
+    if (input[0] == '\0' || (!rgba && output[0] == '\0')) {
         writeError(errorBuffer, errorBufferSize, "curve preview paths must not be empty");
         return bridgeResult;
     }
@@ -599,7 +610,7 @@ extern "C" PhotonStackCurvePreviewRunResult photonstack_curve_preview_path(
 
     try {
         const std::filesystem::path inputPath(input);
-        const std::filesystem::path outputPath(output);
+        const std::filesystem::path outputPath(output ? output : "");
         const bool needsScientificSource = photonstack::isFitsPath(inputPath) && photonstack::isFitsPath(outputPath);
         const auto sourceKey = curvePreviewSourceKey(inputPath, request, needsScientificSource);
         std::string loadError;
@@ -623,6 +634,7 @@ extern "C" PhotonStackCurvePreviewRunResult photonstack_curve_preview_path(
         photonstack::ImageBuffer outputImage;
         if (request.curvePointCount > 0) {
             photonstack::CurvesOptions curveOptions;
+            curveOptions.preferMetal = true;
             curveOptions.points.clear();
             curveOptions.points.reserve(request.curvePointCount);
             for (size_t index = 0; index < request.curvePointCount; ++index) {
@@ -646,7 +658,7 @@ extern "C" PhotonStackCurvePreviewRunResult photonstack_curve_preview_path(
 
         if (const auto* scientificSource = resizedSource->scientific()) {
             const photonstack::ScientificDisplayBridge bridge;
-            const auto bridgeCorrection = bridge.applyCorrections(
+            auto bridgeCorrection = bridge.applyCorrections(
                 *scientificSource,
                 displaySource,
                 outputImage
@@ -659,14 +671,20 @@ extern "C" PhotonStackCurvePreviewRunResult photonstack_curve_preview_path(
                 );
                 return bridgeResult;
             }
-            outputImage = bridgeCorrection.image;
+            outputImage = std::move(bridgeCorrection.image);
         }
 
-        const photonstack::ImageCodec codec;
-        const auto writeResult = codec.write(outputImage, outputPath);
-        if (!writeResult.ok) {
-            writeError(errorBuffer, errorBufferSize, writeResult.message.empty() ? writeResult.errorCode : writeResult.message);
-            return bridgeResult;
+#ifdef __APPLE__
+        if (rgba) {
+            *rgba = photonstack::displayRGBA8(outputImage);
+        } else
+#endif
+        {
+            const auto written = photonstack::ImageCodec{}.write(outputImage, outputPath);
+            if (!written.ok) {
+                writeError(errorBuffer, errorBufferSize, written.message.empty() ? written.errorCode : written.message);
+                return bridgeResult;
+            }
         }
 
         bridgeResult.ok = 1;
@@ -692,3 +710,38 @@ extern "C" PhotonStackCurvePreviewRunResult photonstack_curve_preview_path(
     }
     return bridgeResult;
 }
+
+extern "C" PhotonStackCurvePreviewRunResult photonstack_curve_preview_path(
+    const char* input,
+    const char* output,
+    PhotonStackCurvePreviewRequest request,
+    char* fallbackErrorCodeBuffer,
+    size_t fallbackErrorCodeBufferSize,
+    char* fallbackErrorMessageBuffer,
+    size_t fallbackErrorMessageBufferSize,
+    char* errorBuffer,
+    size_t errorBufferSize
+) {
+    return renderCurvePreview(nullptr, input, output, request, fallbackErrorCodeBuffer, fallbackErrorCodeBufferSize,
+                              fallbackErrorMessageBuffer, fallbackErrorMessageBufferSize, errorBuffer, errorBufferSize);
+}
+
+#ifdef __APPLE__
+extern "C" PhotonStackCurvePreviewRunResult photonstack_curve_preview_pixels(
+    const char* input, PhotonStackCurvePreviewRequest request, PhotonStackPreviewPixels* pixels,
+    char* errorBuffer, size_t errorBufferSize) {
+    if (!pixels) return {};
+    *pixels = {};
+    auto storage = std::unique_ptr<std::vector<std::uint8_t>>(new (std::nothrow) std::vector<std::uint8_t>);
+    if (!storage) { writeError(errorBuffer, errorBufferSize, "Could not allocate preview"); return {}; }
+    auto result = renderCurvePreview(storage.get(), input, nullptr, request, nullptr, 0, nullptr, 0, errorBuffer, errorBufferSize);
+    if (result.ok) {
+        pixels->data = storage->data();
+        pixels->storage = storage.release();
+    }
+    return result;
+}
+extern "C" void photonstack_free_preview_pixels(void* storage) {
+    delete static_cast<std::vector<std::uint8_t>*>(storage);
+}
+#endif

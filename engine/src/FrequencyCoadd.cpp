@@ -1,4 +1,5 @@
 #include "photonstack/FrequencyCoadd.hpp"
+#include "photonstack/ParallelRanges.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -28,9 +29,11 @@ FrequencyCoadd::FrequencyCoadd(std::size_t width, std::size_t height, std::size_
     // Bound allocations and arithmetic before allocating any spectrum. This
     // includes the current 2304 x 4096 M31 grid and small non-power-of-two tests.
     constexpr std::size_t maxPixels = 16 * 1024 * 1024;
-    if (!width || !height || width > 16384 || height > 16384 ||
-        width > maxPixels / height || threads == 0 || threads > 64)
+    if (!width || !height || width > 16384 || height > 16384 || width > maxPixels / height || threads > 64)
         throw std::invalid_argument("Frequency grid or thread count exceeds supported bounds");
+    if (!threads_)
+        threads_ = std::max<std::size_t>(1, std::min<std::size_t>({detail::hardwareWorkerLimit(),
+                                                                   detail::rangeWorkerLimit, width * height / 65536}));
     numerator_.resize(height * (width / 2 + 1));
     information_.resize(numerator_.size());
 }
@@ -98,18 +101,21 @@ void FrequencyCoadd::add(std::span<const double> image,
     checkFinite(image);
     validateSpectrum(transfer);
     validatePower(noisePower);
+    const detail::ScopedRangeWorkerLimit workerLimit(threads_);
     auto updatedNumerator = forward(image);
     std::vector<double> updatedInformation(information_.size());
-    for (std::size_t i = 0; i < updatedNumerator.size(); ++i) {
-        const double precision = 1 / (variance * noisePower[i]);
-        const auto contribution = flux * std::conj(transfer[i]) * updatedNumerator[i] * precision;
-        const double info = flux * flux * std::norm(transfer[i]) * precision;
-        updatedNumerator[i] = numerator_[i] + contribution;
-        updatedInformation[i] = information_[i] + info;
-        if (!std::isfinite(precision) || precision <= 0 || !finite(updatedNumerator[i]) ||
-            !std::isfinite(updatedInformation[i]) || updatedInformation[i] < 0)
-            throw std::overflow_error("Frequency accumulation exceeds double precision range");
-    }
+    detail::parallelRanges(updatedNumerator.size(), 32768, [&](std::size_t first, std::size_t last) {
+        for (auto i = first; i < last; ++i) {
+            const double precision = 1 / (variance * noisePower[i]);
+            const auto contribution = flux * std::conj(transfer[i]) * updatedNumerator[i] * precision;
+            const double info = flux * flux * std::norm(transfer[i]) * precision;
+            updatedNumerator[i] = numerator_[i] + contribution;
+            updatedInformation[i] = information_[i] + info;
+            if (!std::isfinite(precision) || precision <= 0 || !finite(updatedNumerator[i]) ||
+                !std::isfinite(updatedInformation[i]) || updatedInformation[i] < 0)
+                throw std::overflow_error("Frequency accumulation exceeds double precision range");
+        }
+    });
     numerator_.swap(updatedNumerator);
     information_.swap(updatedInformation);
     ++count_;
@@ -119,14 +125,17 @@ void FrequencyCoadd::merge(const FrequencyCoadd& other) {
     if (width_ != other.width_ || height_ != other.height_ ||
         count_ > std::numeric_limits<std::size_t>::max() - other.count_)
         throw std::invalid_argument("Frequency accumulators must have matching grids and bounded counts");
+    const detail::ScopedRangeWorkerLimit workerLimit(threads_);
     auto numerator = numerator_;
     auto information = information_;
-    for (std::size_t i = 0; i < numerator.size(); ++i) {
-        numerator[i] += other.numerator_[i];
-        information[i] += other.information_[i];
-        if (!finite(numerator[i]) || !std::isfinite(information[i]))
-            throw std::overflow_error("Merged frequency state exceeds double precision range");
-    }
+    detail::parallelRanges(numerator.size(), 32768, [&](std::size_t first, std::size_t last) {
+        for (auto i = first; i < last; ++i) {
+            numerator[i] += other.numerator_[i];
+            information[i] += other.information_[i];
+            if (!finite(numerator[i]) || !std::isfinite(information[i]))
+                throw std::overflow_error("Merged frequency state exceeds double precision range");
+        }
+    });
     numerator_.swap(numerator);
     information_.swap(information);
     count_ += other.count_;
@@ -137,16 +146,20 @@ std::vector<double> FrequencyCoadd::render(std::span<const std::complex<double>>
     validateSpectrum(target);
     if (std::abs(target[0] - std::complex<double>(1, 0)) > 1e-9)
         throw std::invalid_argument("Output response must preserve unit DC");
+    const detail::ScopedRangeWorkerLimit workerLimit(threads_);
     std::vector<std::complex<double>> spectrum(numerator_.size());
-    for (std::size_t i = 0; i < spectrum.size(); ++i) {
-        if (information_[i] == 0) {
-            if (target[i] != std::complex<double>{})
-                throw std::domain_error("Output target requests an unsupported frequency");
-        } else {
-            spectrum[i] = numerator_[i] * target[i] / information_[i];
-            if (!finite(spectrum[i])) throw std::overflow_error("Output frequency exceeds double precision range");
+    detail::parallelRanges(spectrum.size(), 32768, [&](std::size_t first, std::size_t last) {
+        for (auto i = first; i < last; ++i) {
+            if (information_[i] == 0) {
+                if (target[i] != std::complex<double>{})
+                    throw std::domain_error("Output target requests an unsupported frequency");
+            } else {
+                spectrum[i] = numerator_[i] * target[i] / information_[i];
+                if (!finite(spectrum[i]))
+                    throw std::overflow_error("Output frequency exceeds double precision range");
+            }
         }
-    }
+    });
     return inverse(spectrum);
 }
 
@@ -157,12 +170,16 @@ std::vector<std::complex<double>> FrequencyCoadd::noiseMatchedResponse(
     const double normalization = std::sqrt(information_[0]) * std::sqrt(outputNoisePower[0]);
     if (!std::isfinite(normalization) || normalization <= 0)
         throw std::overflow_error("Output response normalization is outside double range");
+    const detail::ScopedRangeWorkerLimit workerLimit(threads_);
     std::vector<std::complex<double>> result(information_.size());
-    for (std::size_t i = 0; i < result.size(); ++i) {
-        const double value = std::sqrt(information_[i]) * std::sqrt(outputNoisePower[i]) / normalization;
-        if (!std::isfinite(value)) throw std::overflow_error("Output response exceeds double range");
-        result[i] = value;
-    }
+    detail::parallelRanges(result.size(), 32768, [&](std::size_t first, std::size_t last) {
+        for (auto i = first; i < last; ++i) {
+            const double value = std::sqrt(information_[i]) * std::sqrt(outputNoisePower[i]) / normalization;
+            if (!std::isfinite(value))
+                throw std::overflow_error("Output response exceeds double range");
+            result[i] = value;
+        }
+    });
     return result;
 }
 

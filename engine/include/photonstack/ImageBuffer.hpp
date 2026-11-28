@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include <limits>
-#include <vector>
+#include "photonstack/PixelStorage.hpp"
 
 namespace photonstack {
 
@@ -24,7 +24,7 @@ struct ImageBuffer {
     PixelFormat format = PixelFormat::Float32RGBA;
     ColorEncoding colorEncoding = ColorEncoding::Linear;
     std::uint16_t sourceBitsPerChannel = 32;
-    std::vector<float> pixels;
+    PixelStorage pixels;
 
     [[nodiscard]] bool empty() const { return width == 0 || height == 0 || pixels.empty(); }
 

@@ -44,7 +44,9 @@ public actor PhotoAdjustmentRenderer {
         if let cached = fullGeometry, cached.url == url,
            cached.settings.quarterTurns == adjustments.quarterTurns, cached.settings.mirror == adjustments.mirror,
            cached.settings.flipVertical == adjustments.flipVertical, cached.settings.aspect == adjustments.aspect,
-           cached.settings.cropScale == adjustments.cropScale {
+           cached.settings.cropScale == adjustments.cropScale,
+           cached.settings.horizontalPosition == adjustments.horizontalPosition,
+           cached.settings.verticalPosition == adjustments.verticalPosition {
             return cached.image
         }
         let image = geometry(try fullImage(at: url), adjustments)
@@ -93,10 +95,11 @@ public actor PhotoAdjustmentRenderer {
         return PhotoAdjustments.NeutralSample(red: mean.x, green: mean.y, blue: mean.z)
     }
 
-    public func preview(input: URL, adjustments: PhotoAdjustments, warnings: PhotoClippingWarnings = []) throws -> (image: CGImage, sourceSize: CGSize) {
+    public func preview(input: URL, adjustments: PhotoAdjustments, warnings: PhotoClippingWarnings = [],
+                        preciseWarnings: Bool = true) throws -> (image: CGImage, sourceSize: CGSize) {
         try refreshSource(input)
         try Task.checkCancellation()
-        if !warnings.isEmpty {
+        if preciseWarnings && !warnings.isEmpty {
             let full = adjustColor(try croppedSource(at: input, adjustments: adjustments), adjustments)
             let image = clippingPreview(full, warnings: warnings)
             guard let result = Self.context.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: colorSpace)
@@ -119,7 +122,11 @@ public actor PhotoAdjustmentRenderer {
         }
         try Task.checkCancellation()
         guard let thumbnail else { throw CocoaError(.fileReadCorruptFile) }
-        let image = filtered(thumbnail.image, adjustments)
+        let adjusted = filtered(thumbnail.image, adjustments)
+        // During a drag classify only the bounded preview. Once input settles,
+        // the editor requests full-resolution classification so small clipped
+        // star cores survive downsampling without doing that work every frame.
+        let image = warnings.isEmpty ? adjusted : clippingPreview(adjusted, warnings: warnings)
         guard let result = Self.context.createCGImage(image, from: image.extent, format: .RGBA8, colorSpace: colorSpace)
         else { throw CocoaError(.fileReadCorruptFile) }
         let size = thumbnail.sourceSize

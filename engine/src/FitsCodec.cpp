@@ -2,6 +2,9 @@
 #include "MetalCompute.hpp"
 #endif
 #include <bit>
+#if defined(__ARM_NEON) && defined(__LITTLE_ENDIAN__)
+#include <arm_neon.h>
+#endif
 #include "photonstack/StageProfile.hpp"
 #include "photonstack/FitsCodec.hpp"
 #include "photonstack/CalibrationMetadata.hpp"
@@ -341,7 +344,7 @@ enum class SampleStreamResult {
 };
 
 template <typename Consumer>
-SampleStreamResult forEachPhysicalSample(std::ifstream& file, std::size_t dataOffset, std::size_t sampleCount,
+SampleStreamResult forEachPhysicalChunk(std::ifstream& file, std::size_t dataOffset, std::size_t sampleCount,
                                          std::size_t sampleBytes, int bitpix, double bscale, double bzero,
                                          Consumer&& consume, std::optional<long long> blank = {}) {
     if (dataOffset > static_cast<std::size_t>(std::numeric_limits<std::streamoff>::max())) {
@@ -356,7 +359,9 @@ SampleStreamResult forEachPhysicalSample(std::ifstream& file, std::size_t dataOf
 
     const auto samplesPerChunk = std::max<std::size_t>(1, kFitsStreamChunkBytes / sampleBytes);
     std::vector<unsigned char> buffer;
+    std::vector<float> physical;
     try {
+        physical.resize(std::min(samplesPerChunk, sampleCount));
         buffer.resize(samplesPerChunk * sampleBytes);
     } catch (const std::bad_alloc&) {
         return SampleStreamResult::AllocationFailed;
@@ -372,13 +377,48 @@ SampleStreamResult forEachPhysicalSample(std::ifstream& file, std::size_t dataOf
         if (file.gcount() != static_cast<std::streamsize>(bytesThisChunk)) {
             return SampleStreamResult::ReadFailed;
         }
-        for (std::size_t localSample = 0; localSample < samplesThisChunk; ++localSample) {
-            const auto* bytes = buffer.data() + localSample * sampleBytes;
-            consume(sample + localSample, readPhysicalSample(bytes, bitpix, bscale, bzero, blank));
+        std::size_t i = 0;
+        if (bitpix == 16 && !blank && bscale == 1 && (bzero == 0 || bzero == 32768)) {
+#if defined(__ARM_NEON) && defined(__LITTLE_ENDIAN__)
+            const auto offset = vdupq_n_s32(static_cast<int>(bzero));
+            for (; i + 8 <= samplesThisChunk; i += 8) {
+                const auto words = vreinterpretq_s16_u8(vrev16q_u8(vld1q_u8(buffer.data() + 2 * i)));
+                vst1q_f32(physical.data() + i, vcvtq_f32_s32(vaddq_s32(vmovl_s16(vget_low_s16(words)), offset)));
+                vst1q_f32(physical.data() + i + 4, vcvtq_f32_s32(vaddq_s32(vmovl_s16(vget_high_s16(words)), offset)));
+            }
+#endif
+            for (; i < samplesThisChunk; ++i)
+                physical[i] = float(readSigned16(buffer.data() + 2 * i) + int(bzero));
+        } else {
+            // Bind BITPIX once per chunk, allowing the compiler to vectorize
+            // byte swaps and physical scaling without a per-sample switch.
+            const auto convert = [&]<int bits>() {
+                for (std::size_t j = 0; j < samplesThisChunk; ++j)
+                    physical[j] = readPhysicalSample(buffer.data() + j * (std::abs(bits) / 8), bits, bscale, bzero, blank);
+            };
+            switch (bitpix) {
+            case 8: convert.template operator()<8>(); break;
+            case 16: convert.template operator()<16>(); break;
+            case 32: convert.template operator()<32>(); break;
+            case -32: convert.template operator()<-32>(); break;
+            case -64: convert.template operator()<-64>(); break;
+            default: return SampleStreamResult::ReadFailed;
+            }
         }
+        consume(sample, std::span<const float>(physical.data(), samplesThisChunk));
         sample += samplesThisChunk;
     }
     return SampleStreamResult::Success;
+}
+
+template <typename Consumer>
+SampleStreamResult forEachPhysicalSample(std::ifstream& file, std::size_t offset, std::size_t samples,
+                                         std::size_t stride, int bitpix, double scale, double zero,
+                                         Consumer&& consume, std::optional<long long> blank = {}) {
+    return forEachPhysicalChunk(file, offset, samples, stride, bitpix, scale, zero,
+        [&](std::size_t first, std::span<const float> chunk) {
+            for (const auto value : chunk) consume(first++, value);
+        }, blank);
 }
 
 std::string makeCard(const std::string& key, const std::string& value) {
@@ -510,14 +550,12 @@ LinearMonoMaster readLinearMonoMaster(const std::filesystem::path& path) {
                             "CD1_1", "CD1_2", "CD2_1", "CD2_2", "CDELT1", "CDELT2",
                             "PC1_1", "PC1_2", "PC2_1", "PC2_2", "A_ORDER", "B_ORDER", "WCSAXES"})
         if (header.values.contains(key)) { result.sky = readSolvedPanel(path); break; }
-    FitsDecodeOptions options; options.mode = FitsDecodeMode::Scientific;
+    FitsDecodeOptions options;
+    options.mode = FitsDecodeMode::Scientific;
+    options.preferGray = true;
     auto decoded = FitsCodec().read(path, options);
     if (!decoded.ok) throw std::runtime_error(decoded.message);
-    auto& mono = result.image;
-    mono.width = decoded.image.width; mono.height = decoded.image.height;
-    mono.channels = 1; mono.format = PixelFormat::Float32Gray;
-    mono.pixels.resize(mono.pixelCount());
-    for (std::size_t i = 0; i < mono.pixelCount(); ++i) mono.pixels[i] = decoded.image.pixels[i * decoded.image.channels];
+    result.image = std::move(decoded.image);
     return result;
 }
 
@@ -1201,41 +1239,20 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
     }
     SampleRange colorRange;
     SampleRange alphaRange;
-    const auto colorChannels = static_cast<std::size_t>(std::min<std::uint16_t>(description->channels, 3));
-    if (options.mode == FitsDecodeMode::DisplayNormalized) {
-        const auto rangeStatus = forEachPhysicalSample(
-            file, header.dataOffset, sourceSamples, sampleBytes, description->bitpix, *bscale, *bzero,
-            [&](std::size_t sample, float value) {
-                const auto channel = sample / pixelCount;
-                if (channel < colorChannels) {
-                    includeInRange(colorRange, value);
-                } else if (channel == 3) {
-                    includeInRange(alphaRange, value);
-                }
-            }, blank);
-        if (rangeStatus == SampleStreamResult::AllocationFailed) {
-            return readError("ImageAllocationFailed", "Could not allocate the FITS decode buffer");
-        }
-        if (rangeStatus != SampleStreamResult::Success) {
-            return readError("InputReadFailed", "Failed while reading the FITS data section");
-        }
-    }
-
     const bool displayDomain = header.values.contains("PSCOLOR") && header.values.at("PSCOLOR") == "SRGB-DISPLAY";
-    const auto decodeColor = [&](float value) {
-        if (displayDomain) return value;
-        return options.mode == FitsDecodeMode::Scientific ? value : normalizeForDisplay(value, colorRange);
-    };
-    const auto decodeAlpha = [&](float value) {
-        return displayDomain || options.mode == FitsDecodeMode::Scientific ? value : normalizeForDisplay(value, alphaRange);
-    };
+    const bool normalize = !displayDomain && options.mode == FitsDecodeMode::DisplayNormalized;
+    const bool directCFA = description->channels == 1 && options.debayer && header.values.contains("BAYERPAT")
+        && !calibration && !sensorPattern;
+    const bool directMono = options.preferGray && description->channels == 1 && !options.debayer
+        && !options.maskNonFinitePixels && !calibration && !sensorPattern;
+    std::vector<float> mosaic;
 
     ImageReadResult result;
     result.backend = ImageReadBackend::Fits;
     result.image.width = description->width;
     result.image.height = description->height;
-    result.image.channels = 4;
-    result.image.format = PixelFormat::Float32RGBA;
+    result.image.channels = directMono ? 1 : 4;
+    result.image.format = directMono ? PixelFormat::Float32Gray : PixelFormat::Float32RGBA;
     result.image.colorEncoding = displayDomain ? ColorEncoding::SRGB : ColorEncoding::Linear;
     result.image.sourceBitsPerChannel = bitsPerChannelForBitpix(description->bitpix);
     std::size_t outputSamples = 0;
@@ -1243,41 +1260,34 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
         return readError("ImageHeaderInvalid", "FITS image dimensions exceed supported memory limits");
     }
     try {
-        result.image.pixels.assign(outputSamples, 0.0F);
+        result.image.pixels.resize(outputSamples);
+        if (directCFA) mosaic.resize(pixelCount);
     } catch (const std::bad_alloc&) {
         return readError("ImageAllocationFailed", "Could not allocate the decoded FITS image buffer");
     } catch (const std::length_error&) {
         return readError("ImageAllocationFailed", "Could not allocate the decoded FITS image buffer");
     }
-    for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
-        result.image.pixels[pixel * result.image.channels + 3] = 1.0F;
-    }
-
-    const auto decodeStatus = forEachPhysicalSample(
+    // Keep the physical samples in their final plane until the shared display
+    // range is known. Only the bounded decode chunk contains a second copy.
+    const auto decodeStatus = forEachPhysicalChunk(
         file, header.dataOffset, sourceSamples, sampleBytes, description->bitpix, *bscale, *bzero,
-        [&](std::size_t sample, float sourceValue) {
-            const auto channel = sample / pixelCount;
-            const auto pixel = sample % pixelCount;
-            const auto outputOffset = pixel * result.image.channels;
-            const bool invalidSource = !std::isfinite(sourceValue);
-            if (description->channels == 1) {
-                const float value = decodeColor(sourceValue);
-                result.image.pixels[outputOffset] = value;
-                result.image.pixels[outputOffset + 1] = value;
-                result.image.pixels[outputOffset + 2] = value;
-            } else if (channel < colorChannels) {
-                result.image.pixels[outputOffset + channel] = decodeColor(sourceValue);
-            } else if (channel == 3) {
-                const bool priorInvalid = options.maskNonFinitePixels &&
-                                          !std::isfinite(result.image.pixels[outputOffset + 3]);
-                result.image.pixels[outputOffset + 3] = decodeAlpha(sourceValue);
-                if (priorInvalid) {
-                    result.image.pixels[outputOffset + 3] = std::numeric_limits<float>::quiet_NaN();
+        [&](std::size_t first, std::span<const float> values) {
+            while (!values.empty()) {
+                const auto channel = first / pixelCount, pixel = first % pixelCount;
+                const auto n = std::min(values.size(), pixelCount - pixel);
+                if (normalize) {
+                    auto& range = channel == 3 ? alphaRange : colorRange;
+                    for (auto v : values.first(n)) includeInRange(range, v);
                 }
-            }
-
-            if (options.maskNonFinitePixels && invalidSource) {
-                result.image.pixels[outputOffset + 3] = std::numeric_limits<float>::quiet_NaN();
+                if (directCFA || directMono) {
+                    auto* plane = directCFA ? mosaic.data() : result.image.pixels.data();
+                    std::copy_n(values.data(), n, plane + pixel);
+                } else {
+                    for (std::size_t j = 0; j < n; ++j)
+                        result.image.pixels[(pixel + j) * 4 + channel] = values[j];
+                }
+                first += n;
+                values = values.subspan(n);
             }
         }, blank);
     if (decodeStatus == SampleStreamResult::AllocationFailed) {
@@ -1286,6 +1296,30 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
     if (decodeStatus != SampleStreamResult::Success) {
         return readError("InputReadFailed", "Failed while reading the FITS data section");
     }
+
+    detail::parallelRanges(pixelCount, 65536, [&](std::size_t first, std::size_t last) noexcept {
+        for (auto p = first; p < last; ++p) {
+            if (directMono) {
+                if (normalize) result.image.pixels[p] = normalizeForDisplay(result.image.pixels[p], colorRange);
+                continue;
+            }
+            auto* rgba = result.image.pixels.data() + 4 * p;
+            if (directCFA) {
+                const bool invalid = options.maskNonFinitePixels && !std::isfinite(mosaic[p]);
+                rgba[3] = invalid ? std::numeric_limits<float>::quiet_NaN() : 1;
+                if (normalize && !invalid) mosaic[p] = normalizeForDisplay(mosaic[p], colorRange);
+                continue;
+            }
+            bool invalid = false;
+            for (unsigned c = 0; c < description->channels; ++c) {
+                invalid |= !std::isfinite(rgba[c]);
+                if (normalize) rgba[c] = normalizeForDisplay(rgba[c], c == 3 ? alphaRange : colorRange);
+            }
+            if (description->channels == 1) rgba[1] = rgba[2] = rgba[0];
+            if (description->channels < 4) rgba[3] = 1;
+            if (options.maskNonFinitePixels && invalid) rgba[3] = std::numeric_limits<float>::quiet_NaN();
+        }
+    });
 
     if (sensorPattern) {
         const auto& model = *sensorPattern;
@@ -1339,16 +1373,17 @@ static ImageReadResult readFits(const std::filesystem::path& path, const FitsDec
         }
         // Preserve the sensor samples separately so interpolation never feeds on
         // already interpolated pixels. Coordinates follow the stored FITS rows.
-        std::vector<float> mosaic;
-        try {
-            mosaic.resize(pixelCount);
-        } catch (const std::bad_alloc&) {
-            return readError("ImageAllocationFailed", "Could not allocate the Bayer sample buffer");
-        }
-        for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
-            mosaic[pixel] = std::isfinite(result.image.pixels[pixel * 4 + 3]) && result.image.pixels[pixel * 4 + 3] > 1.e-6F
-                                ? result.image.pixels[pixel * 4]
-                                : std::numeric_limits<float>::quiet_NaN();
+        if (!directCFA) {
+            try {
+                mosaic.resize(pixelCount);
+            } catch (const std::bad_alloc&) {
+                return readError("ImageAllocationFailed", "Could not allocate the Bayer sample buffer");
+            }
+            for (std::size_t pixel = 0; pixel < pixelCount; ++pixel) {
+                mosaic[pixel] = std::isfinite(result.image.pixels[pixel * 4 + 3]) && result.image.pixels[pixel * 4 + 3] > 1.e-6F
+                                    ? result.image.pixels[pixel * 4]
+                                    : std::numeric_limits<float>::quiet_NaN();
+            }
         }
         // FITS offsets shift the four CFA phases once for the entire exposure.
         // The interpolation stencil reads these phases repeatedly for each pixel.

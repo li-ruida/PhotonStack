@@ -1,4 +1,5 @@
 #include "photonstack/StageProfile.hpp"
+#include "photonstack/ParallelRanges.hpp"
 #include "AppleRawDecoder.hpp"
 
 #import <CoreImage/CoreImage.h>
@@ -6,6 +7,7 @@
 #import <Metal/Metal.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -29,6 +31,61 @@ std::string exceptionMessage(NSException* exception) {
     }
     const char* text = exception.reason.UTF8String;
     return text == nullptr ? "Core Image raised an exception while decoding RAW" : std::string(text);
+}
+
+struct RawRenderContext {
+    CIContext* context;
+    bool metal;
+};
+
+RawRenderContext makeRawContext(bool useGPU) {
+    CIContext* context = nil;
+    bool explicitMetal = false;
+    NSDictionary<CIContextOption, id>* contextOptions = @{
+        kCIContextWorkingFormat : @(kCIFormatRGBAf),
+        kCIContextCacheIntermediates : @NO,
+        kCIContextOutputPremultiplied : @NO,
+    };
+    id<MTLDevice> metalDevice = useGPU ? MTLCreateSystemDefaultDevice() : nil;
+    explicitMetal = metalDevice != nil;
+    if (!useGPU) {
+        NSDictionary<CIContextOption, id>* softwareOptions = @{
+            kCIContextWorkingFormat : @(kCIFormatRGBAf),
+            kCIContextCacheIntermediates : @NO,
+            kCIContextOutputPremultiplied : @NO,
+            kCIContextUseSoftwareRenderer : @YES,
+        };
+        context = [CIContext contextWithOptions:softwareOptions];
+    } else {
+        context = metalDevice == nil
+            ? [CIContext contextWithOptions:contextOptions]
+            : [CIContext contextWithMTLDevice:metalDevice options:contextOptions];
+    }
+    if (context == nil && metalDevice != nil) {
+        NSDictionary<CIContextOption, id>* compatibleMetalOptions = @{
+            kCIContextCacheIntermediates : @NO,
+            kCIContextOutputPremultiplied : @NO,
+        };
+        context = [CIContext contextWithMTLDevice:metalDevice options:compatibleMetalOptions];
+    }
+    if (context == nil && useGPU) {
+        NSDictionary<CIContextOption, id>* compatibleCPUOptions = @{
+            kCIContextCacheIntermediates : @NO,
+            kCIContextOutputPremultiplied : @NO,
+        };
+        explicitMetal = false;
+        context = [CIContext contextWithOptions:compatibleCPUOptions];
+    }
+    return {context, explicitMetal};
+}
+
+const RawRenderContext& sharedRawContext(bool useGPU) {
+    if (useGPU) {
+        static const auto accelerated = makeRawContext(true);
+        return accelerated;
+    }
+    static const auto software = makeRawContext(false);
+    return software;
 }
 
 } // namespace
@@ -110,41 +167,9 @@ ImageReadResult decodeAppleRawFloat(const std::filesystem::path& path, const Raw
 
             CIContext* context = nil;
             @try {
-                NSDictionary<CIContextOption, id>* contextOptions = @{
-                    kCIContextWorkingFormat : @(kCIFormatRGBAf),
-                    kCIContextCacheIntermediates : @NO,
-                    kCIContextOutputPremultiplied : @NO,
-                };
-                id<MTLDevice> metalDevice = options.useGPU ? MTLCreateSystemDefaultDevice() : nil;
-                bool explicitMetal = metalDevice != nil;
-                if (!options.useGPU) {
-                    NSDictionary<CIContextOption, id>* softwareOptions = @{
-                        kCIContextWorkingFormat : @(kCIFormatRGBAf),
-                        kCIContextCacheIntermediates : @NO,
-                        kCIContextOutputPremultiplied : @NO,
-                        kCIContextUseSoftwareRenderer : @YES,
-                    };
-                    context = [CIContext contextWithOptions:softwareOptions];
-                } else {
-                    context = metalDevice == nil
-                        ? [CIContext contextWithOptions:contextOptions]
-                        : [CIContext contextWithMTLDevice:metalDevice options:contextOptions];
-                }
-                if (context == nil && metalDevice != nil) {
-                    NSDictionary<CIContextOption, id>* compatibleMetalOptions = @{
-                        kCIContextCacheIntermediates : @NO,
-                        kCIContextOutputPremultiplied : @NO,
-                    };
-                    context = [CIContext contextWithMTLDevice:metalDevice options:compatibleMetalOptions];
-                }
-                if (context == nil && options.useGPU) {
-                    NSDictionary<CIContextOption, id>* compatibleCPUOptions = @{
-                        kCIContextCacheIntermediates : @NO,
-                        kCIContextOutputPremultiplied : @NO,
-                    };
-                    explicitMetal = false;
-                    context = [CIContext contextWithOptions:compatibleCPUOptions];
-                }
+                const auto& renderer = sharedRawContext(options.useGPU);
+                context = renderer.context;
+                const bool explicitMetal = renderer.metal;
                 if (context == nil) {
                     return rawDecodeError("RawDecodeFailed", "Could not create the Core Image RAW rendering context");
                 }
@@ -171,23 +196,28 @@ ImageReadResult decodeAppleRawFloat(const std::filesystem::path& path, const Raw
             } @finally {
                 CGColorSpaceRelease(outputColorSpace);
             }
-            [context clearCaches];
 
-            for (std::size_t pixel = 0; pixel < result.image.pixelCount(); ++pixel) {
-                const auto offset = pixel * result.image.channels;
-                for (std::size_t channel = 0; channel < 3; ++channel) {
-                    float& value = result.image.pixels[offset + channel];
-                    if (!std::isfinite(value)) {
-                        return rawDecodeError("RawDecodeFailed", "Core Image RAW decoder produced non-finite color data");
+            std::atomic<std::size_t> firstInvalid{result.image.sampleCount()};
+            detail::parallelRanges(result.image.pixelCount(), 65536, [&](std::size_t first, std::size_t last) noexcept {
+                auto invalid = result.image.sampleCount();
+                for (auto pixel = first; pixel < last; ++pixel) {
+                    const auto offset = pixel * result.image.channels;
+                    for (std::size_t channel = 0; channel < 3; ++channel) {
+                        float& value = result.image.pixels[offset + channel];
+                        if (!std::isfinite(value)) invalid = std::min(invalid, offset + channel);
+                        value = options.linearOutput ? std::max(0.0F, value) : std::clamp(value, 0.0F, 1.0F);
                     }
-                    value = options.linearOutput ? std::max(0.0F, value) : std::clamp(value, 0.0F, 1.0F);
+                    float& alpha = result.image.pixels[offset + 3];
+                    if (!std::isfinite(alpha)) invalid = std::min(invalid, offset + 3);
+                    alpha = std::clamp(alpha, 0.0F, 1.0F);
                 }
-                float& alpha = result.image.pixels[offset + 3];
-                if (!std::isfinite(alpha)) {
-                    return rawDecodeError("RawDecodeFailed", "Core Image RAW decoder produced a non-finite alpha channel");
-                }
-                alpha = std::clamp(alpha, 0.0F, 1.0F);
-            }
+                auto previous = firstInvalid.load(std::memory_order_relaxed);
+                while (invalid < previous && !firstInvalid.compare_exchange_weak(previous, invalid, std::memory_order_relaxed)) {}
+            });
+            if (const auto invalid = firstInvalid.load(); invalid < result.image.sampleCount())
+                return rawDecodeError("RawDecodeFailed", invalid % 4 == 3 ?
+                    "Core Image RAW decoder produced a non-finite alpha channel" :
+                    "Core Image RAW decoder produced non-finite color data");
 
             result.ok = true;
             return result;

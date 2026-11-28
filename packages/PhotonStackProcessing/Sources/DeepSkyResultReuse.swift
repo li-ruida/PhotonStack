@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import PhotonStackAppCore
 
@@ -213,18 +214,75 @@ public enum DeepSkyResultReuse {
         return groups.sorted { $0.0 < $1.0 }.map(\.1)
     }
 
+    private struct FileVersion: Equatable {
+        let device: dev_t, inode: ino_t, size: off_t
+        let modifiedSeconds: Int, modifiedNanos: Int, changedSeconds: Int, changedNanos: Int
+
+        init(_ value: stat) {
+            device = value.st_dev
+            inode = value.st_ino
+            size = value.st_size
+            modifiedSeconds = value.st_mtimespec.tv_sec
+            modifiedNanos = value.st_mtimespec.tv_nsec
+            changedSeconds = value.st_ctimespec.tv_sec
+            changedNanos = value.st_ctimespec.tv_nsec
+        }
+    }
+
+    // Only reuse digests computed in this process for the same regular file
+    // generation. Persisted receipts always start with an independent read.
+    private final class DigestCache: @unchecked Sendable {
+        let lock = NSLock()
+        private var entries: [String: (FileVersion, String)] = [:]
+
+        func value(_ path: String, _ version: FileVersion) -> String? {
+            lock.withLock {
+                guard let (saved, digest) = entries[path], saved == version else { return nil }
+                return digest
+            }
+        }
+
+        func insert(_ digest: String, _ path: String, _ version: FileVersion) {
+            lock.withLock {
+                if entries.count >= 8192 && entries[path] == nil { entries.removeAll(keepingCapacity: true) }
+                entries[path] = (version, digest)
+            }
+        }
+    }
+    private static let digestCache = DigestCache()
+
     private static func digest(_ url: URL) throws -> String {
         try Task.checkCancellation()
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
-        guard values.isRegularFile == true, values.isSymbolicLink != true else { throw DeepSkyRecipeError.invalidReport }
-        let file = try FileHandle(forReadingFrom: url)
+        let path = url.path
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { throw DeepSkyRecipeError.invalidReport }
+        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? file.close() }
+        var opened = stat()
+        guard fstat(fd, &opened) == 0, (opened.st_mode & S_IFMT) == S_IFREG else {
+            throw DeepSkyRecipeError.invalidReport
+        }
+        let version = FileVersion(opened)
+        func verify() throws {
+            var named = stat(), current = stat()
+            guard lstat(path, &named) == 0, fstat(fd, &current) == 0,
+                  FileVersion(named) == version, FileVersion(current) == version else {
+                throw DeepSkyRecipeError.inputsChanged
+            }
+        }
+        if let saved = digestCache.value(path, version) {
+            try verify()
+            return saved
+        }
         var hash = SHA256()
         while let data = try file.read(upToCount: 4 * 1024 * 1024), !data.isEmpty {
             try Task.checkCancellation()
             hash.update(data: data)
         }
-        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+        let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
+        try verify()
+        digestCache.insert(digest, path, version)
+        return digest
     }
 
     static func quotedPaths(_ text: String, allowEmpty: Bool = false) throws -> [String] {

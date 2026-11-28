@@ -25,10 +25,12 @@ int main() {
         const auto megapixel = 1024ULL * 1024;
         const auto gib = 1024ULL * megapixel;
         require(detail::analysisFrameCapacity(8 * megapixel, 8 * megapixel, 711, 192, 3 * gib, 12) == 4);
-        require(detail::analysisFrameCapacity(2 * megapixel, 2 * megapixel, 200, 128, 3 * gib, 12) == 8);
+        require(detail::analysisFrameCapacity(2 * megapixel, 2 * megapixel, 200, 128, 3 * gib, 12) == 11);
         require(detail::analysisFrameCapacity(32 * megapixel, 0, 711, 192, 3 * gib, 12) == 1);
         require(detail::analysisFrameCapacity(8 * megapixel, 8 * megapixel, 711, 192, gib, 12) == 1);
         require(detail::analysisFrameCapacity(0, 0, 20, 192, 3 * gib, 12) == 1);
+
+        require(detail::analysisFrameCapacity(2 * megapixel, 0, 2050, 64, 12 * gib, 16) == 16);
 
         // Frame 0 waits for frame 1 to finish. Results must nevertheless
         // be committed in source order, on the thread issuing progress.
@@ -160,7 +162,10 @@ int main() {
                     require(item.path().extension() != ".fits");
                     if (item.path().extension() == ".f32") ++cachedFrames;
                 }
-                require(cachedFrames == inputs.size());
+                // A bounded subset can now live only in RAM. Disk entries must
+                // still be owned f32 files; mixed RAM/disk pixel completeness is
+                // checked independently by RegisteredCacheTests.
+                require(cachedFrames <= inputs.size());
                 for (const auto& input : inputs) require(fs::exists(input));
                 sawConsumedWork = true;
             }

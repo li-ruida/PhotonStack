@@ -83,6 +83,9 @@ void validateSensorCalibration(const CalibrationAcquisition& light, const Sensor
     metadata(light, options, [&](const auto& path) -> const auto& { return masters.at(path); });
 }
 SensorCalibrationResult calibrateSensorFrame(SensorMasterSource input, const SensorCalibrationOptions& options) {
+    return SensorCalibrationSession{}.calibrate(std::move(input), options);
+}
+SensorCalibrationResult SensorCalibrationSession::calibrate(SensorMasterSource input, const SensorCalibrationOptions& options) {
     settings(options);
     SensorCalibrationResult result;
     result.options = options;
@@ -97,11 +100,7 @@ SensorCalibrationResult calibrateSensorFrame(SensorMasterSource input, const Sen
         cancel();
         s.path = std::filesystem::canonical(s.path);
         require(std::filesystem::is_regular_file(s.path), "Calibration source must be a regular file");
-        const auto sha = fileSHA256(s.path);
-        require(s.sha.empty() || s.sha == sha, "Calibration source changed");
-        s.sha = sha;
-        require(paths.insert(s.path).second && hashes.insert(s.sha).second,
-                "Duplicate calibration source path or content");
+        require(paths.insert(s.path).second, "Duplicate calibration source path or content");
     };
     bind(input);
     if (o.badPixels) bind(*o.badPixels);
@@ -110,7 +109,8 @@ SensorCalibrationResult calibrateSensorFrame(SensorMasterSource input, const Sen
         if (*m)
             bind((*m)->source);
     SensorFitsReader light(input.path, true);
-    std::map<std::filesystem::path, SensorFitsReader> masters;
+    auto& masters = readers_;
+    std::erase_if(masters, [&](const auto& entry) { return entry.first == input.path || !paths.contains(entry.first); });
     const auto openMaster = [&](const std::optional<SensorCalibrationMaster>& master) -> SensorFitsReader* {
         if (!master) return nullptr;
         const auto& path = master->source.path;
@@ -151,7 +151,14 @@ SensorCalibrationResult calibrateSensorFrame(SensorMasterSource input, const Sen
     std::vector<float> badValues(bad ? tile : 0);
     const bool cfa = a.text.at("sampling").starts_with("CFA:");
     const auto phase = [&](std::size_t p) { return cfa ? 2 * ((p / a.width) % 2) + p % a.width % 2 : 0; };
-    if (flat) {
+    const auto flatPath = flat ? o.flat->source.path : std::filesystem::path{};
+    const auto biasPath = result.biasOnFlat ? o.bias->source.path : std::filesystem::path{};
+    if (flatPath != flatPath_ || biasPath != flatBiasPath_) flatMeans_.reset();
+    flatPath_ = flatPath;
+    flatBiasPath_ = biasPath;
+    if (flat && flatMeans_) {
+        result.flatMeans = *flatMeans_;
+    } else if (flat) {
         std::array<double, 4> sums{};
         std::array<std::size_t, 4> totals{};
         for (std::size_t start = 0; start < count; start += tile) {
@@ -190,7 +197,9 @@ SensorCalibrationResult calibrateSensorFrame(SensorMasterSource input, const Sen
         if (flat)
             flat->read(start, {f.data(), n});
         std::atomic_bool overflow{false};
+        std::atomic<std::size_t> invalid{0}, negative{0};
         detail::parallelRanges(n, 1024, [&](std::size_t begin, std::size_t end) noexcept {
+            std::size_t invalidCount = 0, negativeCount = 0;
             for (std::size_t p = begin; p < end; ++p) {
                 double v = double(l[p]) - (result.biasOnLight ? double(b[p]) : 0) - (dark ? double(d[p]) : 0);
                 if (flat) {
@@ -205,26 +214,31 @@ SensorCalibrationResult calibrateSensorFrame(SensorMasterSource input, const Sen
                 const bool valid = std::isfinite(v);
                 result.calibrated.pixels[start + p] = valid ? float(v) : std::numeric_limits<float>::quiet_NaN();
                 result.valid.pixels[start + p] = valid ? 1 : 0;
+                invalidCount += !valid;
+                // Count the stored Float32 value, preserving underflow to -0.
+                negativeCount += valid && result.calibrated.pixels[start + p] < 0;
             }
+            invalid.fetch_add(invalidCount, std::memory_order_relaxed);
+            negative.fetch_add(negativeCount, std::memory_order_relaxed);
         });
         require(!overflow.load(), "Calibrated sensor value exceeds Float32 range");
-    }
-    for (float value : result.calibrated.pixels) {
-        if (!std::isfinite(value))
-            ++result.invalidPixels;
-        else if (value < 0)
-            ++result.negativePixels;
+        result.invalidPixels += invalid.load(std::memory_order_relaxed);
+        result.negativePixels += negative.load(std::memory_order_relaxed);
     }
     require(result.invalidPixels < count, "No valid calibrated light pixels");
-    const auto unchanged = [&](const SensorMasterSource& s, SensorFitsReader& reader) {
+    const auto unchanged = [&](SensorMasterSource& s, SensorFitsReader& reader) {
         cancel();
-        require(reader.sourceSHA256() == s.sha, "Calibration source changed during computation");
+        const auto sha = reader.sourceSHA256();
+        require(s.sha.empty() || sha == s.sha, "Calibration source changed during computation");
+        s.sha = sha;
+        require(hashes.insert(sha).second, "Duplicate calibration source path or content");
     };
     unchanged(result.input, light);
     if (bad) unchanged(*o.badPixels, *bad);
-    for (const auto* m : {&o.bias, &o.dark, &o.flat})
+    for (auto* m : {&o.bias, &o.dark, &o.flat})
         if (*m)
             unchanged((*m)->source, masters.at((*m)->source.path));
+    if (flat) flatMeans_ = result.flatMeans;
     return result;
 }
 } // namespace photonstack

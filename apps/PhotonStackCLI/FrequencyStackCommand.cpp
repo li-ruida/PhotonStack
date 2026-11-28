@@ -237,7 +237,7 @@ std::size_t reflect(long long i, std::size_t n) {
 
 int runFrequencyStack(const std::vector<std::string>& args) {
     fs::path planPath, output;
-    std::size_t threads = 1;
+    std::size_t threads = 0;
     std::set<std::string> seen;
     for (std::size_t i = 0; i < args.size(); ++i) {
         const auto& key = args[i];
@@ -252,7 +252,7 @@ int runFrequencyStack(const std::vector<std::string>& args) {
         else
             threads = number<std::size_t>(value);
     }
-    if (planPath.empty() || output.empty() || !photonstack::isFitsPath(output) || !threads || threads > 64)
+    if (planPath.empty() || output.empty() || !photonstack::isFitsPath(output) || (!threads && seen.contains("--threads")) || threads > 64)
         throw std::invalid_argument("frequency-stack requires --plan, new FITS --output, and 1..64 threads");
     output = fs::absolute(output);
     if (fs::symlink_status(output).type() != fs::file_type::not_found)

@@ -64,33 +64,6 @@ ArtifactTrailResult validateArtifactInput(const ImageBuffer& image, const Artifa
     ArtifactTrailResult result; result.ok = true; return result;
 }
 
-template <typename Callback>
-void parallelForRowRanges(std::uint32_t rowCount, Callback callback) {
-    const unsigned int availableWorkers = std::max(1U, std::thread::hardware_concurrency());
-    const unsigned int workerCount = rowCount < 512
-                                         ? 1U
-                                         : std::min<unsigned int>(availableWorkers, rowCount);
-    if (workerCount == 1) {
-        callback(0, rowCount);
-        return;
-    }
-
-    const std::uint32_t rowsPerWorker = (rowCount + workerCount - 1) / workerCount;
-    std::vector<std::jthread> workers;
-    workers.reserve(workerCount);
-    for (unsigned int worker = 0; worker < workerCount; ++worker) {
-        const std::uint32_t begin = std::min(rowCount, static_cast<std::uint32_t>(worker) * rowsPerWorker);
-        const std::uint32_t end = std::min(rowCount, begin + rowsPerWorker);
-        if (begin >= end) {
-            break;
-        }
-        workers.emplace_back([=, &callback]() { callback(begin, end); });
-    }
-    for (auto& worker : workers) {
-        worker.join();
-    }
-}
-
 class ArtifactTrailProgressReporter {
   public:
     explicit ArtifactTrailProgressReporter(const ArtifactTrailProgressCallback& callback)
@@ -6898,7 +6871,7 @@ std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
 
     std::vector<float> navigationScores(image.pixelCount(), 0.0F);
     progress.report(ArtifactTrailProgressStage::Navigation, scaled(0.12), 0, 0, 0, image.height);
-    parallelForRowRanges(image.height, [&](std::uint32_t beginRow, std::uint32_t endRow) {
+    detail::parallelRanges(image.height, 64, [&](std::uint32_t beginRow, std::uint32_t endRow) {
         for (std::uint32_t y = beginRow; y < endRow; ++y) {
             const auto row = static_cast<std::size_t>(y) * image.width;
             for (std::uint32_t x = 0; x < image.width; ++x) {
@@ -6980,6 +6953,64 @@ std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
     }
     progress.report(ArtifactTrailProgressStage::PatternSearch, scaled(0.40));
 
+    const float imageDiagonal = std::sqrt(static_cast<float>(image.width) * static_cast<float>(image.width) +
+                                          static_cast<float>(image.height) * static_cast<float>(image.height));
+    const float maxBlinkingSpan = std::clamp(imageDiagonal * 0.11F, options.airplaneLength * 8.0F, 620.0F);
+    std::vector<std::size_t> group;
+    group.reserve(points.size());
+    // Points are immutable after the limit above. Bin them once, then gather
+    // conservative candidates for each finite seed corridor. Sorting restores
+    // original point order before all geometric tests and floating-point sums.
+    constexpr double pointCellSize = 64;
+    const auto pointCell = [](double coordinate) { return static_cast<std::int32_t>(std::floor(coordinate / pointCellSize)); };
+    const auto pointCellKey = [](std::int32_t x, std::int32_t y) {
+        return (std::uint64_t(static_cast<std::uint32_t>(x)) << 32) | static_cast<std::uint32_t>(y);
+    };
+    std::unordered_map<std::uint64_t, std::vector<std::size_t>> pointBins;
+    pointBins.reserve(points.size());
+    float maximumRadius = 0;
+    std::int32_t minimumColumn = INT32_MAX, minimumRow = INT32_MAX, maximumColumn = INT32_MIN, maximumRow = INT32_MIN;
+    bool finitePoints = true;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        const auto& point = points[i];
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.radius)) {
+            finitePoints = false;
+            break;
+        }
+        const auto column = pointCell(point.x), row = pointCell(point.y);
+        minimumColumn = std::min(minimumColumn, column); maximumColumn = std::max(maximumColumn, column);
+        minimumRow = std::min(minimumRow, row); maximumRow = std::max(maximumRow, row);
+        pointBins[pointCellKey(column, row)].push_back(i);
+        maximumRadius = std::max(maximumRadius, point.radius);
+    }
+    std::vector<std::size_t> allPoints(points.size()), corridorCandidates;
+    std::iota(allPoints.begin(), allPoints.end(), 0);
+    corridorCandidates.reserve(points.size());
+    const auto candidatesFor = [&](std::size_t a, std::size_t b, float padding, float normalDistance)
+        -> const std::vector<std::size_t>& {
+        if (!finitePoints || points.size() < 64) return allPoints;
+        // Dot products and normalized Float32 directions may place a boundary
+        // slightly beyond its exact geometric box. This absolute margin covers
+        // those errors even at the largest admitted image coordinates.
+        const double margin = 1. + 64. * std::numeric_limits<float>::epsilon() *
+            (double(image.width) + image.height + maxBlinkingSpan + maximumRadius);
+        const double expand = double(padding) + normalDistance + maximumRadius + margin;
+        const auto x0 = std::max(minimumColumn, pointCell(double(std::min(points[a].x, points[b].x)) - expand));
+        const auto y0 = std::max(minimumRow, pointCell(double(std::min(points[a].y, points[b].y)) - expand));
+        const auto x1 = std::min(maximumColumn, pointCell(double(std::max(points[a].x, points[b].x)) + expand));
+        const auto y1 = std::min(maximumRow, pointCell(double(std::max(points[a].y, points[b].y)) + expand));
+        const auto cells = std::uint64_t(x1 - x0 + 1) * std::uint64_t(y1 - y0 + 1);
+        if (cells > points.size() / 4) return allPoints;
+        corridorCandidates.clear();
+        for (auto y = y0; y <= y1; ++y) for (auto x = x0; x <= x1; ++x) {
+            const auto found = pointBins.find(pointCellKey(x, y));
+            if (found == pointBins.end()) continue;
+            corridorCandidates.insert(corridorCandidates.end(), found->second.begin(), found->second.end());
+            if (corridorCandidates.size() > points.size() / 2) return allPoints;
+        }
+        std::sort(corridorCandidates.begin(), corridorCandidates.end());
+        return corridorCandidates;
+    };
     for (std::size_t seedA = 0; seedA < points.size(); ++seedA) {
         if (consumed[seedA]) {
             continue;
@@ -6998,9 +7029,6 @@ std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
             if (seedSpan < options.airplaneLength * 0.65F) {
                 continue;
             }
-            const float imageDiagonal = std::sqrt(static_cast<float>(image.width) * static_cast<float>(image.width) +
-                                                  static_cast<float>(image.height) * static_cast<float>(image.height));
-            const float maxBlinkingSpan = std::clamp(imageDiagonal * 0.11F, options.airplaneLength * 8.0F, 620.0F);
             if (seedSpan > maxBlinkingSpan) {
                 continue;
             }
@@ -7013,13 +7041,14 @@ std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
             const float maxNormalDistance = std::clamp(seedSpan * 0.018F, 3.0F, 12.0F);
             const float projectionPadding = std::clamp(seedSpan * 0.18F, 12.0F, 48.0F);
 
-            std::vector<std::size_t> group;
+            group.clear();
+            const float seedNormal = points[seedA].x * normalX + points[seedA].y * normalY;
             float minProjection = std::numeric_limits<float>::max();
             float maxProjection = std::numeric_limits<float>::lowest();
             float weightedNormal = 0.0F;
             float totalWeight = 0.0F;
             float colorSupport = 0.0F;
-            for (std::size_t index = 0; index < points.size(); ++index) {
+            for (const auto index : candidatesFor(seedA, seedB, projectionPadding, maxNormalDistance)) {
                 if (consumed[index]) {
                     continue;
                 }
@@ -7030,7 +7059,6 @@ std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
                     continue;
                 }
                 const float normal = point.x * normalX + point.y * normalY;
-                const float seedNormal = points[seedA].x * normalX + points[seedA].y * normalY;
                 if (std::fabs(normal - seedNormal) > maxNormalDistance + point.radius) {
                     continue;
                 }
@@ -7144,31 +7172,23 @@ std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
         std::vector<ArtifactTrail> bottomCenterTrails;
         std::vector<ArtifactTrail> lowLeftTrails;
     };
-    auto sparseHorizontalFuture = std::async(std::launch::async, [&]() {
-        return detectSparseHorizontalBlinkingTrails(image, luminance, navigationScores, options);
-    });
-    const bool allowSpecializedLowSkySearch = supportsSpecializedLowSkySearch(image, luminance);
-    auto lowSkyFuture = std::async(std::launch::async, [&]() {
-        LowSkyDetectionBatch batch;
-        if (!allowSpecializedLowSkySearch) {
-            return batch;
+    std::vector<ArtifactTrail> sparseHorizontalTrails;
+    LowSkyDetectionBatch lowSkyBatch;
+    HorizonDetectionBatch horizonBatch;
+    const bool searchLowSky = supportsSpecializedLowSkySearch(image, luminance);
+    detail::runWorkers(searchLowSky ? 3 : 1, [&](std::size_t worker) {
+        if (worker == 0) {
+            sparseHorizontalTrails = detectSparseHorizontalBlinkingTrails(image, luminance, navigationScores, options);
+        } else if (worker == 1) {
+            lowSkyBatch.pointTrails = detectLowSkyPointDottedTrails(image, luminance, options);
+            lowSkyBatch.mappedTrails = detectMappedLowSkyDottedTrails(image, luminance, options);
+        } else {
+            horizonBatch.sideTrails = detectSideLowSkyDottedTrails(image, luminance, options);
+            horizonBatch.bottomCenterTrails = detectBottomCenterHorizonDottedTrails(image, luminance, options);
+            horizonBatch.lowLeftTrails = detectLowLeftHorizonDottedTrails(image, luminance, options);
         }
-        batch.pointTrails = detectLowSkyPointDottedTrails(image, luminance, options);
-        batch.mappedTrails = detectMappedLowSkyDottedTrails(image, luminance, options);
-        return batch;
-    });
-    auto horizonFuture = std::async(std::launch::async, [&]() {
-        HorizonDetectionBatch batch;
-        if (!allowSpecializedLowSkySearch) {
-            return batch;
-        }
-        batch.sideTrails = detectSideLowSkyDottedTrails(image, luminance, options);
-        batch.bottomCenterTrails = detectBottomCenterHorizonDottedTrails(image, luminance, options);
-        batch.lowLeftTrails = detectLowLeftHorizonDottedTrails(image, luminance, options);
-        return batch;
     });
 
-    auto sparseHorizontalTrails = sparseHorizontalFuture.get();
     for (auto& trail : sparseHorizontalTrails) {
         if (!isDuplicateTrail(trails, trail)) {
             trails.push_back(trail);
@@ -7177,7 +7197,6 @@ std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
     profileStage("sparse-horizontal");
     progress.report(ArtifactTrailProgressStage::PatternSearch, scaled(0.63));
 
-    auto lowSkyBatch = lowSkyFuture.get();
     auto& lowSkyPointTrails = lowSkyBatch.pointTrails;
     for (auto& trail : lowSkyPointTrails) {
         if (!isDuplicateTrail(trails, trail)) {
@@ -7206,7 +7225,6 @@ std::vector<ArtifactTrail> detectBlinkingPointTrails(const ImageBuffer& image,
     profileStage("mapped-low-sky");
     progress.report(ArtifactTrailProgressStage::PatternSearch, scaled(0.78));
 
-    auto horizonBatch = horizonFuture.get();
     auto& sideLowSkyTrails = horizonBatch.sideTrails;
     for (auto& trail : sideLowSkyTrails) {
         trails.erase(
@@ -10023,7 +10041,8 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
                                          const ArtifactTrailOptions& options,
                                          ArtifactTrailProgressReporter& progress,
                                          double start,
-                                         double end, TrailStatistics* saved = nullptr) {
+                                         double end, TrailStatistics* saved = nullptr, bool includeImage = true,
+                                         std::vector<ArtifactTrail>* savedBeacons = nullptr) {
     const bool profileStages = std::getenv("PHOTONSTACK_PROFILE_ARTIFACTS") != nullptr;
     auto profileStartedAt = std::chrono::steady_clock::now();
     const auto profileStage = [&](const char* name) {
@@ -10054,7 +10073,7 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
     const auto components = connectedComponents(image, luminance, threshold);
     ArtifactTrailResult result;
     result.ok = true;
-    result.image = image;
+    if (includeImage) result.image = image;
     ArtifactTrailOptions rotationalEvidenceOptions = options;
     rotationalEvidenceOptions.minLength = std::min(options.minLength, 12.0F);
     rotationalEvidenceOptions.maxWidth = std::max(options.maxWidth, 18.0F);
@@ -10193,9 +10212,11 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
     suppressFaintLowHorizontalMeteorMimics(result.trails, image);
     // Independent local red/green beacon evidence survives scene-level pruning:
     // a rotational stellar field can contain genuine, faint aircraft traffic.
-    for (auto& trail : detail::detectChromaticBeaconChains(image)) {
-        if (!isDuplicateTrail(result.trails, trail)) result.trails.push_back(std::move(trail));
+    auto beacons = detail::detectChromaticBeaconChains(image);
+    for (const auto& trail : beacons) {
+        if (!isDuplicateTrail(result.trails, trail)) result.trails.push_back(trail);
     }
+    if (savedBeacons) *savedBeacons = std::move(beacons);
     profileStage("refining");
     result.protectedMeteors = static_cast<std::size_t>(std::count_if(
         result.trails.begin(), result.trails.end(), [](const ArtifactTrail& trail) {
@@ -10220,9 +10241,10 @@ ArtifactTrailResult detectArtifactTrails(const ImageBuffer& image,
     return result;
 }
 
-ArtifactTrailResult ArtifactTrailRemover::detect(const ImageBuffer& image, const ArtifactTrailOptions& options) const {
+ArtifactTrailResult ArtifactTrailRemover::detect(const ImageBuffer& image, const ArtifactTrailOptions& options,
+                                                bool includeImage) const {
     ArtifactTrailProgressReporter progress(options.progress);
-    return detectArtifactTrails(image, options, progress, 0.0, 1.0);
+    return detectArtifactTrails(image, options, progress, 0.0, 1.0, nullptr, includeImage);
 }
 
 ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const ArtifactTrailOptions& options) const {
@@ -10230,6 +10252,7 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
     ArtifactTrailOptions detectionOptions = options;
     detectionOptions.includeMeteors = options.includeMeteors || (options.removeMeteors && !options.preserveMeteors);
     TrailStatistics stats;
+    std::vector<ArtifactTrail> verifiedBeaconChains;
     ArtifactTrailResult result;
     if (options.useDetectedTrails) {
         if (auto validation = validateArtifactInput(image, options); !validation.ok) return validation;
@@ -10243,7 +10266,7 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
         ));
         progress.report(ArtifactTrailProgressStage::Refining, 0.55);
     } else {
-        result = detectArtifactTrails(image, detectionOptions, progress, 0.0, 0.55, &stats);
+        result = detectArtifactTrails(image, detectionOptions, progress, 0.0, 0.55, &stats, true, &verifiedBeaconChains);
     }
     if (!result.ok) {
         return result;
@@ -10260,8 +10283,8 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
     const bool hasBeaconPaths = std::any_of(result.trails.begin(), result.trails.end(), [](const auto& t) {
         return t.kind == ArtifactTrailKind::Airplane && t.path.size() >= 8;
     });
-    const auto verifiedBeaconChains = hasBeaconPaths ? detail::detectChromaticBeaconChains(image)
-                                                   : std::vector<ArtifactTrail>{};
+    if (hasBeaconPaths && options.useDetectedTrails)
+        verifiedBeaconChains = detail::detectChromaticBeaconChains(image);
     std::vector<ArtifactTrail> selectedBeaconChains;
     const std::set<std::size_t> selected(options.selectedIndices.begin(), options.selectedIndices.end());
     const auto shouldRemoveTrail = [&](const ArtifactTrail& trail) {
@@ -10679,9 +10702,10 @@ ArtifactTrailResult ArtifactTrailRemover::remove(const ImageBuffer& image, const
         for (std::uint32_t y = 0; y < image.height; ++y) {
             for (std::uint32_t x = 0; x < image.width; ++x) {
                 const auto pixel = static_cast<std::size_t>(y) * image.width + x;
+                if (!mask[pixel]) continue;
                 const auto& metadata = trailMaskMetadataAt(maskMetadata, pixel);
                 const float alpha = std::clamp(metadata.alpha, 0.0F, 1.0F);
-                if (!mask[pixel] || alpha <= 0.0F) {
+                if (alpha <= 0.0F) {
                     continue;
                 }
 

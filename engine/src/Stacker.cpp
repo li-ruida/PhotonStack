@@ -1,3 +1,4 @@
+#include "photonstack/ParallelRanges.hpp"
 #include "FrameReadAhead.hpp"
 #include "WeightedQuantile.hpp"
 #ifdef __APPLE__
@@ -346,9 +347,16 @@ void accumulateStreamingFrame(StreamingStackAccumulator& accumulator, const Imag
                               StackProgressReporter& progress, std::size_t frameNumber,
                               double start, double end) {
     progress.report(StackProgressStage::Accumulating, start, frameNumber, 0, accumulator.height());
-    for (std::uint32_t y = 0; y < accumulator.height(); ++y) {
-        accumulator.addRow(y, frame.pixels.data() + y * accumulator.rowSamples(), accumulator.rowSamples(), weight);
-        progress.reportRow(StackProgressStage::Accumulating, y, accumulator.height(), start, end, frameNumber);
+    constexpr std::uint32_t batch = 128;
+    for (std::uint32_t first = 0; first < accumulator.height(); first += batch) {
+        const auto count = std::min(batch, accumulator.height() - first);
+        detail::parallelRanges(count, std::max<std::size_t>(1, 16384 / accumulator.width()), [&](std::size_t begin, std::size_t finish) {
+            for (auto row = begin; row < finish; ++row) {
+                const auto y = first + row;
+                accumulator.addRow(y, frame.pixels.data() + y * accumulator.rowSamples(), accumulator.rowSamples(), weight);
+            }
+        });
+        progress.reportRow(StackProgressStage::Accumulating, first + count - 1, accumulator.height(), start, end, frameNumber);
     }
 }
 
@@ -356,10 +364,10 @@ void finalizeStreamingAccumulator(StreamingStackAccumulator& accumulator, double
                                   StackProgressReporter& progress, double start, double end) {
     accumulator.beginFinalization();
     progress.report(StackProgressStage::Finalizing, start, 0, 0, accumulator.height());
-    for (std::uint32_t y = 0; y < accumulator.height(); ++y) {
-        accumulator.finalizeRow(y, totalWeight);
-        progress.reportRow(StackProgressStage::Finalizing, y, accumulator.height(), start, end);
-    }
+    detail::parallelRanges(accumulator.height(), std::max<std::size_t>(1, 16384 / accumulator.width()), [&](std::size_t begin, std::size_t finish) {
+        for (auto y = begin; y < finish; ++y) accumulator.finalizeRow(y, totalWeight);
+    });
+    progress.report(StackProgressStage::Finalizing, end, 0, accumulator.height(), accumulator.height());
 }
 
 struct TemporaryFrameCache {
@@ -388,7 +396,7 @@ StackResult validateTemporaryStorage(const std::filesystem::path& directory, std
 StackResult writeCachedAlignedFrame(const std::filesystem::path& path, const ImageBuffer& frame,
                                     const AlignmentPlan& alignment, std::vector<float>* luminance = nullptr,
                                     StackProgressReporter* progress = nullptr, std::size_t frameNumber = 0,
-                                    double start = 0.0, double end = 0.0);
+                                    double start = 0.0, double end = 0.0, PixelStorage* resident = nullptr);
 StackResult accumulateCachedFrame(const std::filesystem::path& path, StreamingStackAccumulator& accumulator, double weight,
                                   StackProgressReporter* progress = nullptr, std::size_t frameNumber = 0,
                                   double start = 0.0, double end = 0.0);
@@ -447,7 +455,11 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
     const auto referenceColorEncoding = reference.colorEncoding;
     StreamingStackAccumulator accumulator(reference, options.method);
     TemporaryFrameCache weightedAlignmentCache;
-    if (weighted && requiresAlignment) {
+    PixelStorage weightedResident;
+    if (requiresAlignment && weighted && reference.sampleCount() <= detail::workingMemoryBudget() / (4 * sizeof(float))) {
+        try { weightedResident.resize(reference.sampleCount()); } catch (const std::bad_alloc&) {}
+    }
+    if (weighted && requiresAlignment && weightedResident.empty()) {
         const auto cacheResult = createTemporaryFrameCache(weightedAlignmentCache, options.temporaryDirectory);
         if (!cacheResult.ok) {
             return cacheResult;
@@ -479,7 +491,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
     if (requiresAlignment && (externalReference || inputs.size() > 1))
         prepared.emplace(Registration().prepareReference(std::move(reference), options.registration, options.alignDistortion));
     else
-        std::vector<float>().swap(reference.pixels);
+        PixelStorage().swap(reference.pixels);
     StackResult metrics;
     metrics.ok = true;
     std::size_t processedFrames = externalReference ? 0 : 1;
@@ -548,7 +560,8 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
             const double cacheEnd = frameStart + frameSpan * 0.68;
             const double accumulationStart = frameStart + frameSpan * 0.74;
             const auto writeResult = writeCachedAlignedFrame(cachePath, readResult.image, alignmentPlan, &luminance,
-                                                             &progress, processedFrames, alignmentEnd, cacheEnd);
+                                                             &progress, processedFrames, alignmentEnd, cacheEnd,
+                                                             weightedResident.empty() ? nullptr : &weightedResident);
             if (!writeResult.ok) {
                 return writeResult;
             }
@@ -556,10 +569,16 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
             const double weight = static_cast<double>(quality.ok ? std::max(0.01F, quality.score) : 1.0F) *
                                  (options.frameWeights.empty() ? 1.0F : options.frameWeights[index]);
             std::vector<float>().swap(luminance);
-            const auto accumulationResult = accumulateCachedFrame(cachePath, accumulator, weight, &progress,
-                                                                  processedFrames, accumulationStart, frameEnd);
-            if (!accumulationResult.ok) {
-                return accumulationResult;
+            if (!weightedResident.empty()) {
+                ImageBuffer aligned;
+                aligned.width = referenceWidth; aligned.height = referenceHeight; aligned.channels = referenceChannels;
+                aligned.pixels.swap(weightedResident);
+                accumulateStreamingFrame(accumulator, aligned, weight, progress, processedFrames, accumulationStart, frameEnd);
+                aligned.pixels.swap(weightedResident);
+            } else {
+                const auto accumulationResult = accumulateCachedFrame(cachePath, accumulator, weight, &progress,
+                                                                      processedFrames, accumulationStart, frameEnd);
+                if (!accumulationResult.ok) return accumulationResult;
             }
             totalWeight += weight;
         } else {
@@ -590,6 +609,7 @@ StackResult streamAverageFiles(const std::vector<std::filesystem::path>& inputs,
     // Alignment no longer needs its reference. Release it before allocating
     // the Float32 output alongside the double-precision accumulator.
     prepared.reset();
+    PixelStorage().swap(weightedResident);
     finalizeStreamingAccumulator(accumulator, totalWeight, progress, framePhaseEnd, 1.0);
     metrics.image = accumulator.takeImage();
     return metrics;
@@ -691,9 +711,10 @@ StackResult writeCachedFrame(const std::filesystem::path& path, const ImageBuffe
 StackResult writeCachedAlignedFrame(const std::filesystem::path& path, const ImageBuffer& frame,
                                     const AlignmentPlan& alignment, std::vector<float>* luminance,
                                     StackProgressReporter* progress, std::size_t frameNumber,
-                                    double start, double end) {
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    if (!output) {
+                                    double start, double end, PixelStorage* resident) {
+    std::ofstream output;
+    if (!resident) output.open(path, std::ios::binary | std::ios::trunc);
+    if (!resident && !output) {
         return stackError("TemporaryStorageWriteFailed", "Unable to open stack cache file: " + path.string());
     }
     if (luminance != nullptr) {
@@ -704,8 +725,9 @@ StackResult writeCachedAlignedFrame(const std::filesystem::path& path, const Ima
     }
     const bool rendered =
         renderAlignmentRows(frame, alignment, [&](std::uint32_t row, const float* samples, std::size_t sampleCount) {
-            output.write(reinterpret_cast<const char*>(samples),
-                         static_cast<std::streamsize>(sampleCount * sizeof(float)));
+            if (resident) std::copy_n(samples, sampleCount, resident->data() + std::size_t(row) * frame.width * frame.channels);
+            else output.write(reinterpret_cast<const char*>(samples),
+                              static_cast<std::streamsize>(sampleCount * sizeof(float)));
             if (luminance != nullptr) {
                 const auto rowOffset = static_cast<std::size_t>(row) * frame.width;
                 for (std::uint32_t x = 0; x < frame.width; ++x) {
@@ -728,14 +750,14 @@ StackResult writeCachedAlignedFrame(const std::filesystem::path& path, const Ima
                                    : samples[sampleOffset]);
                 }
             }
-            const bool written = static_cast<bool>(output);
+            const bool written = resident || static_cast<bool>(output);
             if (written && progress != nullptr) {
                 progress->reportRow(StackProgressStage::Caching, row, frame.height, start, end, frameNumber);
             }
             return written;
         });
-    output.close();
-    if (!rendered || !output) {
+    if (!resident) output.close();
+    if (!rendered || (!resident && !output)) {
         return stackError("TemporaryStorageWriteFailed", "Unable to write aligned stack cache file: " + path.string());
     }
     StackResult result;
@@ -822,8 +844,8 @@ float weightedMean(const std::vector<WeightedValue>& values) {
     return total > 0.0 ? static_cast<float>(sum / total) : 0.0F;
 }
 
-float weightedQuantile(std::vector<WeightedValue>& values, float quantile) {
-    return detail::weightedSampleQuantile(values, quantile).value();
+float weightedQuantile(std::vector<WeightedValue>& values, float quantile, std::vector<std::uint32_t>& indices) {
+    return detail::weightedSampleQuantile(values, quantile, indices).value();
 }
 
 // Equal unit weights are common in fully covered scientific frames. Only the
@@ -862,11 +884,12 @@ struct PixelRejections {
 };
 
 float robustStackValue(std::vector<WeightedValue>& values, std::vector<WeightedValue>& scratch,
-                       std::vector<WeightedValue>& retained, std::vector<float>& unitSamples, const StackOptions& options, PixelRejections& rejections, const float* centers = nullptr) {
+                       std::vector<WeightedValue>& retained, std::vector<float>& unitSamples,
+                       std::vector<std::uint32_t>& indices, const StackOptions& options, PixelRejections& rejections, const float* centers = nullptr) {
     switch (options.method) {
     case StackMethod::Median:
         rejections.count(values, -std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity());
-        return weightedQuantile(values, 0.5F);
+        return weightedQuantile(values, 0.5F, indices);
     case StackMethod::SigmaClip: {
         if (options.sigma.medianMad) {
             // A sparse contaminant must not inflate the center/scale used to
@@ -879,15 +902,17 @@ float robustStackValue(std::vector<WeightedValue>& values, std::vector<WeightedV
             double high = std::numeric_limits<double>::infinity();
             double scale = 0;
             for (std::uint32_t iteration = 0; iteration < options.sigma.iterations && retained.size() >= 5; ++iteration) {
-                scratch = retained;
-                const double center = weightedQuantile(scratch, .5F);
+                const bool known = iteration == 0 && centers && std::isfinite(centers[0]) && std::isfinite(centers[1]);
+                if (!known) scratch = retained;
+                const double center = known ? centers[0] : weightedQuantile(scratch, .5F, indices);
                 if (iteration == 0) {
                     // Estimate scatter before cutting off the tails. Re-estimating
                     // it from the survivors can progressively discard ordinary
                     // noise on one side, shifting just one RGB channel. Later
                     // passes may refine the center using the original scatter.
-                    for (auto& v : scratch) v.value = float(std::abs(double(v.value) - center));
-                    scale = std::max({double(weightedQuantile(scratch, .5F)) * 1.4826022185,
+                    if (!known) for (auto& v : scratch) v.value = float(std::abs(double(v.value) - center));
+                    const double mad = known ? centers[1] : weightedQuantile(scratch, .5F, indices);
+                    scale = std::max({mad * 1.4826022185,
                         std::abs(center) * double(std::numeric_limits<float>::epsilon()) * 2, 1.e-6});
                 }
                 const double candidateLow = std::max(low, center - options.sigma.sigmaLow * scale);
@@ -938,10 +963,10 @@ float robustStackValue(std::vector<WeightedValue>& values, std::vector<WeightedV
             mad = unitMedian(unitSamples);
         } else {
             scratch = values;
-            median = weightedQuantile(scratch, .5F);
+            median = weightedQuantile(scratch, .5F, indices);
             scratch = values;
             for (auto& v : scratch) v.value = std::fabs(v.value - median);
-            mad = weightedQuantile(scratch, .5F);
+            mad = weightedQuantile(scratch, .5F, indices);
         }
         const float sigma = std::max(1.0e-6F, mad * 1.4826F);
         const float low = median - options.winsorizedSigma.sigmaLow * sigma;
@@ -956,9 +981,9 @@ float robustStackValue(std::vector<WeightedValue>& values, std::vector<WeightedV
     }
     case StackMethod::PercentileClip: {
         scratch.assign(values.begin(), values.end());
-        const float low = weightedQuantile(scratch, options.percentile.low);
+        const float low = weightedQuantile(scratch, options.percentile.low, indices);
         scratch.assign(values.begin(), values.end());
-        const float high = weightedQuantile(scratch, options.percentile.high);
+        const float high = weightedQuantile(scratch, options.percentile.high, indices);
         rejections.count(values, low, high);
         double sum = 0.0;
         double acceptedWeight = 0.0;
@@ -972,7 +997,7 @@ float robustStackValue(std::vector<WeightedValue>& values, std::vector<WeightedV
             return static_cast<float>(sum / acceptedWeight);
         }
         scratch.assign(values.begin(), values.end());
-        return weightedQuantile(scratch, 0.5F);
+        return weightedQuantile(scratch, 0.5F, indices);
     }
     case StackMethod::Average:
     case StackMethod::WeightedAverage:
@@ -1025,7 +1050,7 @@ void recordAcceptedGroups(const std::vector<WeightedValue>& values, const PixelR
     }
 }
 
-void processRobustRange(const std::vector<float>& tileData, std::size_t frameCount, std::size_t tilePixels,
+void processRobustRange(const PixelStorage& tileData, std::size_t frameCount, std::size_t tilePixels,
                        std::uint16_t channels, std::size_t outputPixelOffset, const StackOptions& options,
                        const std::vector<std::size_t>& inputOrder, ImageBuffer& output,
                        StackResult* report, StackResult* counters, ImageBuffer* noise, StackResult* groups, ImageBuffer* acceptedWeights,
@@ -1038,120 +1063,133 @@ void processRobustRange(const std::vector<float>& tileData, std::size_t frameCou
     if (noise) for (auto& half : halves) half.reserve((frameCount + 1) / 2);
     std::vector<float> coverages(frameCount, 0.0F);
     std::vector<float> unitSamples;
+    std::vector<std::uint32_t> indices;
     values.reserve(frameCount);
     scratch.reserve(frameCount);
     if (options.method == StackMethod::SigmaClip && options.sigma.medianMad) retained.reserve(frameCount);
     const double totalFrameWeight = options.frameWeights.empty() ? static_cast<double>(frameCount)
         : std::accumulate(options.frameWeights.begin(), options.frameWeights.end(), 0.0);
 
-    for (std::size_t pixel = begin; pixel < end; ++pixel) {
-        bool noiseValid = noise != nullptr;
-        const auto noiseOffset = (outputPixelOffset + pixel) * 4;
-        double coverageSum = 0.0;
+    // Read adjacent source pixels together before gathering a pixel's samples
+    // across frames. The working block fits in a worker's private cache.
+    const auto frameSamples = frameCount * channels;
+    const auto blockSize = std::min({end - begin, std::size_t(64),
+        std::max<std::size_t>(1, 32768 / frameSamples)});
+    std::vector<float> transposed(blockSize * frameSamples);
+    for (auto first = begin; first < end; first += blockSize) {
+        const auto last = std::min(end, first + blockSize);
         for (std::size_t frame = 0; frame < frameCount; ++frame) {
-            const auto frameOffset = frame * tileSamples + pixel * channels;
-            coverages[frame] = rowPixelCoverage(tileData.data(), channels, frameOffset);
-            coverageSum += coverages[frame] * (options.frameWeights.empty() ? 1.0F : options.frameWeights[frame]);
+            const auto* source = tileData.data() + frame * tileSamples + first * channels;
+            for (std::size_t p = 0; p < last - first; ++p)
+                std::copy_n(source + p * channels, channels, transposed.data() + p * frameSamples + frame * channels);
         }
-
-        const auto outputOffset = (outputPixelOffset + pixel) * channels;
-        for (std::uint16_t channel = 0; channel < channels; ++channel) {
-            if (channels >= 4 && channel == 3) {
-                continue;
-            }
-            values.clear();
+        for (auto pixel = first; pixel < last; ++pixel) {
+            const float* pixelSamples = transposed.data() + (pixel - first) * frameSamples;
+            bool noiseValid = noise != nullptr;
+            const auto noiseOffset = (outputPixelOffset + pixel) * 4;
+            double coverageSum = 0.0;
             for (std::size_t frame = 0; frame < frameCount; ++frame) {
-                const auto frameOffset = frame * tileSamples + pixel * channels;
-                const float coverage = coverages[frame];
-                const float weight = coverage * (options.frameWeights.empty() ? 1.0F : options.frameWeights[frame]);
-                const float value = tileData[frameOffset + channel];
-                if (coverage <= 1.0e-6F || weight <= 0.0F || !std::isfinite(value)) {
+                const auto frameOffset = frame * channels;
+                coverages[frame] = rowPixelCoverage(pixelSamples, channels, frameOffset);
+                coverageSum += coverages[frame] * (options.frameWeights.empty() ? 1.0F : options.frameWeights[frame]);
+            }
+
+            const auto outputOffset = (outputPixelOffset + pixel) * channels;
+            for (std::uint16_t channel = 0; channel < channels; ++channel) {
+                if (channels >= 4 && channel == 3) {
                     continue;
                 }
-                values.push_back({value, weight, frame});
-            }
-            if (!values.empty()) {
-                PixelRejections rejected;
-                rejected.report = counters;
-                output.pixels[outputOffset + channel] = robustStackValue(values, scratch, retained, unitSamples, options, rejected,
-                    centers ? centers + 2 * (pixel * 3 + channel) : nullptr);
-                if (groups) recordAcceptedGroups(values, rejected, options, inputOrder, *groups, noiseOffset + channel);
-                if (acceptedWeights) {
-                    double kept = 0;
-                    for (const auto& v : values)
-                        if (v.value >= rejected.lowerBound && v.value <= rejected.upperBound) kept += v.weight;
-                    if (kept == 0) for (const auto& v : values) kept += v.weight;
-                    acceptedWeights->pixels[outputOffset + channel] = float(kept);
-                }
-                if (noise) {
-                    halves[0].clear(); halves[1].clear();
-                    for (const auto& v : values) halves[inputOrder[v.frame] % 2].push_back(v);
-                    AcceptedVariance halfVariance[2];
-                    double means[2] = {};
-                    for (unsigned h = 0; h < 2; ++h) {
-                        if (halves[h].empty()) continue;
-                        PixelRejections halfBounds;
-                        means[h] = robustStackValue(halves[h], scratch, retained, unitSamples, options, halfBounds);
-                        halfVariance[h] = acceptedVariance(halves[h], halfBounds, options.frameNoiseVariances);
+                values.clear();
+                for (std::size_t frame = 0; frame < frameCount; ++frame) {
+                    const auto frameOffset = frame * channels;
+                    const float coverage = coverages[frame];
+                    const float weight = coverage * (options.frameWeights.empty() ? 1.0F : options.frameWeights[frame]);
+                    const float value = pixelSamples[frameOffset + channel];
+                    if (coverage <= 1.0e-6F || weight <= 0.0F || !std::isfinite(value)) {
+                        continue;
                     }
-                    const double fullVariance = acceptedVariance(values, rejected, options.frameNoiseVariances).variance();
-                    const double differenceVariance = halfVariance[0].variance() + halfVariance[1].variance();
-                    const double value = differenceVariance > 0
-                        ? (means[0] - means[1]) * std::sqrt(fullVariance / differenceVariance) : 0;
-                    const bool valid = halfVariance[0].count >= 3 && halfVariance[1].count >= 3 &&
-                        fullVariance > 0 && differenceVariance > 0 && std::isfinite(value) &&
-                        std::abs(value) <= std::numeric_limits<float>::max();
-                    noiseValid &= valid;
-                    noise->pixels[noiseOffset + channel] = valid ? float(value) : 0;
+                    values.push_back({value, weight, frame});
                 }
-                if (report) {
-                    report->rejectionLow.pixels[outputOffset + channel] = float(rejected.low) / values.size();
-                    report->rejectionHigh.pixels[outputOffset + channel] = float(rejected.high) / values.size();
-                }
-            } else noiseValid = false;
-        }
-        if (noise) {
-            if (!noiseValid) for (unsigned c = 0; c < 3; ++c) noise->pixels[noiseOffset + c] = 0;
-            noise->pixels[noiseOffset + 3] = noiseValid ? 1 : 0;
-        }
-        if (groups) for (unsigned group = 0; group < 2; ++group) {
-            const auto& weights = groups->acceptedGroupWeights[group].pixels;
-            const bool valid = weights[noiseOffset] > 0 && weights[noiseOffset + 1] > 0 && weights[noiseOffset + 2] > 0;
-            groups->acceptedGroupImages[group].pixels[noiseOffset + 3] = valid ? 1 : 0;
-            groups->acceptedGroupWeights[group].pixels[noiseOffset + 3] = valid ? 1 : 0;
-        }
-        if (acceptedWeights) setCoverageAlpha(*acceptedWeights, outputPixelOffset + pixel,
-                         static_cast<float>(coverageSum / totalFrameWeight));
-        setCoverageAlpha(output, outputPixelOffset + pixel,
-                         static_cast<float>(coverageSum / totalFrameWeight));
-        if (report) {
-            setCoverageAlpha(report->rejectionLow, outputPixelOffset + pixel, coverageSum > 0 ? 1 : 0);
-            setCoverageAlpha(report->rejectionHigh, outputPixelOffset + pixel, coverageSum > 0 ? 1 : 0);
+                if (!values.empty()) {
+                    PixelRejections rejected;
+                    rejected.report = counters;
+                    output.pixels[outputOffset + channel] = robustStackValue(values, scratch, retained, unitSamples, indices, options, rejected,
+                        centers ? centers + 2 * (pixel * 3 + channel) : nullptr);
+                    if (groups) recordAcceptedGroups(values, rejected, options, inputOrder, *groups, noiseOffset + channel);
+                    if (acceptedWeights) {
+                        double kept = 0;
+                        for (const auto& v : values)
+                            if (v.value >= rejected.lowerBound && v.value <= rejected.upperBound) kept += v.weight;
+                        if (kept == 0) for (const auto& v : values) kept += v.weight;
+                        acceptedWeights->pixels[outputOffset + channel] = float(kept);
+                    }
+                    if (noise) {
+                        halves[0].clear(); halves[1].clear();
+                        for (const auto& v : values) halves[inputOrder[v.frame] % 2].push_back(v);
+                        AcceptedVariance halfVariance[2];
+                        double means[2] = {};
+                        for (unsigned h = 0; h < 2; ++h) {
+                            if (halves[h].empty()) continue;
+                            PixelRejections halfBounds;
+                            means[h] = robustStackValue(halves[h], scratch, retained, unitSamples, indices, options, halfBounds);
+                            halfVariance[h] = acceptedVariance(halves[h], halfBounds, options.frameNoiseVariances);
+                        }
+                        const double fullVariance = acceptedVariance(values, rejected, options.frameNoiseVariances).variance();
+                        const double differenceVariance = halfVariance[0].variance() + halfVariance[1].variance();
+                        const double value = differenceVariance > 0
+                            ? (means[0] - means[1]) * std::sqrt(fullVariance / differenceVariance) : 0;
+                        const bool valid = halfVariance[0].count >= 3 && halfVariance[1].count >= 3 &&
+                            fullVariance > 0 && differenceVariance > 0 && std::isfinite(value) &&
+                            std::abs(value) <= std::numeric_limits<float>::max();
+                        noiseValid &= valid;
+                        noise->pixels[noiseOffset + channel] = valid ? float(value) : 0;
+                    }
+                    if (report) {
+                        report->rejectionLow.pixels[outputOffset + channel] = float(rejected.low) / values.size();
+                        report->rejectionHigh.pixels[outputOffset + channel] = float(rejected.high) / values.size();
+                    }
+                } else noiseValid = false;
+            }
+            if (noise) {
+                if (!noiseValid) for (unsigned c = 0; c < 3; ++c) noise->pixels[noiseOffset + c] = 0;
+                noise->pixels[noiseOffset + 3] = noiseValid ? 1 : 0;
+            }
+            if (groups) for (unsigned group = 0; group < 2; ++group) {
+                const auto& weights = groups->acceptedGroupWeights[group].pixels;
+                const bool valid = weights[noiseOffset] > 0 && weights[noiseOffset + 1] > 0 && weights[noiseOffset + 2] > 0;
+                groups->acceptedGroupImages[group].pixels[noiseOffset + 3] = valid ? 1 : 0;
+                groups->acceptedGroupWeights[group].pixels[noiseOffset + 3] = valid ? 1 : 0;
+            }
+            if (acceptedWeights) setCoverageAlpha(*acceptedWeights, outputPixelOffset + pixel,
+                             static_cast<float>(coverageSum / totalFrameWeight));
+            setCoverageAlpha(output, outputPixelOffset + pixel,
+                             static_cast<float>(coverageSum / totalFrameWeight));
+            if (report) {
+                setCoverageAlpha(report->rejectionLow, outputPixelOffset + pixel, coverageSum > 0 ? 1 : 0);
+                setCoverageAlpha(report->rejectionHigh, outputPixelOffset + pixel, coverageSum > 0 ? 1 : 0);
+            }
         }
     }
 }
 
-void processRobustTile(const std::vector<float>& tileData, std::size_t frameCount, std::size_t tilePixels,
+void processRobustTile(const PixelStorage& tileData, std::size_t frameCount, std::size_t tilePixels,
                        std::uint16_t channels, std::size_t outputPixelOffset, const StackOptions& options,
                        const std::vector<std::size_t>& inputOrder, ImageBuffer& output,
                        StackResult* report, ImageBuffer* noise, StackResult* groups, ImageBuffer* acceptedWeights) {
-    constexpr std::size_t automaticWorkerLimit = 8;
-    constexpr std::size_t manualWorkerLimit = 16;
     const auto hardware = std::max<std::size_t>(1, std::thread::hardware_concurrency());
     const auto requested = options.combineWorkers == 0
-        ? std::min(hardware, automaticWorkerLimit)
+        ? std::min(hardware, detail::hardwareWorkerLimit())
         : options.combineWorkers;
-    const auto workers = std::max<std::size_t>(1, std::min<std::size_t>({manualWorkerLimit, requested, hardware,
+    const auto workers = std::max<std::size_t>(1, std::min<std::size_t>({requested, hardware,
                                                                          tilePixels / 256}));
     std::vector<float> centers;
     if (options.preferMetalCombine) {
 #ifdef __APPLE__
         if (options.method == StackMethod::WinsorizedSigmaClip && channels == 4 && frameCount >= 8 &&
-            tilePixels >= 256 && !noise && !groups) {
-            detail::metalWinsorCenters(tileData, tilePixels, frameCount, options.frameWeights, centers);
+            tilePixels >= 256 && !noise && !groups && !acceptedWeights) {
             std::vector<float> reduced;
-            if (!centers.empty() && detail::metalWinsorReduce(tileData, tilePixels, frameCount, options.frameWeights,
-                    centers, options.winsorizedSigma.sigmaLow, options.winsorizedSigma.sigmaHigh, report != nullptr, reduced)) {
+            if (detail::metalWinsorReduce(tileData, tilePixels, frameCount, options.frameWeights,
+                    options.winsorizedSigma.sigmaLow, options.winsorizedSigma.sigmaHigh, report != nullptr, reduced)) {
                 const auto blocks = (tilePixels + 255) / 256;
                 if (report) for (std::size_t frame = 0; frame < frameCount; ++frame)
                     for (std::size_t b = 0; b < blocks; ++b) {
@@ -1166,7 +1204,7 @@ void processRobustTile(const std::vector<float>& tileData, std::size_t frameCoun
                         const auto first = pixel++;
                         while (pixel < tilePixels && reduced[12 * pixel + 3] < 0) ++pixel;
                         processRobustRange(tileData, frameCount, tilePixels, channels, outputPixelOffset, options,
-                                           inputOrder, output, report, report, nullptr, nullptr, nullptr, first, pixel, centers.data());
+                                           inputOrder, output, report, report, nullptr, nullptr, nullptr, first, pixel, nullptr);
                         continue;
                     }
                     const auto offset = (outputPixelOffset + pixel) * 4;
@@ -1180,7 +1218,13 @@ void processRobustTile(const std::vector<float>& tileData, std::size_t frameCoun
                 return;
             }
         }
-        else detail::recordBackend("cpu", "Metal reduction requires an RGBA Winsor tile with at least 8 frames and no independent noise groups");
+        else if (options.method == StackMethod::SigmaClip && options.sigma.medianMad &&
+                 channels == 4 && frameCount >= 8 && tilePixels >= 256) {
+            // Diagnostics use the same full-stack robust center; accumulate the
+            // independent groups in double precision in their original order.
+            detail::metalWinsorCenters(tileData, tilePixels, frameCount, options.frameWeights, centers);
+            detail::recordBackend("cpu", "independent group and variance accumulation");
+        } else detail::recordBackend("cpu", "Metal requires an RGBA Winsor or median/MAD Sigma tile with at least 8 frames");
 #else
         detail::recordBackend("cpu", "Metal unavailable on this platform");
 #endif
@@ -1285,9 +1329,13 @@ StackResult stackCachedRobustFrames(const std::vector<std::filesystem::path>& pa
     if (getrlimit(RLIMIT_NOFILE, &limit) == 0)
         openLimit = std::min<std::uint64_t>(frameCount, limit.rlim_cur > 64 ? limit.rlim_cur - 64 : limit.rlim_cur / 2);
 #endif
+    std::vector<std::size_t> bufferSlots(frameCount);
+    std::size_t diskFrames = 0;
+    for (std::size_t i = 0; i < frameCount; ++i)
+        if (registered.empty() || !registered[i].resident) bufferSlots[i] = diskFrames++;
     std::vector<char> readBuffers;
     try {
-        readBuffers.resize(readBufferSize * frameCount);
+        readBuffers.resize(readBufferSize * diskFrames);
     } catch (const std::bad_alloc&) {
         // Continue with direct reads/default stream buffers under pressure.
         readBufferSize = 0;
@@ -1297,6 +1345,7 @@ StackResult stackCachedRobustFrames(const std::vector<std::filesystem::path>& pa
     }
     std::vector<std::ifstream> streams(frameCount);
     for (std::size_t frame = 0; frame < std::min(frameCount, openLimit); ++frame) {
+        if (!registered.empty() && registered[frame].resident) continue;
 #if defined(__unix__) || defined(__APPLE__)
         if (directReads) {
             descriptors.values[frame] = openDirect(frame);
@@ -1305,17 +1354,24 @@ StackResult stackCachedRobustFrames(const std::vector<std::filesystem::path>& pa
             return stackError("TemporaryStorageReadFailed", "Unable to open stack cache file: " + paths[frame].string());
         }
 #endif
-        if (readBufferSize) streams[frame].rdbuf()->pubsetbuf(readBuffers.data() + frame * readBufferSize,
+        if (readBufferSize) streams[frame].rdbuf()->pubsetbuf(readBuffers.data() + bufferSlots[frame] * readBufferSize,
                                                                static_cast<std::streamsize>(readBufferSize));
         streams[frame].open(paths[frame], std::ios::binary);
         if (!streams[frame]) return stackError("TemporaryStorageReadFailed",
                                                "Unable to open stack cache file: " + paths[frame].string());
     }
     const auto readFrameTile = [&](std::size_t frame, std::size_t offset, char* destination, std::size_t bytes) {
+        if (!registered.empty() && registered[frame].resident) {
+            const auto& samples = *registered[frame].resident;
+            const auto size = samples.size() * sizeof(float);
+            if (offset > size || bytes > size - offset) return false;
+            std::memcpy(destination, reinterpret_cast<const char*>(samples.data()) + offset, bytes);
+            return true;
+        }
 #if defined(__unix__) || defined(__APPLE__)
         if (directReads) {
             const auto inBlock = blockBytes ? offset % blockBytes : 0;
-            char* buffer = blockBytes ? readBuffers.data() + frame * blockBytes : destination;
+            char* buffer = blockBytes ? readBuffers.data() + bufferSlots[frame] * blockBytes : destination;
             if (inBlock) {
                 std::memcpy(destination, buffer + inBlock, bytes);
                 return true;
@@ -1343,7 +1399,7 @@ StackResult stackCachedRobustFrames(const std::vector<std::filesystem::path>& pa
                      static_cast<std::streamsize>(bytes)));
     };
 
-    std::vector<float> tileData;
+    PixelStorage tileData;
     if (options.collectAcceptedWeights) metrics.acceptedWeights = output;
     if (!options.acceptedGroups.empty()) {
         if (output.colorEncoding != ColorEncoding::Linear || (output.channels != 3 && output.channels != 4))
@@ -1519,7 +1575,7 @@ StackResult streamRobustFiles(const std::vector<std::filesystem::path>& inputs, 
     if (requiresAlignment && (externalReference || inputs.size() > 1))
         prepared.emplace(Registration().prepareReference(std::move(reference), options.registration, options.alignDistortion));
     else
-        std::vector<float>().swap(reference.pixels);
+        PixelStorage().swap(reference.pixels);
 
     detail::FrameReadAhead ahead(referenceWidth, referenceHeight, !options.readFrame && !options.inputConsumed);
     for (std::size_t position = externalReference ? 0 : 1; position < inputOrder.size(); ++position) {
@@ -1723,6 +1779,13 @@ static StackResult stackInputs(const std::vector<std::filesystem::path>& inputs,
                 return stackError("ImageSizeMismatch", "Registered frames have different geometry");
         output.pixels.resize(output.sampleCount());
         if (inputs.size() == 1) {
+            if (shape.resident) {
+                if (shape.resident->size() != output.sampleCount())
+                    return stackError("TemporaryStorageInvalid", "Resident frame has invalid size");
+                output.pixels = *shape.resident;
+                StackProgressReporter progress(options, inputs.size());
+                return normalizeSingleFrameCoverage(std::move(output), progress, 0, 1);
+            }
             std::ifstream frame(inputs.front(), std::ios::binary);
             const auto bytes = static_cast<std::streamsize>(output.sampleCount() * sizeof(float));
             if (!frame.read(reinterpret_cast<char*>(output.pixels.data()), bytes))
@@ -1756,10 +1819,19 @@ StackResult Stacker::stack(const std::vector<std::filesystem::path>& inputs, con
 }
 
 StackResult detail::writeRegisteredFrame(const std::filesystem::path& path, const ImageBuffer& image,
-                                          bool normalize, RegisteredFrame& metadata) {
+                                          bool normalize, RegisteredFrame& metadata, bool retainInMemory) {
     if (image.channels != 4 || image.colorEncoding != ColorEncoding::Linear || image.pixels.size() != image.sampleCount())
         return stackError("TemporaryStorageInvalid", "Expected registered linear RGBA samples");
-    metadata = {image.width, image.height, normalize ? sampledBackground(image) : std::array<float,3>{}};
+    metadata = {image.width, image.height, normalize ? sampledBackground(image) : std::array<float,3>{}, {}};
+    if (retainInMemory) {
+        try {
+            metadata.resident = std::make_shared<const PixelStorage>(image.pixels);
+            StackResult result; result.ok = true;
+            return result;
+        } catch (const std::bad_alloc&) {
+            // Retention is optional; spill to the existing exact disk format.
+        }
+    }
     return writeCachedFrame(path, image);
 }
 

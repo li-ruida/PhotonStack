@@ -15,9 +15,14 @@ struct WeightedValue {
     double weight = 0.0;
 };
 
-inline double weightedPercentile(std::vector<WeightedValue> values, double fraction) {
+inline double weightedPercentileInPlace(std::vector<WeightedValue>& values, double fraction) {
     if (values.empty()) {
         return 0.0;
+    }
+    if (std::all_of(values.begin(), values.end(), [](const auto& s) { return s.weight == 1; })) {
+        auto ranked = values.begin() + static_cast<std::size_t>(std::clamp(fraction, 0., 1.) * (values.size() - 1));
+        std::nth_element(values.begin(), ranked, values.end(), [](const auto& a, const auto& b) { return a.value < b.value; });
+        return ranked->value;
     }
     std::sort(values.begin(), values.end(), [](const WeightedValue& left, const WeightedValue& right) {
         return left.value < right.value;
@@ -38,6 +43,10 @@ inline double weightedPercentile(std::vector<WeightedValue> values, double fract
         }
     }
     return values.back().value;
+}
+
+inline double weightedPercentile(std::vector<WeightedValue> values, double fraction) {
+    return weightedPercentileInPlace(values, fraction);
 }
 
 inline double weightedMedian(std::vector<WeightedValue> values) {

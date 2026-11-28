@@ -1,4 +1,9 @@
+#include "photonstack/ParallelRanges.hpp"
 #include "photonstack/Curves.hpp"
+#ifdef __APPLE__
+#include "MetalCompute.hpp"
+#include "photonstack/StageProfile.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -39,38 +44,6 @@ struct PreparedCurve {
     std::vector<float> tangents;
     std::array<float, kCurveLutResolution + 1> lookup = {};
 };
-
-template <typename Callback> void parallelForPixels(const ImageBuffer& image, Callback callback) {
-    const std::size_t pixels = image.pixelCount();
-    if (pixels < 262144) {
-        callback(0, pixels);
-        return;
-    }
-
-    // Curve application streams several float planes and becomes memory-bandwidth
-    // bound well before every performance core is occupied. On Apple silicon the
-    // measured sweet spot is eight workers; additional threads increase contention.
-    const unsigned int workerCount = std::min(
-        std::max(1U, std::thread::hardware_concurrency()),
-        8U
-    );
-    const std::size_t blockSize = (pixels + workerCount - 1) / workerCount;
-    std::vector<std::jthread> workers;
-    workers.reserve(workerCount);
-    for (unsigned int worker = 0; worker < workerCount; ++worker) {
-        const std::size_t begin = std::min<std::size_t>(pixels, static_cast<std::size_t>(worker) * blockSize);
-        const std::size_t end = std::min<std::size_t>(pixels, begin + blockSize);
-        if (begin >= end) {
-            break;
-        }
-        workers.emplace_back([=, &callback]() {
-            callback(begin, end);
-        });
-    }
-    for (auto& worker : workers) {
-        worker.join();
-    }
-}
 
 float limitedTangent(float leftSlope, float rightSlope) {
     if (leftSlope * rightSlope <= 0.0F) {
@@ -198,6 +171,33 @@ CurvesResult Curves::apply(const ImageBuffer& image, const CurvesOptions& option
     if (!validCurveChannel(options.channel)) {
         return curvesError("ArgumentInvalid", "Unsupported curve channel");
     }
+#ifdef __APPLE__
+    if ((options.preferMetal || detail::currentStage.preferMetal) && image.channels == 4 &&
+        image.pixelCount() >= 1048576 && image.pixelCount() <= UINT32_MAX &&
+        options.channel != CurveChannel::Luminance && !options.preserveLuminanceGamut) {
+        // The LUT kernel also validates covered samples. Avoid a serial full
+        // image scan before dispatch; failed validation uses the scalar path
+        // below, retaining the public error precedence and masked-pixel rules.
+        auto points = options.points;
+        const bool finite = std::all_of(points.begin(), points.end(), [](const auto& p) {
+            return std::isfinite(p.input) && std::isfinite(p.output) && p.input >= 0 && p.input <= 1 &&
+                   p.output >= 0 && p.output <= 1;
+        });
+        if (finite) {
+            std::sort(points.begin(), points.end(), [](const auto& a, const auto& b) { return a.input < b.input; });
+            const bool unique = std::adjacent_find(points.begin(), points.end(), [](const auto& a, const auto& b) {
+                return std::fabs(a.input - b.input) < 1.e-6F;
+            }) == points.end();
+            if (unique) {
+                PreparedCurve curve{.points = points, .tangents = curveTangents(points)};
+                curve.lookup = buildCurveLookup(curve);
+                ImageBuffer output;
+                if (detail::metalCurveLUT(image, curve.lookup, unsigned(options.channel), options.preserveAlpha, output))
+                    return {true, std::move(output), {}, {}};
+            }
+        }
+    }
+#endif
     if (options.preserveAlpha) {
         if (detail::imageHasInvalidCoveredColor(image)) {
             return curvesError("ImageBufferInvalid", "Input image contains non-finite visible color samples");
@@ -240,7 +240,7 @@ CurvesResult Curves::apply(const ImageBuffer& image, const CurvesOptions& option
     curve.lookup = buildCurveLookup(curve);
 
     ImageBuffer output = image;
-    parallelForPixels(image, [&](std::size_t begin, std::size_t end) {
+    detail::parallelRanges(image.pixelCount(), 65536, [&](std::size_t begin, std::size_t end) {
         for (std::size_t pixel = begin; pixel < end; ++pixel) {
             const auto offset = pixel * image.channels;
             bool validPixel = detail::pixelHasValidColor(image, pixel);
